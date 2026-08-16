@@ -35,6 +35,16 @@
   let audioError = $state('');
   let hoveredZone = $state(null);
 
+  // Probe & Beat Detection State
+  let sceneInfo = $state(null);
+  let drumsInfo = $state(null);
+  let audioInfo = $state(null);
+  let beats = $state(null);
+  let downbeats = $state(null);
+  let bpm = $state(null);
+  let isAnalyzing = $state(false);
+  let analyzingStep = $state('');
+
   const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'webm', 'mov', 'avi'];
   const AUDIO_EXTENSIONS = ['mp3', 'wav', 'flac', 'm4a', 'ogg'];
 
@@ -70,6 +80,7 @@
       if (VIDEO_EXTENSIONS.includes(ext)) {
         scenePath = path;
         sceneError = '';
+        sceneInfo = null;
       } else {
         sceneError = 'Expected: video — mp4/mkv/webm/mov/avi';
       }
@@ -77,6 +88,10 @@
       if (AUDIO_EXTENSIONS.includes(ext)) {
         drumsPath = path;
         drumsError = '';
+        drumsInfo = null;
+        beats = null;
+        downbeats = null;
+        bpm = null;
       } else {
         drumsError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
       }
@@ -84,6 +99,7 @@
       if (AUDIO_EXTENSIONS.includes(ext)) {
         audioPath = path;
         audioError = '';
+        audioInfo = null;
       } else {
         audioError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
       }
@@ -95,12 +111,18 @@
     if (zone === 'scene') {
       scenePath = '';
       sceneError = '';
+      sceneInfo = null;
     } else if (zone === 'drums') {
       drumsPath = '';
       drumsError = '';
+      drumsInfo = null;
+      beats = null;
+      downbeats = null;
+      bpm = null;
     } else if (zone === 'audio') {
       audioPath = '';
       audioError = '';
+      audioInfo = null;
     }
   }
 
@@ -114,6 +136,36 @@
       }
     } catch (e) {
       showToast(`Selection cancelled or error: ${e}`, 'error');
+    }
+  }
+
+  async function handleContinue() {
+    if (!scenePath || !drumsPath || !audioPath) return;
+    isAnalyzing = true;
+    try {
+      analyzingStep = 'Probing scene video...';
+      sceneInfo = await invoke('probe_media', { filePath: scenePath });
+
+      analyzingStep = 'Probing drums audio...';
+      drumsInfo = await invoke('probe_media', { filePath: drumsPath });
+
+      analyzingStep = 'Probing target audio...';
+      audioInfo = await invoke('probe_media', { filePath: audioPath });
+
+      analyzingStep = 'Detecting beats with ONNX model...';
+      const beatResult = await invoke('detect_beats', { audioPath: drumsPath });
+      beats = beatResult.beats;
+      downbeats = beatResult.downbeats;
+      bpm = beatResult.bpm;
+
+      navigateTo('settings');
+    } catch (err) {
+      console.error('Processing error:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Analysis failed: ${msg}`, 'error');
+    } finally {
+      isAnalyzing = false;
+      analyzingStep = '';
     }
   }
 
@@ -408,8 +460,17 @@
 
             {#if allZonesFilled}
               <div class="continue-row">
-                <button class="btn-continue" onclick={() => navigateTo('settings')}>
-                  CONTINUE &gt;
+                <button
+                  class="btn-continue"
+                  onclick={handleContinue}
+                  disabled={isAnalyzing}
+                >
+                  {#if isAnalyzing}
+                    <span class="spinner-inline"></span>
+                    <span>{analyzingStep || 'PROCESSING...'}</span>
+                  {:else}
+                    CONTINUE &gt;
+                  {/if}
                 </button>
               </div>
             {/if}
@@ -421,20 +482,46 @@
               <header class="settings-header">
                 <span class="about-kicker">cia app / TIME REMAP</span>
                 <h1>SETTINGS</h1>
-                <p class="stub-notice">SETTINGS — implemented in task T4</p>
+                <p class="stub-notice">SETTINGS — probe complete, implemented in task T4</p>
               </header>
 
               <div class="selected-paths-list">
+                <!-- SCENE -->
                 <div class="path-item">
-                  <span class="path-label">SCENE (VIDEO)</span>
+                  <div class="path-item-header">
+                    <span class="path-label">SCENE (VIDEO)</span>
+                    {#if sceneInfo}
+                      <span class="meta-pill mono">
+                        {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(2)} fps
+                      </span>
+                    {/if}
+                  </div>
                   <span class="path-value mono">{scenePath}</span>
                 </div>
+
+                <!-- DRUMS -->
                 <div class="path-item">
-                  <span class="path-label">DRUMS (AUDIO)</span>
+                  <div class="path-item-header">
+                    <span class="path-label">DRUMS (AUDIO)</span>
+                    {#if drumsInfo}
+                      <span class="meta-pill mono">
+                        {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate} Hz · {drumsInfo.audioChannels} ch · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
+                      </span>
+                    {/if}
+                  </div>
                   <span class="path-value mono">{drumsPath}</span>
                 </div>
+
+                <!-- AUDIO -->
                 <div class="path-item">
-                  <span class="path-label">AUDIO (AUDIO)</span>
+                  <div class="path-item-header">
+                    <span class="path-label">AUDIO (AUDIO)</span>
+                    {#if audioInfo}
+                      <span class="meta-pill mono">
+                        {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate} Hz · {audioInfo.audioChannels} ch
+                      </span>
+                    {/if}
+                  </div>
                   <span class="path-value mono">{audioPath}</span>
                 </div>
               </div>
@@ -886,19 +973,42 @@
     font-size: 12px;
     letter-spacing: 0.06em;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .btn-continue:hover {
+  .btn-continue:hover:not(:disabled) {
     background: #000000;
     color: #ffffff;
     border-color: #ffffff;
     box-shadow: 0 0 15px rgba(255, 255, 255, 0.15);
   }
 
+  .btn-continue:disabled {
+    opacity: 0.8;
+    cursor: wait;
+  }
+
+  .spinner-inline {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(0, 0, 0, 0.25);
+    border-top-color: #000000;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 8px;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
   /* Settings Stub Page */
   .settings-stub-page {
-    width: min(100%, 720px);
+    width: min(100%, 760px);
     margin: auto;
     display: flex;
     flex-direction: column;
@@ -942,7 +1052,21 @@
   .path-item {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #141417;
+  }
+
+  .path-item:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .path-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
   }
 
   .path-label {
@@ -950,6 +1074,17 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #71717a;
+  }
+
+  .meta-pill {
+    font-size: 9px;
+    font-weight: 700;
+    color: #4ade80;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 4px;
+    padding: 2px 6px;
+    white-space: nowrap;
   }
 
   .path-value {
