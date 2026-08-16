@@ -35,21 +35,7 @@ pub struct BeatResult {
     pub downbeats: Vec<f64>,
 }
 
-fn parse_fps(val: &str) -> f64 {
-    if let Some((num_str, den_str)) = val.split_once('/') {
-        if let (Ok(num), Ok(den)) = (num_str.trim().parse::<f64>(), den_str.trim().parse::<f64>()) {
-            if den > 0.0 {
-                return num / den;
-            }
-        }
-    } else if let Ok(fps) = val.trim().parse::<f64>() {
-        return fps;
-    }
-    0.0
-}
-
 fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
-    // 1. Check relative to current exe directory
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let direct = exe_dir.join(name);
@@ -62,7 +48,6 @@ fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
             }
         }
     }
-    // 2. Check current working dir
     let cwd = std::env::current_dir().unwrap_or_default();
     let direct_cwd = cwd.join("src-tauri").join("binaries").join(name);
     if direct_cwd.exists() {
@@ -72,7 +57,6 @@ fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
     if binaries_cwd.exists() {
         return binaries_cwd;
     }
-    // 3. Fallback to resource_dir
     if let Ok(res_dir) = app.path().resource_dir() {
         let in_res = res_dir.join("binaries").join(name);
         if in_res.exists() {
@@ -139,97 +123,169 @@ fn pick_file(kind: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn probe_media(file_path: String) -> Result<MediaInfo, String> {
-    let path_buf = std::path::PathBuf::from(&file_path);
-    if !path_buf.exists() {
+    let path = std::path::Path::new(&file_path);
+    if !path.exists() {
         return Err(format!("File not found: {file_path}"));
     }
 
-    #[cfg(target_os = "windows")]
-    use std::os::windows::process::CommandExt;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
 
-    let mut cmd = std::process::Command::new("ffprobe");
-    cmd.args([
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        &file_path,
-    ]);
+    // 1. MP4 / MOV containers (via mp4 crate)
+    if ext == "mp4" || ext == "mov" || ext == "m4a" {
+        if let Ok(file) = std::fs::File::open(&file_path) {
+            let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let reader = std::io::BufReader::new(file);
+            if let Ok(mp4_reader) = mp4::Mp4Reader::read_header(reader, file_size) {
+                let mut duration = mp4_reader.duration().as_secs_f64();
+                let mut width = 0u32;
+                let mut height = 0u32;
+                let mut fps = 0.0;
+                let mut audio_channels = 0u32;
+                let mut audio_sample_rate = 0u32;
 
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+                for track in mp4_reader.tracks().values() {
+                    match track.track_type() {
+                        Ok(mp4::TrackType::Video) if width == 0 => {
+                            width = track.width() as u32;
+                            height = track.height() as u32;
+                            let sample_count = track.sample_count();
+                            let track_dur = track.duration().as_secs_f64();
+                            if track_dur > 0.0 && sample_count > 0 {
+                                fps = (sample_count as f64) / track_dur;
+                                if (fps - fps.round()).abs() < 0.05 {
+                                    fps = fps.round();
+                                }
+                            }
+                            if duration == 0.0 {
+                                duration = track_dur;
+                            }
+                        }
+                        Ok(mp4::TrackType::Audio) if audio_channels == 0 => {
+                            if let Some(mp4a) = track.trak.mdia.minf.stbl.stsd.mp4a.as_ref() {
+                                audio_channels = mp4a.channelcount as u32;
+                            }
+                            if audio_sample_rate == 0 {
+                                audio_sample_rate = track.timescale();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
 
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            "ffprobe not found".to_string()
-        } else {
-            format!("Failed to execute ffprobe: {e}")
+                // If audio info is needed or if pure audio file, extract via symphonia
+                if let Ok(audio_info) = probe_audio_symphonia(&file_path, &ext) {
+                    if audio_channels == 0 {
+                        audio_channels = audio_info.audio_channels;
+                        audio_sample_rate = audio_info.audio_sample_rate;
+                    }
+                    if duration == 0.0 {
+                        duration = audio_info.duration;
+                    }
+                }
+
+                if width > 0 || audio_channels > 0 || duration > 0.0 {
+                    return Ok(MediaInfo {
+                        duration,
+                        fps,
+                        width,
+                        height,
+                        audio_channels,
+                        audio_sample_rate,
+                    });
+                }
+            }
         }
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffprobe probe failed: {stderr}"));
     }
 
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse ffprobe json output: {e}"))?;
+    // 2. Audio and other containers (via symphonia crate)
+    probe_audio_symphonia(&file_path, &ext)
+}
 
-    let mut duration = parsed["format"]["duration"]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.0);
+fn probe_audio_symphonia(file_path: &str, ext: &str) -> Result<MediaInfo, String> {
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
 
-    let mut fps = 0.0;
-    let mut width = 0u32;
-    let mut height = 0u32;
+    let file = std::fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open file '{file_path}': {e}"))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if !ext.is_empty() {
+        hint.with_extension(ext);
+    }
+
+    let meta_opts = MetadataOptions::default();
+    let fmt_opts = FormatOptions::default();
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &fmt_opts, &meta_opts)
+        .map_err(|e| format!("Unsupported format '{ext}': {e}"))?;
+
+    let mut format = probed.format;
+    let mut duration = 0.0;
     let mut audio_channels = 0u32;
     let mut audio_sample_rate = 0u32;
 
-    if let Some(streams) = parsed["streams"].as_array() {
-        for stream in streams {
-            let codec_type = stream["codec_type"].as_str().unwrap_or("");
-            if codec_type == "video" && width == 0 {
-                width = stream["width"].as_u64().unwrap_or(0) as u32;
-                height = stream["height"].as_u64().unwrap_or(0) as u32;
-                let r_frame_rate = stream["r_frame_rate"].as_str().unwrap_or("");
-                let avg_frame_rate = stream["avg_frame_rate"].as_str().unwrap_or("");
-                let parsed_fps = parse_fps(r_frame_rate);
-                fps = if parsed_fps > 0.0 {
-                    parsed_fps
-                } else {
-                    parse_fps(avg_frame_rate)
-                };
-                if duration == 0.0 {
-                    duration = stream["duration"]
-                        .as_str()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
+    for track in format.tracks() {
+        let params = &track.codec_params;
+        if let Some(sr) = params.sample_rate {
+            if audio_sample_rate == 0 {
+                audio_sample_rate = sr;
+            }
+        }
+        if let Some(ch) = params.channels {
+            if audio_channels == 0 {
+                audio_channels = ch.count() as u32;
+            }
+        }
+        if let (Some(n_frames), Some(tb)) = (params.n_frames, params.time_base) {
+            let dur = tb.calc_time(n_frames);
+            let d = dur.seconds as f64 + dur.frac;
+            if d > duration {
+                duration = d;
+            }
+        } else if let (Some(n_frames), Some(sr)) = (params.n_frames, params.sample_rate) {
+            if sr > 0 {
+                let d = (n_frames as f64) / (sr as f64);
+                if d > duration {
+                    duration = d;
                 }
-            } else if codec_type == "audio" && audio_channels == 0 {
-                audio_channels = stream["channels"].as_u64().unwrap_or(0) as u32;
-                audio_sample_rate = stream["sample_rate"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0);
-                if duration == 0.0 {
-                    duration = stream["duration"]
-                        .as_str()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
+            }
+        }
+    }
+
+    // If duration not in headers, calculate by iterating packets
+    if duration == 0.0 {
+        let default_track = format.default_track().cloned();
+        if let Some(track) = default_track {
+            let tb = track.codec_params.time_base;
+            let sr = track.codec_params.sample_rate.unwrap_or(44100);
+            let mut total_ts = 0u64;
+            while let Ok(packet) = format.next_packet() {
+                if packet.track_id() == track.id {
+                    total_ts += packet.dur();
                 }
+            }
+            if let Some(tb) = tb {
+                let dur = tb.calc_time(total_ts);
+                duration = dur.seconds as f64 + dur.frac;
+            } else if sr > 0 {
+                duration = (total_ts as f64) / (sr as f64);
             }
         }
     }
 
     Ok(MediaInfo {
         duration,
-        fps,
-        width,
-        height,
+        fps: 0.0,
+        width: 0,
+        height: 0,
         audio_channels,
         audio_sample_rate,
     })
@@ -340,17 +396,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_fps() {
-        assert_eq!(parse_fps("30/1"), 30.0);
-        assert_eq!(parse_fps("60/1"), 60.0);
-        assert!((parse_fps("24000/1001") - 23.976).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_probe_media_video() {
+    fn test_probe_media_video_pure_rust() {
         let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
         if std::path::Path::new(video_path).exists() {
             let res = probe_media(video_path.to_string()).expect("Probe should succeed");
+            println!("Video probe result: {:?}", res);
             assert!(res.duration > 10.0);
             assert_eq!(res.width, 1080);
             assert_eq!(res.height, 1920);
@@ -359,14 +409,23 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_media_audio() {
-        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\audio [drums].mp3";
+    fn test_probe_media_audio_pure_rust() {
+        let drums_path = r"C:\Users\cia\Downloads\jugg video & audio tester\audio [drums].mp3";
+        if std::path::Path::new(drums_path).exists() {
+            let res = probe_media(drums_path.to_string()).expect("Probe should succeed");
+            println!("Drums audio probe result: {:?}", res);
+            assert!(res.duration > 14.0);
+            assert_eq!(res.audio_channels, 2);
+            assert_eq!(res.audio_sample_rate, 44100);
+        }
+
+        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
         if std::path::Path::new(audio_path).exists() {
             let res = probe_media(audio_path.to_string()).expect("Probe should succeed");
+            println!("Target audio probe result: {:?}", res);
             assert!(res.duration > 14.0);
             assert_eq!(res.audio_channels, 2);
             assert_eq!(res.audio_sample_rate, 44100);
         }
     }
 }
-

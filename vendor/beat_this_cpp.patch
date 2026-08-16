@@ -1,0 +1,101 @@
+diff --git a/Source/DBNPostprocessor.h b/Source/DBNPostprocessor.h
+index fc98ccc..eb17f61 100644
+--- a/Source/DBNPostprocessor.h
++++ b/Source/DBNPostprocessor.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <vector>
++#include <array>
+ #include <cstdint>
+ 
+ // ===== BarStateSpace =====
+diff --git a/Source/beat_this_api.h b/Source/beat_this_api.h
+index 657645e..16f0744 100644
+--- a/Source/beat_this_api.h
++++ b/Source/beat_this_api.h
+@@ -15,7 +15,7 @@ struct BeatResult {
+ 
+ class BeatThis {
+ public:
+-    explicit BeatThis(const std::string& onnx_model_path);
++    explicit BeatThis(const std::string& onnx_model_path, bool use_dbn = true);
+     ~BeatThis();
+ 
+     // Move semantics
+diff --git a/Source/main.cpp b/Source/main.cpp
+index c434056..e77d624 100644
+--- a/Source/main.cpp
++++ b/Source/main.cpp
+@@ -318,6 +318,7 @@ int main(int argc, char* argv[]) {
+     std::string output_wav_file;
+     std::string output_mixed_file;
+     bool calc_bpm = false;
++    bool output_json = false;
+ 
+     // Parse command line arguments
+     for (int i = 3; i < argc; i++) {
+@@ -330,6 +331,8 @@ int main(int argc, char* argv[]) {
+             output_mixed_file = argv[++i];
+         } else if (arg == "--calc-bpm") {
+             calc_bpm = true;
++        } else if (arg == "--json") {
++            output_json = true;
+         } else {
+             std::cerr << "Unknown argument: " << arg << std::endl;
+             print_usage(argv[0]);
+@@ -338,8 +341,8 @@ int main(int argc, char* argv[]) {
+     }
+ 
+     // Check if at least one output is specified
+-    if (output_beats_file.empty() && output_wav_file.empty() && output_mixed_file.empty() && !calc_bpm) {
+-        std::cerr << "Error: At least one output option must be specified (--output-beats, --output-audio, --output-mixed, or --calc-bpm)" << std::endl;
++    if (output_beats_file.empty() && output_wav_file.empty() && output_mixed_file.empty() && !calc_bpm && !output_json) {
++        std::cerr << "Error: At least one output option must be specified (--output-beats, --output-audio, --output-mixed, --calc-bpm, or --json)" << std::endl;
+         print_usage(argv[0]);
+         return 1;
+     }
+@@ -356,16 +359,39 @@ int main(int argc, char* argv[]) {
+             return 1;
+         }
+ 
+-        std::cout << "Loaded audio: " << audio_buffer.size() << " samples, " << samplerate << " Hz, " << channels << " channels" << std::endl;
++        if (!output_json) {
++            std::cout << "Loaded audio: " << audio_buffer.size() << " samples, " << samplerate << " Hz, " << channels << " channels" << std::endl;
++        }
+ 
+         // Process audio
+         auto result = beat_analyzer.process_audio(audio_buffer, samplerate, channels);
+ 
+-        std::cout << "Found " << result.beats.size() << " beats and " << result.downbeats.size() << " downbeats" << std::endl;
++        if (!output_json) {
++            std::cout << "Found " << result.beats.size() << " beats and " << result.downbeats.size() << " downbeats" << std::endl;
++        }
++
++        double bpm = calculate_bpm(result);
++
++        if (output_json) {
++            std::cout << "{" << std::endl;
++            std::cout << "  \"bpm\": " << std::fixed << std::setprecision(2) << bpm << "," << std::endl;
++            std::cout << "  \"beats\": [";
++            for (size_t i = 0; i < result.beats.size(); ++i) {
++                if (i > 0) std::cout << ", ";
++                std::cout << std::fixed << std::setprecision(4) << result.beats[i];
++            }
++            std::cout << "]," << std::endl;
++            std::cout << "  \"downbeats\": [";
++            for (size_t i = 0; i < result.downbeats.size(); ++i) {
++                if (i > 0) std::cout << ", ";
++                std::cout << std::fixed << std::setprecision(4) << result.downbeats[i];
++            }
++            std::cout << "]" << std::endl;
++            std::cout << "}" << std::endl;
++        }
+ 
+         // Calculate and display BPM if requested
+-        if (calc_bpm) {
+-            double bpm = calculate_bpm(result);
++        if (calc_bpm && !output_json) {
+             if (bpm > 0.0) {
+                 std::cout << "Estimated BPM: " << std::fixed << std::setprecision(1) << bpm << std::endl;
+             } else {
