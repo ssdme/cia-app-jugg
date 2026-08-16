@@ -1,5 +1,6 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { check } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
@@ -12,7 +13,7 @@
       ? getCurrentWindow()
       : null;
 
-  let activePage = $state('about');
+  let activePage = $state('remap'); // 'remap' | 'settings' | 'about'
   let toast = $state({ show: false, message: '', type: 'info' });
   let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
@@ -25,6 +26,20 @@
   let updateErrorMessage = $state('');
   let showUpdateModal = $state(false);
 
+  // Time Remap State (3 drop zones)
+  let scenePath = $state('');
+  let sceneError = $state('');
+  let drumsPath = $state('');
+  let drumsError = $state('');
+  let audioPath = $state('');
+  let audioError = $state('');
+  let hoveredZone = $state(null);
+
+  const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'webm', 'mov', 'avi'];
+  const AUDIO_EXTENSIONS = ['mp3', 'wav', 'flac', 'm4a', 'ogg'];
+
+  let allZonesFilled = $derived(Boolean(scenePath && drumsPath && audioPath));
+
   const ABOUT_LINKS = [
     { name: 'Practical-RIFE', detail: 'Frame interpolation', mark: 'rife', url: 'https://github.com/hzwer/Practical-RIFE' },
     { name: 'smoothie-rs', detail: 'Frame blending', mark: 'smoothie', url: 'https://github.com/couleur-tweak-tips/smoothie-rs' },
@@ -36,6 +51,71 @@
     { name: 'Flowframes', detail: 'Workflow reference', mark: 'flowframes', url: 'https://github.com/n00mkrad/flowframes' }
   ];
   const PROJECT_REPOSITORY_URL = 'https://github.com/cia213/cia-app';
+
+  function getFileExtension(path) {
+    if (!path) return '';
+    const parts = path.split('.');
+    return parts.length > 1 ? parts.pop().toLowerCase() : '';
+  }
+
+  function getFileName(path) {
+    if (!path) return '';
+    return path.split(/[\\/]/).pop() || path;
+  }
+
+  function validateAndSetFile(zone, path) {
+    if (!path) return;
+    const ext = getFileExtension(path);
+    if (zone === 'scene') {
+      if (VIDEO_EXTENSIONS.includes(ext)) {
+        scenePath = path;
+        sceneError = '';
+      } else {
+        sceneError = 'Attendu : vidéo — mp4/mkv/webm/mov/avi';
+      }
+    } else if (zone === 'drums') {
+      if (AUDIO_EXTENSIONS.includes(ext)) {
+        drumsPath = path;
+        drumsError = '';
+      } else {
+        drumsError = 'Attendu : audio — mp3/wav/flac/m4a/ogg';
+      }
+    } else if (zone === 'audio') {
+      if (AUDIO_EXTENSIONS.includes(ext)) {
+        audioPath = path;
+        audioError = '';
+      } else {
+        audioError = 'Attendu : audio — mp3/wav/flac/m4a/ogg';
+      }
+    }
+  }
+
+  function clearZone(zone, event) {
+    if (event) event.stopPropagation();
+    if (zone === 'scene') {
+      scenePath = '';
+      sceneError = '';
+    } else if (zone === 'drums') {
+      drumsPath = '';
+      drumsError = '';
+    } else if (zone === 'audio') {
+      audioPath = '';
+      audioError = '';
+    }
+  }
+
+  async function handlePickFile(zone, event) {
+    if (event) event.stopPropagation();
+    try {
+      const kind = zone === 'scene' ? 'video' : 'audio';
+      const picked = await invoke('pick_file', { kind });
+      if (picked) {
+        validateAndSetFile(zone, picked);
+      }
+    } catch (e) {
+      showToast(`Sélection annulée ou erreur: ${e}`, 'error');
+    }
+  }
 
   function showToast(message, type = 'info') {
     toast = { show: true, message, type };
@@ -138,6 +218,34 @@
     }
   }
 
+  $effect(() => {
+    const u1 = listen('tauri://drag-drop', (event) => {
+      const paths = event.payload?.paths;
+      const position = event.payload?.position;
+      let targetZone = hoveredZone;
+      if (!targetZone && position) {
+        const el = document.elementFromPoint(position.x, position.y);
+        const dropZoneEl = el?.closest('.remap-drop-zone');
+        if (dropZoneEl && dropZoneEl.dataset && dropZoneEl.dataset.zone) {
+          targetZone = dropZoneEl.dataset.zone;
+        }
+      }
+      hoveredZone = null;
+      if (targetZone && paths && paths.length > 0) {
+        validateAndSetFile(targetZone, paths[0]);
+      }
+    });
+
+    const u2 = listen('tauri://drag-leave', () => {
+      hoveredZone = null;
+    });
+
+    return () => {
+      u1.then(f => f());
+      u2.then(f => f());
+    };
+  });
+
   onMount(async () => {
     try {
       appVersion = await invoke('get_app_version');
@@ -166,6 +274,7 @@
   </div>
 
   <nav class="tab-bar">
+    <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -173,7 +282,172 @@
   <main class="content-area">
     {#key activePage}
       <div class="page-stage">
-        {#if activePage === 'about'}
+        {#if activePage === 'remap'}
+          <section class="remap-page" aria-label="Time remap configuration">
+            <div class="remap-grid">
+              <!-- DROP ZONE 1: SCENE (VIDEO) -->
+              <div
+                class="remap-drop-zone"
+                class:filled={Boolean(scenePath)}
+                class:has-error={Boolean(sceneError)}
+                class:hovering={hoveredZone === 'scene'}
+                data-zone="scene"
+                ondragenter={(e) => { e.preventDefault(); hoveredZone = 'scene'; }}
+                ondragover={(e) => { e.preventDefault(); hoveredZone = 'scene'; }}
+                ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'scene') hoveredZone = null; }}
+                ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                onclick={() => !scenePath && handlePickFile('scene')}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !scenePath && handlePickFile('scene')}
+                role="button"
+                tabindex="0"
+              >
+                {#if scenePath}
+                  <div class="zone-filled-content">
+                    <div class="zone-header">
+                      <span class="zone-tag">VIDÉO</span>
+                      <span class="pro-dot active"></span>
+                    </div>
+                    <div class="zone-title">SCENE</div>
+                    <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
+                    <div class="zone-actions">
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REMPLACER</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>RETIRER</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="zone-empty-content">
+                    <p class="zone-prompt">DRAG SCENE</p>
+                    <span class="zone-sublabel">VIDÉO (MP4, MKV, WEBM, MOV, AVI)</span>
+                    {#if sceneError}
+                      <span class="zone-error-msg">{sceneError}</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- DROP ZONE 2: DRUMS (AUDIO) -->
+              <div
+                class="remap-drop-zone"
+                class:filled={Boolean(drumsPath)}
+                class:has-error={Boolean(drumsError)}
+                class:hovering={hoveredZone === 'drums'}
+                data-zone="drums"
+                ondragenter={(e) => { e.preventDefault(); hoveredZone = 'drums'; }}
+                ondragover={(e) => { e.preventDefault(); hoveredZone = 'drums'; }}
+                ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'drums') hoveredZone = null; }}
+                ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                onclick={() => !drumsPath && handlePickFile('drums')}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !drumsPath && handlePickFile('drums')}
+                role="button"
+                tabindex="0"
+              >
+                {#if drumsPath}
+                  <div class="zone-filled-content">
+                    <div class="zone-header">
+                      <span class="zone-tag">AUDIO</span>
+                      <span class="pro-dot active"></span>
+                    </div>
+                    <div class="zone-title">DRUMS</div>
+                    <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
+                    <div class="zone-actions">
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>REMPLACER</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>RETIRER</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="zone-empty-content">
+                    <p class="zone-prompt">DRAG DRUMS</p>
+                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
+                    {#if drumsError}
+                      <span class="zone-error-msg">{drumsError}</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- DROP ZONE 3: AUDIO (AUDIO) -->
+              <div
+                class="remap-drop-zone"
+                class:filled={Boolean(audioPath)}
+                class:has-error={Boolean(audioError)}
+                class:hovering={hoveredZone === 'audio'}
+                data-zone="audio"
+                ondragenter={(e) => { e.preventDefault(); hoveredZone = 'audio'; }}
+                ondragover={(e) => { e.preventDefault(); hoveredZone = 'audio'; }}
+                ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'audio') hoveredZone = null; }}
+                ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                onclick={() => !audioPath && handlePickFile('audio')}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !audioPath && handlePickFile('audio')}
+                role="button"
+                tabindex="0"
+              >
+                {#if audioPath}
+                  <div class="zone-filled-content">
+                    <div class="zone-header">
+                      <span class="zone-tag">AUDIO</span>
+                      <span class="pro-dot active"></span>
+                    </div>
+                    <div class="zone-title">AUDIO</div>
+                    <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
+                    <div class="zone-actions">
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>REMPLACER</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>RETIRER</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="zone-empty-content">
+                    <p class="zone-prompt">DRAG AUDIO</p>
+                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
+                    {#if audioError}
+                      <span class="zone-error-msg">{audioError}</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            {#if allZonesFilled}
+              <div class="continue-row">
+                <button class="btn-continue" onclick={() => navigateTo('settings')}>
+                  CONTINUE &gt;
+                </button>
+              </div>
+            {/if}
+          </section>
+
+        {:else if activePage === 'settings'}
+          <section class="settings-stub-page" aria-label="Settings configuration stub">
+            <div class="settings-card">
+              <header class="settings-header">
+                <span class="about-kicker">cia app / TIME REMAP</span>
+                <h1>SETTINGS</h1>
+                <p class="stub-notice">SETTINGS — implémenté en tâche T4</p>
+              </header>
+
+              <div class="selected-paths-list">
+                <div class="path-item">
+                  <span class="path-label">SCENE (VIDÉO)</span>
+                  <span class="path-value mono">{scenePath}</span>
+                </div>
+                <div class="path-item">
+                  <span class="path-label">DRUMS (AUDIO)</span>
+                  <span class="path-value mono">{drumsPath}</span>
+                </div>
+                <div class="path-item">
+                  <span class="path-label">AUDIO (AUDIO)</span>
+                  <span class="path-value mono">{audioPath}</span>
+                </div>
+              </div>
+
+              <div class="settings-footer">
+                <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
+                  &lt; RETOUR AUX SOURCES
+                </button>
+              </div>
+            </div>
+          </section>
+
+        {:else if activePage === 'about'}
           <section class="about-page" aria-label="Project credits">
             <header class="about-identity">
               <img class="about-app-logo" src={appLogo} alt="cia app logo" />
@@ -416,6 +690,280 @@
     .page-stage { animation: none; }
   }
 
+  /* Time Remap Page (3 Drop Zones) */
+  .remap-page {
+    width: min(100%, 920px);
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    height: 100%;
+    justify-content: center;
+  }
+
+  .remap-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    flex: 1;
+    max-height: 380px;
+  }
+
+  .remap-drop-zone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 320px;
+    padding: 20px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    background: #09090c;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    text-align: center;
+  }
+
+  .remap-drop-zone:hover,
+  .remap-drop-zone.hovering {
+    border-color: rgba(255, 255, 255, 0.4);
+    background: #111116;
+    box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.02);
+  }
+
+  .remap-drop-zone.has-error {
+    border-color: rgba(239, 68, 68, 0.5);
+    background: #0c0707;
+  }
+
+  .remap-drop-zone.filled {
+    border-color: rgba(255, 255, 255, 0.28);
+    background: #0d0d11;
+    cursor: default;
+  }
+
+  .zone-empty-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .zone-prompt {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    margin: 0;
+    color: #e4e4e7;
+  }
+
+  .zone-sublabel {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #71717a;
+    line-height: 1.4;
+  }
+
+  .zone-error-msg {
+    margin-top: 10px;
+    padding: 6px 10px;
+    background: rgba(127, 29, 29, 0.35);
+    border: 1px solid #7f1d1d;
+    border-radius: 4px;
+    color: #fca5a5;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  .zone-filled-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    width: 100%;
+    gap: 12px;
+  }
+
+  .zone-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+
+  .zone-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #a1a1aa;
+    background: #141417;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    padding: 2px 6px;
+  }
+
+  .zone-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #ffffff;
+  }
+
+  .zone-filename {
+    font-size: 11px;
+    font-weight: 600;
+    color: #f4f4f5;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    padding: 10px 12px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-sizing: border-box;
+  }
+
+  .zone-actions {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .btn-zone-action {
+    flex: 1;
+    padding: 7px 10px;
+    background: #141417;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 5px;
+    color: #d4d4d8;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    transition: all 0.15s ease;
+  }
+
+  .btn-zone-action:hover {
+    border-color: rgba(255, 255, 255, 0.35);
+    background: #1c1c20;
+    color: #ffffff;
+  }
+
+  .btn-zone-action.danger:hover {
+    border-color: #7f1d1d;
+    background: #450a0a;
+    color: #fecaca;
+  }
+
+  .continue-row {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    animation: page-enter 160ms ease-out both;
+  }
+
+  .btn-continue {
+    width: 100%;
+    max-width: 400px;
+    padding: 12px 24px;
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
+    border-radius: 6px;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .btn-continue:hover {
+    background: #000000;
+    color: #ffffff;
+    border-color: #ffffff;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.15);
+  }
+
+  /* Settings Stub Page */
+  .settings-stub-page {
+    width: min(100%, 720px);
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .settings-card {
+    padding: 24px;
+    background: #09090c;
+    border: 1px solid #1c1c20;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .settings-header h1 {
+    margin: 6px 0;
+    font-size: 18px;
+    letter-spacing: 0.04em;
+    color: #ffffff;
+  }
+
+  .stub-notice {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: #a1a1aa;
+    letter-spacing: 0.04em;
+  }
+
+  .selected-paths-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    padding: 16px;
+  }
+
+  .path-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .path-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #71717a;
+  }
+
+  .path-value {
+    font-size: 11px;
+    font-weight: 600;
+    color: #e4e4e7;
+    word-break: break-all;
+  }
+
+  .settings-footer {
+    display: flex;
+    justify-content: flex-start;
+  }
+
   /* About */
   .about-page {
     width: min(100%, 920px);
@@ -516,6 +1064,14 @@
     border-radius: 8px;
   }
 
+  .about-kicker {
+    display: block;
+    color: #71717a;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
   .about-link-card p {
     color: #a1a1aa;
     font-size: 11px;
@@ -561,6 +1117,10 @@
   }
 
   /* Dots & Progress */
+  .mono {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
   .pro-dot {
     width: 8px;
     height: 8px;

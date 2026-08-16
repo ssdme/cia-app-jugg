@@ -42,6 +42,35 @@ fn open_about_link(url: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn pick_file(kind: String) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    match kind.as_str() {
+        "video" => {
+            dialog = dialog.add_filter(
+                "Video Files (*.mp4, *.mkv, *.webm, *.mov, *.avi)",
+                &["mp4", "mkv", "webm", "mov", "avi"],
+            );
+        }
+        "audio" => {
+            dialog = dialog.add_filter(
+                "Audio Files (*.mp3, *.wav, *.flac, *.m4a, *.ogg)",
+                &["mp3", "wav", "flac", "m4a", "ogg"],
+            );
+        }
+        _ => {
+            dialog = dialog.add_filter(
+                "Media Files",
+                &[
+                    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "flac", "m4a", "ogg",
+                ],
+            );
+        }
+    }
+    let file = dialog.pick_file();
+    Ok(file.map(|path| path.to_string_lossy().to_string()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -65,7 +94,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_version,
-            open_about_link
+            open_about_link,
+            pick_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
