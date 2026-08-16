@@ -12,14 +12,8 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
-    "shortDescription": "Local video interpolation and rendering.",
-    "longDescription": "cia app is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
-    "resources": [
-      "resources/time_remap.py",
-      "resources/runtime",
-      "resources/bootstrap/bootstrap-rife.ps1",
-      "resources/bootstrap/python-3.11.9-amd64.exe"
-    ],
+    "shortDescription": "cia app desktop shell.",
+    "longDescription": "cia app desktop application shell and about interface.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

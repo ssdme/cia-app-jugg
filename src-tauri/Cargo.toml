@@ -2,7 +2,7 @@
 name = "cia-render"
 version = "1.0.2"
 edition = "2021"
-description = "Local Windows video rendering with smoothie-rs and optional RIFE interpolation."
+description = "Desktop shell and about info."
 repository = "https://github.com/cia213/cia-app"
 license = "MIT"
 
@@ -14,8 +14,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri = { version = "2.0.0", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "process", "io-util"] }
-rfd = "0.15"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
