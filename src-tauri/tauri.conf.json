@@ -1,0 +1,64 @@
+{
+  "productName": "cia app",
+  "version": "1.0.2",
+  "identifier": "io.github.cia213.ciaapp",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "shortDescription": "Local video interpolation and rendering.",
+    "longDescription": "cia app is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
+    "resources": [
+      "resources/time_remap.py",
+      "resources/runtime",
+      "resources/bootstrap/bootstrap-rife.ps1",
+      "resources/bootstrap/python-3.11.9-amd64.exe"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "cia app",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwREI5RTEwM0VEQTM2QzQKUldURU50bytFSjdiSURuejUrUjJ1N2JOMjJxS1pMYzBKN1JmN003YUhQaFU4MDNGT3dHcVVMVXYK",
+      "endpoints": [
+        "https://github.com/cia213/cia-app/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "cia app",
+        "width": 920,
+        "height": 540,
+        "resizable": false,
+        "decorations": false,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": { "csp": null }
+  }
+}
