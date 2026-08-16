@@ -180,7 +180,7 @@
     border-radius: 2px;
   }
 
-  /* 5. Progress Fill & Neon Glow Multicouche */
+  /* 5. Progress Fill & Multi-layer Neon Glow */
   .track-fill {
     position: absolute;
     left: 0;

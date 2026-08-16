@@ -71,21 +71,21 @@
         scenePath = path;
         sceneError = '';
       } else {
-        sceneError = 'Attendu : vidéo — mp4/mkv/webm/mov/avi';
+        sceneError = 'Expected: video — mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
         drumsPath = path;
         drumsError = '';
       } else {
-        drumsError = 'Attendu : audio — mp3/wav/flac/m4a/ogg';
+        drumsError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
       }
     } else if (zone === 'audio') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
         audioPath = path;
         audioError = '';
       } else {
-        audioError = 'Attendu : audio — mp3/wav/flac/m4a/ogg';
+        audioError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
       }
     }
   }
@@ -113,7 +113,7 @@
         validateAndSetFile(zone, picked);
       }
     } catch (e) {
-      showToast(`Sélection annulée ou erreur: ${e}`, 'error');
+      showToast(`Selection cancelled or error: ${e}`, 'error');
     }
   }
 
@@ -304,20 +304,20 @@
                 {#if scenePath}
                   <div class="zone-filled-content">
                     <div class="zone-header">
-                      <span class="zone-tag">VIDÉO</span>
+                      <span class="zone-tag">VIDEO</span>
                       <span class="pro-dot active"></span>
                     </div>
                     <div class="zone-title">SCENE</div>
                     <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REMPLACER</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>RETIRER</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REPLACE</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>REMOVE</button>
                     </div>
                   </div>
                 {:else}
                   <div class="zone-empty-content">
                     <p class="zone-prompt">DRAG SCENE</p>
-                    <span class="zone-sublabel">VIDÉO (MP4, MKV, WEBM, MOV, AVI)</span>
+                    <span class="zone-sublabel">VIDEO (MP4, MKV, WEBM, MOV, AVI)</span>
                     {#if sceneError}
                       <span class="zone-error-msg">{sceneError}</span>
                     {/if}
@@ -350,8 +350,8 @@
                     <div class="zone-title">DRUMS</div>
                     <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>REMPLACER</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>RETIRER</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>REPLACE</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>REMOVE</button>
                     </div>
                   </div>
                 {:else}
@@ -390,8 +390,8 @@
                     <div class="zone-title">AUDIO</div>
                     <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>REMPLACER</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>RETIRER</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>REPLACE</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>REMOVE</button>
                     </div>
                   </div>
                 {:else}
@@ -421,12 +421,12 @@
               <header class="settings-header">
                 <span class="about-kicker">cia app / TIME REMAP</span>
                 <h1>SETTINGS</h1>
-                <p class="stub-notice">SETTINGS — implémenté en tâche T4</p>
+                <p class="stub-notice">SETTINGS — implemented in task T4</p>
               </header>
 
               <div class="selected-paths-list">
                 <div class="path-item">
-                  <span class="path-label">SCENE (VIDÉO)</span>
+                  <span class="path-label">SCENE (VIDEO)</span>
                   <span class="path-value mono">{scenePath}</span>
                 </div>
                 <div class="path-item">
@@ -441,7 +441,7 @@
 
               <div class="settings-footer">
                 <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
-                  &lt; RETOUR AUX SOURCES
+                  &lt; BACK TO SOURCES
                 </button>
               </div>
             </div>
