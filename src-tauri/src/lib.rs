@@ -1,4 +1,6 @@
-use tauri::Manager;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{Emitter, Manager};
 
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/cia213/cia-app";
 const ABOUT_URLS: [&str; 9] = [
@@ -15,6 +17,8 @@ const ABOUT_URLS: [&str; 9] = [
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static RENDER_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +69,82 @@ pub struct ProjectPlan {
     pub segments: Vec<PlanSegment>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderProgressPayload {
+    pub phase: String, // "DECODING" | "SAMPLING" | "ENCODING"
+    pub percent: u32,
+    pub current_frame: u32,
+    pub total_frames: u32,
+    pub message: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct CropInfo {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub out_w: u32,
+    pub out_h: u32,
+}
+
+pub fn evaluate_curve(curve_name: &str, x: f64) -> f64 {
+    let x_clamped = x.clamp(0.0, 1.0);
+    match curve_name.to_lowercase().as_str() {
+        "snap" => 1.0 - (1.0 - x_clamped).powi(3),
+        "saddle" => x_clamped.powi(2) * (3.0 - 2.0 * x_clamped),
+        _ => x_clamped,
+    }
+}
+
+pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32) -> CropInfo {
+    let aspect_w = if aspect_w == 0 { 1080 } else { aspect_w };
+    let aspect_h = if aspect_h == 0 { 1080 } else { aspect_h };
+
+    let src_ar = (src_w as f64) / (src_h as f64);
+    let target_ar = (aspect_w as f64) / (aspect_h as f64);
+
+    let (crop_w, crop_h, crop_x, crop_y) = if src_ar > target_ar {
+        let ch = src_h;
+        let mut cw = ((src_h as f64) * target_ar).round() as u32;
+        cw = (cw.min(src_w)) & !1;
+        let cx = (src_w - cw) / 2;
+        (cw, ch, cx, 0)
+    } else {
+        let cw = src_w;
+        let mut ch = ((src_w as f64) / target_ar).round() as u32;
+        ch = (ch.min(src_h)) & !1;
+        let cy = (src_h - ch) / 2;
+        (cw, ch, 0, cy)
+    };
+
+    let (out_w, out_h) = if aspect_w >= aspect_h {
+        let ow = 1080u32;
+        let mut oh = ((1080.0 / target_ar).round() as u32) & !1;
+        if oh == 0 {
+            oh = 2;
+        }
+        (ow, oh)
+    } else {
+        let oh = 1080u32;
+        let mut ow = ((1080.0 * target_ar).round() as u32) & !1;
+        if ow == 0 {
+            ow = 2;
+        }
+        (ow, oh)
+    };
+
+    CropInfo {
+        x: crop_x,
+        y: crop_y,
+        width: crop_w,
+        height: crop_h,
+        out_w,
+        out_h,
+    }
+}
+
 fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
@@ -94,6 +174,123 @@ fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
         }
     }
     cwd.join("src-tauri").join("binaries").join(name)
+}
+
+fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    // 1. Check in app_data_dir/binaries/ffmpeg.exe
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let in_data = data_dir.join("binaries").join("ffmpeg.exe");
+        if in_data.exists() {
+            return Ok(in_data);
+        }
+        let in_data_root = data_dir.join("ffmpeg.exe");
+        if in_data_root.exists() {
+            return Ok(in_data_root);
+        }
+    }
+
+    // 2. Check local binaries dir
+    let direct = get_binary_path(app, "ffmpeg.exe");
+    if direct.exists() {
+        return Ok(direct);
+    }
+
+    // 3. Check system PATH
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Ok(output) = std::process::Command::new("where.exe")
+            .arg("ffmpeg")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = std::path::PathBuf::from(first_line.trim());
+                    if path.exists() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Download and extract ffmpeg-release-essentials
+    download_and_extract_ffmpeg(app)
+}
+
+fn download_and_extract_ffmpeg(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    let bin_dir = data_dir.join("binaries");
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("Failed to create directory {}: {e}", bin_dir.display()))?;
+
+    let ffmpeg_dest = bin_dir.join("ffmpeg.exe");
+    if ffmpeg_dest.exists() {
+        return Ok(ffmpeg_dest);
+    }
+
+    // Check temp extracted folder if already downloaded
+    let temp_extracted = std::env::temp_dir().join("ffmpeg-essentials");
+    if temp_extracted.exists() {
+        if let Ok(entries) = std::fs::read_dir(&temp_extracted) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("bin").join("ffmpeg.exe");
+                if bin.exists() {
+                    let _ = std::fs::copy(&bin, &ffmpeg_dest);
+                    if ffmpeg_dest.exists() {
+                        return Ok(ffmpeg_dest);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: download essentials zip from gyan.dev
+    let zip_url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+    let zip_dest = data_dir.join("ffmpeg-download.zip");
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'; Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+            zip_url,
+            zip_dest.display(),
+            zip_dest.display(),
+            bin_dir.display()
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| format!("Failed to download ffmpeg: {e}"))?;
+
+        if !status.success() {
+            return Err("Failed to download or extract FFmpeg".to_string());
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path().join("bin").join("ffmpeg.exe");
+                if p.exists() {
+                    let _ = std::fs::copy(&p, &ffmpeg_dest);
+                    let _ = std::fs::remove_file(&zip_dest);
+                    return Ok(ffmpeg_dest);
+                }
+            }
+        }
+    }
+
+    if ffmpeg_dest.exists() {
+        Ok(ffmpeg_dest)
+    } else {
+        Err("FFmpeg binary could not be located".to_string())
+    }
 }
 
 #[tauri::command]
@@ -586,6 +783,304 @@ fn save_plan(app: tauri::AppHandle, plan_json: String) -> Result<String, String>
     Ok(plan_path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn cancel_render() -> Result<(), String> {
+    RENDER_CANCEL.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_target_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path not found: {path}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(format!("/select,{}", p.display()));
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let parent = p.parent().unwrap_or(p);
+        let _ = open::that(parent);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_render_pipeline(
+    app: tauri::AppHandle,
+    plan_json: String,
+    scene_path: String,
+    audio_path: String,
+) -> Result<String, String> {
+    RENDER_CANCEL.store(false, Ordering::SeqCst);
+
+    let plan: ProjectPlan = serde_json::from_str(&plan_json)
+        .map_err(|e| format!("Invalid plan JSON: {e}"))?;
+
+    let ffmpeg_bin = get_ffmpeg_binary(&app)?;
+
+    // 1. Probe scene info
+    let scene_info = probe_media(scene_path.clone())?;
+    if scene_info.width == 0 || scene_info.height == 0 {
+        return Err("Invalid scene dimensions for rendering".to_string());
+    }
+
+    let src_w = scene_info.width;
+    let src_h = scene_info.height;
+    let src_fps = if scene_info.fps > 0.0 { scene_info.fps } else { 30.0 };
+    let frame_bytes = (src_w * src_h * 3) as usize;
+
+    let estimated_frames = (scene_info.duration * src_fps).ceil() as u64;
+    let estimated_cache_size = estimated_frames * (frame_bytes as u64);
+
+    // Safeguard: 4 GB maximum cache size
+    const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+    if estimated_cache_size > MAX_CACHE_BYTES {
+        return Err("source too heavy for beta renderer".to_string());
+    }
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+    let raw_cache_file = cache_dir.join(format!("frames_{}.raw", std::process::id()));
+
+    // Phase 1: DECODE
+    let _ = app.emit("render-progress", RenderProgressPayload {
+        phase: "DECODING".to_string(),
+        percent: 0,
+        current_frame: 0,
+        total_frames: estimated_frames as u32,
+        message: "Decoding source video frames into memory cache...".to_string(),
+    });
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let mut decode_child = {
+        let mut cmd = std::process::Command::new(&ffmpeg_bin);
+        cmd.args([
+            "-y",
+            "-i", &scene_path,
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-an",
+            &raw_cache_file.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn()
+            .map_err(|e| format!("Failed to spawn ffmpeg decoder: {e}"))?
+    };
+
+    // Monitor decode
+    while let Ok(None) = decode_child.try_wait() {
+        if RENDER_CANCEL.load(Ordering::SeqCst) {
+            let _ = decode_child.kill();
+            let _ = std::fs::remove_file(&raw_cache_file);
+            return Err("Render cancelled by user".to_string());
+        }
+        if let Ok(meta) = std::fs::metadata(&raw_cache_file) {
+            let decoded_bytes = meta.len();
+            let pct = ((decoded_bytes as f64) / (estimated_cache_size as f64) * 100.0).min(99.0) as u32;
+            let current_f = (decoded_bytes / (frame_bytes as u64)) as u32;
+            let _ = app.emit("render-progress", RenderProgressPayload {
+                phase: "DECODING".to_string(),
+                percent: pct,
+                current_frame: current_f,
+                total_frames: estimated_frames as u32,
+                message: format!("Decoded frame {}/{}", current_f, estimated_frames),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    let decode_status = decode_child.wait()
+        .map_err(|e| format!("Failed to wait for decoder: {e}"))?;
+    if !decode_status.success() {
+        let _ = std::fs::remove_file(&raw_cache_file);
+        return Err("FFmpeg decoding failed".to_string());
+    }
+
+    let total_cached_bytes = std::fs::metadata(&raw_cache_file)
+        .map_err(|e| format!("Failed to check decoded cache file: {e}"))?
+        .len();
+    let total_source_frames = (total_cached_bytes / (frame_bytes as u64)) as usize;
+    if total_source_frames == 0 {
+        let _ = std::fs::remove_file(&raw_cache_file);
+        return Err("No video frames were decoded".to_string());
+    }
+
+    let _ = app.emit("render-progress", RenderProgressPayload {
+        phase: "DECODING".to_string(),
+        percent: 100,
+        current_frame: total_source_frames as u32,
+        total_frames: total_source_frames as u32,
+        message: format!("Decoded {} frames successfully", total_source_frames),
+    });
+
+    // Phase 2 & 3: SAMPLING + ENCODE
+    let crop = compute_crop_to_fill(src_w, src_h, plan.aspect.w, plan.aspect.h);
+    let output_fps = plan.fps as f64;
+    let total_output_frames = (plan.target_duration * output_fps).round() as usize;
+
+    let out_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
+        .join("output");
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let out_mp4_path = out_dir.join(format!("cia_jugg_{timestamp}.mp4"));
+
+    let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
+    encode_cmd.args([
+        "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", &format!("{}x{}", crop.width, crop.height),
+        "-r", &format!("{}", plan.fps),
+        "-i", "-",
+        "-i", &audio_path,
+        "-t", &format!("{:.3}", plan.target_duration),
+        "-vf", &format!("scale={}:{}", crop.out_w, crop.out_h),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", "18",
+        "-preset", "veryfast",
+        "-c:a", "aac",
+        "-shortest",
+        &out_mp4_path.to_string_lossy(),
+    ]);
+    encode_cmd.stdin(std::process::Stdio::piped());
+    encode_cmd.stdout(std::process::Stdio::null());
+    encode_cmd.stderr(std::process::Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    encode_cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut encode_child = encode_cmd.spawn()
+        .map_err(|e| format!("Failed to spawn encoder: {e}"))?;
+
+    let mut encode_stdin = encode_child.stdin.take()
+        .ok_or_else(|| "Failed to open encoder stdin".to_string())?;
+
+    let mut raw_file = std::fs::File::open(&raw_cache_file)
+        .map_err(|e| format!("Failed to open cache file: {e}"))?;
+
+    let mut full_frame_buf = vec![0u8; frame_bytes];
+    let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
+    let mut cropped_buf = vec![0u8; cropped_frame_bytes];
+
+    for i in 0..total_output_frames {
+        if RENDER_CANCEL.load(Ordering::SeqCst) {
+            let _ = encode_child.kill();
+            let _ = std::fs::remove_file(&raw_cache_file);
+            let _ = std::fs::remove_file(&out_mp4_path);
+            return Err("Render cancelled by user".to_string());
+        }
+
+        let t = (i as f64) / output_fps;
+
+        // Find segment in plan.segments
+        let seg = plan.segments
+            .iter()
+            .find(|s| t >= s.t0 && t <= s.t1)
+            .or_else(|| plan.segments.last())
+            .unwrap();
+
+        let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+        let x = ((t - seg.t0) / seg_dur).clamp(0.0, 1.0);
+        let u = evaluate_curve(&seg.curve, x);
+        let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+        let mut src_frame = (src_time * src_fps).round() as i64;
+        if src_frame < 0 {
+            src_frame = 0;
+        }
+        if src_frame >= total_source_frames as i64 {
+            src_frame = (total_source_frames - 1) as i64;
+        }
+
+        // Read source frame from cache
+        let offset = (src_frame as u64) * (frame_bytes as u64);
+        raw_file.seek(SeekFrom::Start(offset))
+            .map_err(|e| format!("Failed to seek cache: {e}"))?;
+        raw_file.read_exact(&mut full_frame_buf)
+            .map_err(|e| format!("Failed to read frame {src_frame} from cache: {e}"))?;
+
+        // Extract crop-to-fill window
+        let row_src_stride = (src_w * 3) as usize;
+        let row_crop_stride = (crop.width * 3) as usize;
+        for row in 0..crop.height {
+            let src_y = (crop.y + row) as usize;
+            let src_start = src_y * row_src_stride + (crop.x * 3) as usize;
+            let src_end = src_start + row_crop_stride;
+            let dst_start = (row as usize) * row_crop_stride;
+            let dst_end = dst_start + row_crop_stride;
+            cropped_buf[dst_start..dst_end].copy_from_slice(&full_frame_buf[src_start..src_end]);
+        }
+
+        // Pipe to encoder
+        encode_stdin.write_all(&cropped_buf)
+            .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
+
+        if i % 8 == 0 || i == total_output_frames - 1 {
+            let pct = ((i as f64) / (total_output_frames as f64) * 100.0) as u32;
+            let _ = app.emit("render-progress", RenderProgressPayload {
+                phase: "SAMPLING".to_string(),
+                percent: pct,
+                current_frame: (i + 1) as u32,
+                total_frames: total_output_frames as u32,
+                message: format!("Remapping & encoding frame {}/{}", i + 1, total_output_frames),
+            });
+        }
+    }
+
+    drop(encode_stdin);
+
+    let _ = app.emit("render-progress", RenderProgressPayload {
+        phase: "ENCODING".to_string(),
+        percent: 99,
+        current_frame: total_output_frames as u32,
+        total_frames: total_output_frames as u32,
+        message: "Finalizing MP4 container and audio muxing...".to_string(),
+    });
+
+    let encode_status = encode_child.wait()
+        .map_err(|e| format!("Encoder wait failed: {e}"))?;
+
+    // Cleanup raw cache
+    let _ = std::fs::remove_file(&raw_cache_file);
+
+    if !encode_status.success() {
+        return Err("FFmpeg video encoding failed".to_string());
+    }
+
+    let _ = app.emit("render-progress", RenderProgressPayload {
+        phase: "ENCODING".to_string(),
+        percent: 100,
+        current_frame: total_output_frames as u32,
+        total_frames: total_output_frames as u32,
+        message: "Render completed successfully".to_string(),
+    });
+
+    Ok(out_mp4_path.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -616,7 +1111,10 @@ pub fn run() {
             probe_media,
             detect_beats,
             generate_plan,
-            save_plan
+            save_plan,
+            cancel_render,
+            open_target_folder,
+            run_render_pipeline
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
@@ -625,6 +1123,74 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_curves_monotonicity_and_bounds() {
+        // (i) Curves: u(0)=0, u(1)=1, strict monotonicity over 1000 steps for snap and saddle
+        assert_eq!(evaluate_curve("snap", 0.0), 0.0);
+        assert_eq!(evaluate_curve("snap", 1.0), 1.0);
+        assert_eq!(evaluate_curve("saddle", 0.0), 0.0);
+        assert_eq!(evaluate_curve("saddle", 1.0), 1.0);
+
+        let steps = 1000;
+        let mut prev_snap = -1.0;
+        let mut prev_saddle = -1.0;
+
+        for i in 0..=steps {
+            let x = (i as f64) / (steps as f64);
+            let y_snap = evaluate_curve("snap", x);
+            let y_saddle = evaluate_curve("saddle", x);
+
+            assert!(y_snap >= 0.0 && y_snap <= 1.0);
+            assert!(y_saddle >= 0.0 && y_saddle <= 1.0);
+
+            if i > 0 {
+                assert!(
+                    y_snap > prev_snap,
+                    "Snap curve must be strictly monotonic (failed at x={})",
+                    x
+                );
+                assert!(
+                    y_saddle >= prev_saddle,
+                    "Saddle curve must be monotonic (failed at x={})",
+                    x
+                );
+            }
+            prev_snap = y_snap;
+            prev_saddle = y_saddle;
+        }
+    }
+
+    #[test]
+    fn test_crop_to_fill_maths() {
+        // (ii) Maths crop-to-fill:
+        // Source 1080x1920 -> 1:1 gives centered 1080x1080 window: (x=0, y=420, w=1080, h=1080)
+        let crop_1_1 = compute_crop_to_fill(1080, 1920, 1080, 1080);
+        assert_eq!(crop_1_1.x, 0);
+        assert_eq!(crop_1_1.y, 420);
+        assert_eq!(crop_1_1.width, 1080);
+        assert_eq!(crop_1_1.height, 1080);
+        assert_eq!(crop_1_1.out_w, 1080);
+        assert_eq!(crop_1_1.out_h, 1080);
+
+        // Source 1080x1920 -> 16:9 gives cover-scale correct: (x=0, y=656, w=1080, h=608, out_w=1080, out_h=608)
+        let crop_16_9 = compute_crop_to_fill(1080, 1920, 16, 9);
+        assert_eq!(crop_16_9.x, 0);
+        assert_eq!(crop_16_9.y, 656);
+        assert_eq!(crop_16_9.width, 1080);
+        assert_eq!(crop_16_9.height, 608);
+        assert_eq!(crop_16_9.out_w, 1080);
+        assert_eq!(crop_16_9.out_h, 608);
+
+        // Source 1080x1920 -> 9:16 gives full frame: (x=0, y=0, w=1080, h=1920)
+        let crop_9_16 = compute_crop_to_fill(1080, 1920, 9, 16);
+        assert_eq!(crop_9_16.x, 0);
+        assert_eq!(crop_9_16.y, 0);
+        assert_eq!(crop_9_16.width, 1080);
+        assert_eq!(crop_9_16.height, 1920);
+        assert_eq!(crop_9_16.out_w, 608);
+        assert_eq!(crop_9_16.out_h, 1080);
+    }
 
     #[test]
     fn test_probe_media_video_pure_rust() {
@@ -784,9 +1350,6 @@ mod tests {
         .expect("Plan creation must succeed");
 
         let json_str = serde_json::to_string_pretty(&plan).expect("Serialization must succeed");
-        println!("=== RAW PROJECT.JSON FIXTURE ===");
-        println!("{json_str}");
-        println!("===============================");
 
         let temp_dir = std::env::temp_dir().join("cia_app_test");
         std::fs::create_dir_all(&temp_dir).unwrap();
@@ -800,6 +1363,183 @@ mod tests {
         assert_eq!(parsed.loops, 1);
         assert_eq!(parsed.segments.len(), 21);
     }
-}
 
+    #[test]
+    fn test_full_render_pipeline_and_probe_output() {
+        let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
+
+        if !std::path::Path::new(video_path).exists() || !std::path::Path::new(audio_path).exists() {
+            println!("Test files not found, skipping full integration test.");
+            return;
+        }
+
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+
+        let plan = create_plan_internal(
+            "HARD",
+            fps,
+            &beats,
+            &downbeats,
+            10.773,
+            14.315,
+            1080,
+            1080,
+            bpm,
+        )
+        .expect("Plan generation failed");
+
+        // Locate ffmpeg
+        let ffmpeg_bin = if let Ok(output) = std::process::Command::new("where.exe").arg("ffmpeg").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.lines().next().map(|s| std::path::PathBuf::from(s.trim())).unwrap_or_default()
+        } else {
+            std::path::PathBuf::from("ffmpeg.exe")
+        };
+
+        println!("Using ffmpeg binary at: {}", ffmpeg_bin.display());
+
+        let scene_info = probe_media(video_path.to_string()).unwrap();
+        let src_w = scene_info.width;
+        let src_h = scene_info.height;
+        let src_fps = scene_info.fps;
+        let frame_bytes = (src_w * src_h * 3) as usize;
+
+        let temp_dir = std::env::temp_dir().join("cia_app_render_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let raw_cache = temp_dir.join("test_frames.raw");
+
+        // 1. Decode
+        let mut decode_cmd = std::process::Command::new(&ffmpeg_bin);
+        decode_cmd.args([
+            "-y",
+            "-i",
+            video_path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-an",
+            &raw_cache.to_string_lossy(),
+        ]);
+        let mut decode_proc = decode_cmd.spawn().expect("Failed to spawn decode");
+        let status = decode_proc.wait().expect("Decode failed");
+        assert!(status.success());
+
+        let total_cached_bytes = std::fs::metadata(&raw_cache).unwrap().len();
+        let total_source_frames = (total_cached_bytes / (frame_bytes as u64)) as usize;
+        println!("Decoded source frames: {}", total_source_frames);
+
+        // 2. Sampling + Encode
+        let crop = compute_crop_to_fill(src_w, src_h, plan.aspect.w, plan.aspect.h);
+        let output_fps = plan.fps as f64;
+        let total_output_frames = (plan.target_duration * output_fps).round() as usize;
+
+        let out_mp4 = temp_dir.join("test_output.mp4");
+
+        let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
+        encode_cmd.args([
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            &format!("{}x{}", crop.width, crop.height),
+            "-r",
+            &format!("{}", plan.fps),
+            "-i",
+            "-",
+            "-i",
+            audio_path,
+            "-t",
+            &format!("{:.3}", plan.target_duration),
+            "-vf",
+            &format!("scale={}:{}", crop.out_w, crop.out_h),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",
+            "-preset",
+            "veryfast",
+            "-c:a",
+            "aac",
+            "-shortest",
+            &out_mp4.to_string_lossy(),
+        ]);
+        encode_cmd.stdin(std::process::Stdio::piped());
+        let mut encode_proc = encode_cmd.spawn().expect("Failed to spawn encode");
+        let mut encode_in = encode_proc.stdin.take().unwrap();
+
+        let mut raw_file = std::fs::File::open(&raw_cache).unwrap();
+        let mut full_frame_buf = vec![0u8; frame_bytes];
+        let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
+        let mut cropped_buf = vec![0u8; cropped_frame_bytes];
+
+        for i in 0..total_output_frames {
+            let t = (i as f64) / output_fps;
+            let seg = plan
+                .segments
+                .iter()
+                .find(|s| t >= s.t0 && t <= s.t1)
+                .or_else(|| plan.segments.last())
+                .unwrap();
+            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+            let x = ((t - seg.t0) / seg_dur).clamp(0.0, 1.0);
+            let u = evaluate_curve(&seg.curve, x);
+            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+            let mut src_frame = (src_time * src_fps).round() as i64;
+            if src_frame < 0 {
+                src_frame = 0;
+            }
+            if src_frame >= total_source_frames as i64 {
+                src_frame = (total_source_frames - 1) as i64;
+            }
+
+            let offset = (src_frame as u64) * (frame_bytes as u64);
+            raw_file.seek(SeekFrom::Start(offset)).unwrap();
+            raw_file.read_exact(&mut full_frame_buf).unwrap();
+
+            let row_src_stride = (src_w * 3) as usize;
+            let row_crop_stride = (crop.width * 3) as usize;
+            for row in 0..crop.height {
+                let src_y = (crop.y + row) as usize;
+                let src_start = src_y * row_src_stride + (crop.x * 3) as usize;
+                let src_end = src_start + row_crop_stride;
+                let dst_start = (row as usize) * row_crop_stride;
+                let dst_end = dst_start + row_crop_stride;
+                cropped_buf[dst_start..dst_end].copy_from_slice(&full_frame_buf[src_start..src_end]);
+            }
+            encode_in.write_all(&cropped_buf).unwrap();
+        }
+        drop(encode_in);
+        let status = encode_proc.wait().expect("Encode failed");
+        assert!(status.success());
+
+        // Probe output MP4
+        let probed = probe_media(out_mp4.to_string_lossy().to_string())
+            .expect("Probe of output MP4 must succeed");
+        println!("=== RAW PROBE RESULT OF OUTPUT MP4 ===");
+        println!("{:#?}", probed);
+        println!("======================================");
+
+        assert!(
+            (probed.duration - 14.315).abs() < 0.2,
+            "Duration must be ~14.315 (got {})",
+            probed.duration
+        );
+        assert_eq!(probed.width, 1080, "Width must be 1080");
+        assert_eq!(probed.height, 1080, "Height must be 1080");
+        assert_eq!(probed.fps as u32, 16, "FPS must be 16");
+        assert_eq!(probed.audio_channels, 2, "Audio channels must be 2");
+    }
+}
 

@@ -220,7 +220,18 @@
 
   // Plan Summary State (T5)
   let planSummary = $state(null);
-  let isGeneratingPlan = $state(false);
+
+  // Render Execution State (T6)
+  let renderState = $state('idle'); // 'idle' | 'running' | 'done' | 'error'
+  let renderProgress = $state({
+    phase: 'DECODING',
+    percent: 0,
+    currentFrame: 0,
+    totalFrames: 0,
+    message: ''
+  });
+  let renderOutputMp4 = $state('');
+  let renderError = $state('');
 
   function handleCustomWidthInput(e) {
     customWidth = parseInt(e.target.value, 10) || 0;
@@ -246,7 +257,17 @@
       return;
     }
 
-    isGeneratingPlan = true;
+    renderState = 'running';
+    renderError = '';
+    renderOutputMp4 = '';
+    renderProgress = {
+      phase: 'DECODING',
+      percent: 0,
+      currentFrame: 0,
+      totalFrames: 0,
+      message: 'Generating project plan...'
+    };
+
     try {
       let aspectW = 1080;
       let aspectH = 1080;
@@ -291,13 +312,49 @@
         aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
       };
 
-      showToast('Plan generated and saved', 'success');
+      console.log('[RENDER] Launching 3-pass render pipeline...');
+      const outMp4Path = await invoke('run_render_pipeline', {
+        planJson,
+        scenePath,
+        audioPath,
+      });
+
+      console.log('[RENDER] Render completed successfully:', outMp4Path);
+      renderOutputMp4 = outMp4Path;
+      renderState = 'done';
+      showToast('Render completed successfully!', 'success');
     } catch (err) {
-      console.error('Plan generation failed:', err);
+      console.error('Render process failed:', err);
       const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
-      showToast(`Plan generation failed: ${msg}`, 'error');
-    } finally {
-      isGeneratingPlan = false;
+      if (msg.includes('cancelled') || msg.includes('Cancel')) {
+        renderState = 'idle';
+        showToast('Render cancelled by user', 'info');
+      } else {
+        renderState = 'error';
+        renderError = msg;
+        showToast(`Render failed: ${msg}`, 'error');
+      }
+    }
+  }
+
+  async function handleCancelRender() {
+    try {
+      await invoke('cancel_render');
+      renderState = 'idle';
+      showToast('Render cancelled', 'info');
+    } catch (e) {
+      console.error('Failed to cancel render:', e);
+    }
+  }
+
+  async function handleOpenTargetFolder() {
+    if (!renderOutputMp4) return;
+    try {
+      await invoke('open_target_folder', { path: renderOutputMp4 });
+      showToast('Opening folder in Explorer', 'info');
+    } catch (e) {
+      console.error('Failed to open folder:', e);
+      showToast(`Unable to open folder: ${e}`, 'error');
     }
   }
 
@@ -430,13 +487,30 @@
     };
   });
 
+  let unlistenProgress = null;
+
   onMount(async () => {
     try {
       appVersion = await invoke('get_app_version');
     } catch (e) {
       console.error('Failed to retrieve app version:', e);
     }
+
+    try {
+      unlistenProgress = await listen('render-progress', (event) => {
+        if (event.payload) {
+          renderProgress = event.payload;
+        }
+      });
+    } catch (e) {
+      console.error('Failed to listen to render-progress:', e);
+    }
+
     checkForAppUpdates(false);
+
+    return () => {
+      if (unlistenProgress) unlistenProgress();
+    };
   });
 </script>
 
@@ -741,8 +815,71 @@
                 </div>
               </div>
 
-              <!-- Plan Summary Card (T5) -->
-              {#if planSummary}
+              <!-- Render Execution Cards (T6) -->
+              {#if renderState === 'running'}
+                <div class="render-progress-card">
+                  <div class="render-progress-header">
+                    <div class="phase-badge-row">
+                      <span class="render-phase-badge" class:active={renderProgress.phase === 'DECODING'}>1. DECODE</span>
+                      <span class="render-phase-arrow">&gt;</span>
+                      <span class="render-phase-badge" class:active={renderProgress.phase === 'SAMPLING'}>2. SAMPLE</span>
+                      <span class="render-phase-arrow">&gt;</span>
+                      <span class="render-phase-badge" class:active={renderProgress.phase === 'ENCODING'}>3. ENCODE</span>
+                    </div>
+                    <span class="render-percent mono">{renderProgress.percent}%</span>
+                  </div>
+
+                  <div class="progress-bar-container">
+                    <div class="progress-bar-fill" style="width: {renderProgress.percent}%;"></div>
+                  </div>
+
+                  <div class="render-progress-footer">
+                    <span class="render-msg mono" title={renderProgress.message}>{renderProgress.message || 'Processing...'}</span>
+                    <button class="btn-cancel-render" onclick={handleCancelRender} type="button">
+                      CANCEL
+                    </button>
+                  </div>
+                </div>
+
+              {:else if renderState === 'done'}
+                <div class="render-done-card">
+                  <div class="render-done-header">
+                    <div class="done-title-row">
+                      <span class="pro-dot active"></span>
+                      <span class="render-done-title">RENDER COMPLETE</span>
+                    </div>
+                    <span class="done-specs mono">1080x1080 · {fpsValue} FPS</span>
+                  </div>
+
+                  <div class="done-path-box">
+                    <span class="stat-label">OUTPUT:</span>
+                    <span class="saved-path-text mono" title={renderOutputMp4}>{renderOutputMp4}</span>
+                  </div>
+
+                  <div class="done-actions-row">
+                    <button class="btn-open-folder" onclick={handleOpenTargetFolder} type="button">
+                      OPEN FOLDER
+                    </button>
+                    <button class="btn-pro-secondary" onclick={() => { renderState = 'idle'; }} type="button">
+                      RENDER AGAIN
+                    </button>
+                  </div>
+                </div>
+
+              {:else if renderState === 'error'}
+                <div class="render-error-card">
+                  <div class="render-error-header">
+                    <span class="render-error-title">RENDER ERROR</span>
+                  </div>
+                  <p class="render-error-msg mono">{renderError}</p>
+                  <div class="done-actions-row">
+                    <button class="btn-pro-secondary" onclick={() => { renderState = 'idle'; }} type="button">
+                      DISMISS
+                    </button>
+                  </div>
+                </div>
+
+              {:else if planSummary}
                 <div class="plan-summary-card">
                   <div class="plan-summary-header">
                     <span class="plan-summary-title">PLAN SUMMARY</span>
@@ -773,20 +910,17 @@
                 </div>
               {/if}
 
-              <!-- Footer Actions -->
-              <div class="settings-actions-footer">
-                <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
-                  &lt; BACK TO SOURCES
-                </button>
-                <button class="btn-run-process" onclick={handleRunProcess} disabled={isGeneratingPlan}>
-                  {#if isGeneratingPlan}
-                    <span class="spinner-inline"></span>
-                    <span>GENERATING PLAN...</span>
-                  {:else}
+              <!-- Footer Actions (only when idle/error) -->
+              {#if renderState !== 'running' && renderState !== 'done'}
+                <div class="settings-actions-footer">
+                  <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
+                    &lt; BACK TO SOURCES
+                  </button>
+                  <button class="btn-run-process" onclick={handleRunProcess}>
                     RUN PROCESS &gt;
-                  {/if}
-                </button>
-              </div>
+                  </button>
+                </div>
+              {/if}
             </div>
           </section>
 
@@ -1516,6 +1650,201 @@
     font-size: 8.5px;
     line-height: 1.2;
     margin-top: 1px;
+  }
+
+  /* Render Execution Cards (T6) */
+  .render-progress-card {
+    background: #09090c;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .render-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .phase-badge-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .render-phase-badge {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #52525b;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: #050507;
+    border: 1px solid #18181b;
+    transition: all 0.2s ease;
+  }
+
+  .render-phase-badge.active {
+    color: #ffffff;
+    background: #18181b;
+    border-color: #3f3f46;
+  }
+
+  .render-phase-arrow {
+    color: #3f3f46;
+    font-size: 8px;
+    font-weight: 700;
+  }
+
+  .render-percent {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #4ade80;
+  }
+
+  .progress-bar-container {
+    height: 3px;
+    background: #18181b;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: #ffffff;
+    transition: width 0.15s ease;
+  }
+
+  .render-progress-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .render-msg {
+    font-size: 8px;
+    font-weight: 500;
+    color: #a1a1aa;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 75%;
+  }
+
+  .btn-cancel-render {
+    padding: 2px 7px;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 3px;
+    color: #f87171;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-cancel-render:hover {
+    background: #27272a;
+    border-color: #f87171;
+  }
+
+  /* Render Done Card */
+  .render-done-card {
+    background: #09090c;
+    border: 1px solid rgba(74, 222, 128, 0.4);
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .render-done-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .done-title-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .render-done-title {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #ffffff;
+  }
+
+  .done-specs {
+    font-size: 8.5px;
+    font-weight: 600;
+    color: #4ade80;
+  }
+
+  .done-path-box {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    padding: 2px 6px;
+    overflow: hidden;
+  }
+
+  .done-actions-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 1px;
+  }
+
+  .btn-open-folder {
+    flex: 1;
+    padding: 6px 12px;
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-open-folder:hover {
+    background: #e4e4e7;
+  }
+
+  /* Render Error Card */
+  .render-error-card {
+    background: #09090c;
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .render-error-title {
+    font-size: 9px;
+    font-weight: 700;
+    color: #f87171;
+  }
+
+  .render-error-msg {
+    font-size: 8.5px;
+    color: #e4e4e7;
   }
 
   /* Plan Summary Card (T5) */
