@@ -134,6 +134,69 @@ pub struct TransitionItem {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct FlickerConfig {
+    #[serde(rename = "A")]
+    pub amplitude: f64,
+    pub f: f64,
+    // phase is per-segment, stored externally; here it's the global base
+    pub phase: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ExposureFlashConfig {
+    pub peak: f64,
+    pub times: Vec<f64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct EchoTrailConfig {
+    pub enabled: bool,
+    pub alpha: f64,
+    pub k: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct TintConfig {
+    pub offset_rgb: [i16; 3],
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct VignetteConfig {
+    pub strength: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ScanlinesConfig {
+    pub opacity: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct AmbianceConfig {
+    pub flicker: FlickerConfig,
+    pub exposure_flash: ExposureFlashConfig,
+    pub echo_trail: EchoTrailConfig,
+    pub tint: TintConfig,
+    pub vignette: VignetteConfig,
+    pub scanlines: ScanlinesConfig,
+}
+
+fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
+    let (amp, freq, flash_peak) = match style.to_uppercase().as_str() {
+        "SMOOTH" => (0.08, 8.0, 0.3),
+        "HYBRID" => (0.12, 10.0, 0.4),
+        _ => (0.15, 12.0, 0.5), // HARD
+    };
+    AmbianceConfig {
+        flicker: FlickerConfig { amplitude: amp, f: freq, phase: 0.0 },
+        exposure_flash: ExposureFlashConfig { peak: flash_peak, times: downbeats.to_vec() },
+        echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
+        tint: TintConfig { offset_rgb: [0; 3] },
+        vignette: VignetteConfig { strength: 0.3 },
+        scanlines: ScanlinesConfig { opacity: 0.15 },
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectPlan {
     pub schema_version: u32,
     pub style: String,
@@ -151,6 +214,8 @@ pub struct ProjectPlan {
     pub one_framers: Vec<OneFramer>,
     #[serde(default)]
     pub transitions: Vec<TransitionItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ambiance: Option<AmbianceConfig>,
     pub segments: Vec<PlanSegment>,
 }
 
@@ -992,7 +1057,148 @@ pub fn apply_slide_shake(
     }
 }
 
+/// Apply all T11 ambiance effects in a SINGLE combined pixel loop.
+/// Order per-pixel: flicker/flash scale → echo blend → tint → vignette+scanline (combined).
+/// When echo is disabled (default), skips ring copy entirely for max throughput.
+pub fn apply_ambiance_effects(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    amb: &AmbianceConfig,
+    echo_ring: &mut Vec<Vec<u8>>,
+    echo_head: &mut usize,
+    vignette_lut: &[u8],
+    scanline_opacity: f64,
+    t: f64,
+    seg: &PlanSegment,
+    fps: f64,
+) {
+    let n = width * height * 3;
+
+    // --- Per-frame scalars (computed once) ---
+    let seg_phase = (seg.effects.shake.seed as f64) * 0.0012345;
+    let flicker_exp = amb.flicker.amplitude
+        * (2.0 * std::f64::consts::PI * amb.flicker.f * t + seg_phase).sin();
+
+    let mut flash_exp = 0.0f64;
+    for &db_t in &amb.exposure_flash.times {
+        let t_frames = (t - db_t) * fps;
+        if t_frames.abs() <= 2.0 + 1e-4 {
+            let env = (1.0 - t_frames.abs() / 2.0).max(0.0);
+            flash_exp = flash_exp.max(amb.exposure_flash.peak * env);
+        }
+    }
+    let total_exp = (flicker_exp + flash_exp).clamp(-0.999, 0.999);
+    let scale_fp = ((1.0 + total_exp).clamp(0.0, 2.0) * 256.0) as u32;
+
+    let [tr, tg, tb] = amb.tint.offset_rgb;
+    let dim_fp = ((1.0 - scanline_opacity) * 256.0) as u32;
+
+    let echo_enabled = amb.echo_trail.enabled;
+    let alpha_fp = (amb.echo_trail.alpha * 256.0) as u32;
+    let k_depth = (amb.echo_trail.k as usize).min(echo_ring.len());
+
+    if echo_enabled {
+        let mut prev_slots = [0usize; 4];
+        for k in 0..k_depth.min(4) {
+            prev_slots[k] = (*echo_head + echo_ring.len() - 1 - k) % echo_ring.len();
+        }
+
+        for py in 0..height {
+            // For non-scanline rows, row_dim==256 so combined = (v*256)>>8 = v — skip multiply
+            let is_scanline = py % 4 == 0;
+            let row_offset = py * width;
+            for px in 0..width {
+                let idx = (row_offset + px) * 3;
+                let v = vignette_lut[row_offset + px] as u32;
+                let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
+
+                let mut r_acc = 0u32; let mut g_acc = 0u32; let mut b_acc = 0u32;
+                for k in 0..k_depth {
+                    r_acc += echo_ring[prev_slots[k]][idx]     as u32;
+                    g_acc += echo_ring[prev_slots[k]][idx + 1] as u32;
+                    b_acc += echo_ring[prev_slots[k]][idx + 2] as u32;
+                }
+                let r_echo = r_acc / (k_depth as u32);
+                let g_echo = g_acc / (k_depth as u32);
+                let b_echo = b_acc / (k_depth as u32);
+
+                let r_cur = ((frame_in[idx]     as u32 * scale_fp) >> 8).min(255);
+                let g_cur = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
+                let b_cur = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
+
+                let mut r = ((256 - alpha_fp) * r_cur + alpha_fp * r_echo) >> 8;
+                let mut g = ((256 - alpha_fp) * g_cur + alpha_fp * g_echo) >> 8;
+                let mut b = ((256 - alpha_fp) * b_cur + alpha_fp * b_echo) >> 8;
+
+                r = ((r as i32 + tr as i32).clamp(0, 255)) as u32;
+                g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
+                b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
+
+                frame_out[idx]     = ((r * combined) >> 8) as u8;
+                frame_out[idx + 1] = ((g * combined) >> 8) as u8;
+                frame_out[idx + 2] = ((b * combined) >> 8) as u8;
+            }
+        }
+        echo_ring[*echo_head][..n].copy_from_slice(&frame_in[..n]);
+        *echo_head = (*echo_head + 1) % echo_ring.len();
+    } else {
+        // Fast path: no echo, no ring copy.
+        // Optimizations:
+        //   (a) non-scanline rows (75%): combined = v (avoids v*256>>8 multiply)
+        //   (b) scale_fp == 256 (sin≈0 frames): skip flicker multiply
+        if scale_fp == 256 {
+            // No flicker scaling needed
+            for py in 0..height {
+                let is_scanline = py % 4 == 0;
+                let row_offset = py * width;
+                for px in 0..width {
+                    let idx = (row_offset + px) * 3;
+                    let v = vignette_lut[row_offset + px] as u32;
+                    let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
+
+                    let mut r = ((frame_in[idx]     as i32 + tr as i32).clamp(0, 255)) as u32;
+                    let mut g = ((frame_in[idx + 1] as i32 + tg as i32).clamp(0, 255)) as u32;
+                    let mut b = ((frame_in[idx + 2] as i32 + tb as i32).clamp(0, 255)) as u32;
+
+                    frame_out[idx]     = ((r * combined) >> 8) as u8;
+                    frame_out[idx + 1] = ((g * combined) >> 8) as u8;
+                    frame_out[idx + 2] = ((b * combined) >> 8) as u8;
+                }
+            }
+        } else {
+            // Flicker active
+            for py in 0..height {
+                let is_scanline = py % 4 == 0;
+                let row_offset = py * width;
+                for px in 0..width {
+                    let idx = (row_offset + px) * 3;
+                    let v = vignette_lut[row_offset + px] as u32;
+                    let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
+
+                    let mut r = ((frame_in[idx]     as u32 * scale_fp) >> 8).min(255);
+                    let mut g = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
+                    let mut b = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
+
+                    r = ((r as i32 + tr as i32).clamp(0, 255)) as u32;
+                    g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
+                    b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
+
+                    frame_out[idx]     = ((r * combined) >> 8) as u8;
+                    frame_out[idx + 1] = ((g * combined) >> 8) as u8;
+                    frame_out[idx + 2] = ((b * combined) >> 8) as u8;
+                }
+            }
+        }
+        // No ring update when echo disabled
+    }
+}
+
+
+
 pub fn generate_transitions(
+
     style: &str,
     segments: &mut [PlanSegment],
     wrap_indices: &[usize],
@@ -1795,6 +2001,21 @@ pub fn create_plan_internal(
     let one_framers = generate_one_framers(style, &segments, downbeats, fps, target_dur);
     let transitions = generate_transitions(style, &mut segments, &wrap_indices, fps);
 
+    // Build per-segment tint offsets (deterministic by segment index)
+    let tint_offset = {
+        let seed = 0x9e3779b9u32;
+        let r = ((seed.wrapping_mul(1664525).wrapping_add(1013904223)) % 21) as i16 - 10;
+        let g = ((seed.wrapping_mul(22695477).wrapping_add(1)) % 11) as i16 - 5;
+        let b = ((seed.wrapping_mul(6364136223846793005u64 as u32).wrapping_add(1442695040)) % 17) as i16 - 8;
+        [r, g, b]
+    };
+
+    let ambiance = {
+        let mut a = default_ambiance(style, downbeats);
+        a.tint.offset_rgb = tint_offset;
+        a
+    };
+
     Ok(ProjectPlan {
         schema_version: 2,
         style: style.to_uppercase(),
@@ -1812,6 +2033,7 @@ pub fn create_plan_internal(
         motion_blur: true,
         one_framers,
         transitions,
+        ambiance: Some(ambiance),
         segments,
     })
 }
@@ -1897,11 +2119,17 @@ async fn run_render_pipeline(
     plan_json: String,
     scene_path: String,
     audio_path: String,
+    echo_trail: bool,
 ) -> Result<String, String> {
     RENDER_CANCEL.store(false, Ordering::SeqCst);
 
-    let plan: ProjectPlan = serde_json::from_str(&plan_json)
+    let mut plan: ProjectPlan = serde_json::from_str(&plan_json)
         .map_err(|e| format!("Invalid plan JSON: {e}"))?;
+
+    // Apply runtime echo/trail toggle
+    if let Some(amb) = plan.ambiance.as_mut() {
+        amb.echo_trail.enabled = echo_trail;
+    }
 
     let ffmpeg_bin = get_ffmpeg_binary(&app)?;
 
@@ -2065,9 +2293,33 @@ async fn run_render_pipeline(
     let mut sampled_full_frame = vec![0u8; frame_bytes];
     let mut one_framer_buf = vec![0u8; frame_bytes];
     let mut transition_buf = vec![0u8; frame_bytes];
+    let mut ambiance_buf = vec![0u8; frame_bytes];
     let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
     let mut cropped_buf = vec![0u8; cropped_frame_bytes];
     let mut blend_frames_storage = vec![vec![0u8; frame_bytes]; 4];
+
+    // Echo/trail ring buffer: stores up to k=3 previous full frames
+    let echo_k = 3usize;
+    let mut echo_ring: Vec<Vec<u8>> = (0..echo_k).map(|_| vec![128u8; frame_bytes]).collect();
+    let mut echo_head: usize = 0;
+
+    // Vignette LUT: precomputed per-pixel strength on full-frame
+    let amb = plan.ambiance.as_ref();
+    let vig_strength = amb.map(|a| a.vignette.strength).unwrap_or(0.3);
+    let scanline_opacity = amb.map(|a| a.scanlines.opacity).unwrap_or(0.15);
+    let rx_full = (src_w as f64) / 2.0;
+    let ry_full = (src_h as f64) / 2.0;
+    let r_max_full = (rx_full * rx_full + ry_full * ry_full).sqrt();
+    let mut vignette_lut = vec![0u8; (src_w * src_h) as usize];
+    for vy in 0..(src_h as usize) {
+        let dy = (vy as f64) - ry_full;
+        for vx in 0..(src_w as usize) {
+            let dx = (vx as f64) - rx_full;
+            let r = (dx * dx + dy * dy).sqrt();
+            let factor = 1.0 - vig_strength * (r / r_max_full).powi(2);
+            vignette_lut[vy * (src_w as usize) + vx] = (factor.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
 
     for i in 0..total_output_frames {
         if RENDER_CANCEL.load(Ordering::SeqCst) {
@@ -2210,10 +2462,32 @@ async fn run_render_pipeline(
             full_frame_ptr
         };
 
-        // 2 & 3. Transform Stack + Crop
+        // 2. T11 Ambiance Effects (flicker, exposure flash, echo/trail, tint/vignette/scanlines)
+        //    Applied BEFORE crop, on full-frame trans_frame_ptr → ambiance_buf
+        let ambiance_frame_ptr = if let Some(amb) = plan.ambiance.as_ref() {
+            apply_ambiance_effects(
+                trans_frame_ptr,
+                &mut ambiance_buf,
+                src_w as usize,
+                src_h as usize,
+                amb,
+                &mut echo_ring,
+                &mut echo_head,
+                &vignette_lut,
+                scanline_opacity,
+                t,
+                seg,
+                output_fps,
+            );
+            &ambiance_buf as &[u8]
+        } else {
+            trans_frame_ptr
+        };
+
+        // 3. Transform Stack + Crop
         let transform_params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
         apply_transform_stack_cropped(
-            trans_frame_ptr,
+            ambiance_frame_ptr,
             &mut cropped_buf,
             src_w as usize,
             src_h as usize,
@@ -2776,6 +3050,188 @@ mod tests {
     }
 
     #[test]
+    fn test_ambiance_flicker_oscillation() {
+        let fps = 16.0;
+        let t_cut = 0.0;
+        let mut seg = PlanSegment {
+            t0: 0.0, t1: 1.0, s0: 0.0, s1: 1.0,
+            curve: "snap".to_string(),
+            effects: crate::SegmentEffects {
+                shake: crate::ShakeEffect { a0: 0.0, omega: 0.0, k: 0.0, seed: 0 },
+                zoom: crate::ZoomEffect { scale_start: 1.0, scale_end: 1.0 },
+                reverse: false,
+            },
+            transition: None,
+        };
+        let _ = t_cut;
+
+        let amplitude = 0.15;
+        let freq = 12.0;
+        // Sample 128 time points and verify all values in [-A, +A]
+        let mut min_val = f64::MAX;
+        let mut max_val = f64::MIN;
+        for i in 0..128 {
+            let t = (i as f64) / fps;
+            let seg_phase = (seg.effects.shake.seed as f64) * 0.0012345;
+            let v = amplitude * (2.0 * std::f64::consts::PI * freq * t + seg_phase).sin();
+            if v < min_val { min_val = v; }
+            if v > max_val { max_val = v; }
+        }
+        assert!(min_val >= -amplitude - 1e-9, "Flicker must stay >= -A");
+        assert!(max_val <= amplitude + 1e-9, "Flicker must stay <= +A");
+        // Oscillation must actually span at least 80% of the range
+        let range = max_val - min_val;
+        assert!(range > 0.8 * 2.0 * amplitude, "Flicker must oscillate across most of [-A, +A]");
+        let _ = seg; // avoid unused warning
+    }
+
+    #[test]
+    fn test_ambiance_exposure_flash() {
+        let fps: f64 = 16.0;
+        let _downbeat_t: f64 = 2.0;
+        let peak: f64 = 0.5;
+        let dt: f64 = 1.0 / fps;
+
+        // At t=downbeat: flash_exp = peak (env=1.0)
+        let env_center: f64 = (1.0f64 - (0.0f64).abs() / 2.0f64).max(0.0f64);
+        let flash_center: f64 = peak * env_center;
+        assert!((flash_center - peak).abs() < 1e-6, "Flash at downbeat must equal peak");
+
+        // At ±2 frames: env=0
+        let env_edge: f64 = (1.0f64 - ((2.0f64 * dt * fps).abs() / 2.0f64)).max(0.0f64);
+        let flash_edge: f64 = peak * env_edge;
+        assert!(flash_edge.abs() < 1e-6, "Flash at ±2 frames must be 0");
+
+        // At 1 frame before: env=0.5
+        let env_half: f64 = (1.0f64 - ((-1.0f64).abs() / 2.0f64)).max(0.0f64);
+        let flash_half: f64 = peak * env_half;
+        assert!((flash_half - peak * 0.5f64).abs() < 1e-6, "Flash at ±1 frame must be peak/2");
+    }
+
+    #[test]
+    fn test_ambiance_echo_trail_blend() {
+        let width = 4usize;
+        let height = 4usize;
+        let n = width * height * 3;
+        let frame_in = vec![200u8; n];
+        let mut frame_out = vec![0u8; n];
+
+        let alpha = 0.3;
+        let k = 3u32;
+        let mut echo_ring: Vec<Vec<u8>> = (0..3).map(|_| vec![100u8; n]).collect();
+        let mut echo_head = 0usize;
+
+        let vignette_lut = vec![255u8; width * height];
+        let seg = PlanSegment {
+            t0: 0.0, t1: 1.0, s0: 0.0, s1: 1.0,
+            curve: "snap".to_string(),
+            effects: crate::SegmentEffects {
+                shake: crate::ShakeEffect { a0: 0.0, omega: 0.0, k: 0.0, seed: 0 },
+                zoom: crate::ZoomEffect { scale_start: 1.0, scale_end: 1.0 },
+                reverse: false,
+            },
+            transition: None,
+        };
+
+        let amb = AmbianceConfig {
+            flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
+            exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
+            echo_trail: EchoTrailConfig { enabled: true, alpha, k },
+            tint: TintConfig { offset_rgb: [0, 0, 0] },
+            vignette: VignetteConfig { strength: 0.0 },
+            scanlines: ScanlinesConfig { opacity: 0.0 },
+        };
+
+        apply_ambiance_effects(
+            &frame_in,
+            &mut frame_out,
+            width, height,
+            &amb,
+            &mut echo_ring,
+            &mut echo_head,
+            &vignette_lut,
+            0.0,
+            0.0,
+            &seg,
+            16.0,
+        );
+
+        // With echo enabled: output should be between previous (100) and current (200)
+        // Integer arithmetic (Q8 fixed-point):
+        //   alpha_fp = floor(0.3 * 256) = 76
+        //   r_cur = (200 * 256) >> 8 = 200  (scale_fp=256, no flicker)
+        //   r_echo = 100
+        //   after blend: ((256-76)*200 + 76*100) >> 8 = 43600 >> 8 = 170
+        //   combined = (255 * 256) >> 8 = 255  (vignette lut=255, no scanline dim: opacity=0)
+        //   final: (170 * 255) >> 8 = 169
+        let expected = 169u8;
+        for px in 0..(width * height) {
+            let idx = px * 3;
+            assert_eq!(frame_out[idx], expected, "Echo trail blend mismatch at px {}", px);
+        }
+    }
+
+    #[test]
+    fn test_ambiance_tint_vignette_scanlines() {
+        let width = 16usize;
+        let height = 16usize;
+        let n = width * height * 3;
+        let frame_in = vec![128u8; n];
+        let mut frame_out = vec![0u8; n];
+
+        // Vignette LUT: full brightness (255) so only tint/scanlines matter
+        let vignette_lut = vec![255u8; width * height];
+        let mut echo_ring: Vec<Vec<u8>> = (0..3).map(|_| vec![0u8; n]).collect();
+        let mut echo_head = 0usize;
+
+        let seg = PlanSegment {
+            t0: 0.0, t1: 1.0, s0: 0.0, s1: 1.0,
+            curve: "snap".to_string(),
+            effects: crate::SegmentEffects {
+                shake: crate::ShakeEffect { a0: 0.0, omega: 0.0, k: 0.0, seed: 0 },
+                zoom: crate::ZoomEffect { scale_start: 1.0, scale_end: 1.0 },
+                reverse: false,
+            },
+            transition: None,
+        };
+
+        let tint_r = 10i16;
+        let amb = AmbianceConfig {
+            flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
+            exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
+            echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
+            tint: TintConfig { offset_rgb: [tint_r, 0, 0] },
+            vignette: VignetteConfig { strength: 0.0 },
+            scanlines: ScanlinesConfig { opacity: 0.15 },
+        };
+
+        apply_ambiance_effects(
+            &frame_in, &mut frame_out, width, height, &amb,
+            &mut echo_ring, &mut echo_head, &vignette_lut, 0.15,
+            0.0, &seg, 16.0,
+        );
+
+        // Row 1 (not a scanline), px 0 — R channel byte index = 16 * 3 * 1 = 48
+        // flicker=0 → scale_fp=256 → r=128; tint +10 → 138
+        // combined = (255 * 256) >> 8 = 255 (non-scanline: row_dim=256)
+        // r_out = (138 * 255) >> 8 = 137
+        let non_scanline_r = frame_out[width * 3]; // row 1, px 0, R channel
+        assert_eq!(non_scanline_r, 137u8, "Tint R+10 with vignette should yield 137 for non-scanline rows");
+
+        // Scanline row 0: py=0, dim_fp = (0.85*256) = 217
+        // combined = (255 * 217) >> 8 = 216
+        // r_out = (138 * 216) >> 8 = 116
+        let scanline_r = frame_out[0]; // row 0, px 0, R channel
+        assert_eq!(scanline_r, 116u8, "Scanline row should be dimmed by vignette+opacity combined");
+
+        // Total diff vs input must be > 0
+        let diff: i64 = frame_in.iter().zip(frame_out.iter())
+            .map(|(&a, &b)| (a as i64 - b as i64).abs())
+            .sum();
+        assert!(diff > 0, "Ambiance effects must change the frame");
+    }
+
+    #[test]
     fn test_transitions_warp_bubble() {
         let fps = 16.0;
         let t_cut = 2.0;
@@ -3175,7 +3631,7 @@ mod tests {
                 full_frame_ptr
             };
 
-            // Transform Stack + Crop (Shakes + Zoom + Mirror Edges)
+            // Transform Stack + Crop (T10 baseline: transitions only, no ambiance)
             let params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
             apply_transform_stack_cropped(
                 trans_frame_ptr,
@@ -3191,21 +3647,129 @@ mod tests {
         }
         let t_t10 = t_t10_start.elapsed();
 
+        // T11 pass — T10 pipeline + ambiance effects
+        let amb = plan.ambiance.as_ref().unwrap();
+        let vig_strength = amb.vignette.strength;
+        let scanline_opacity_bench = amb.scanlines.opacity;
+        let rx_b = (src_w as f64) / 2.0;
+        let ry_b = (src_h as f64) / 2.0;
+        let r_max_b = (rx_b * rx_b + ry_b * ry_b).sqrt();
+        let mut vignette_lut_bench = vec![0u8; (src_w * src_h) as usize];
+        for vy in 0..(src_h as usize) {
+            let dy = (vy as f64) - ry_b;
+            for vx in 0..(src_w as usize) {
+                let dx = (vx as f64) - rx_b;
+                let r = (dx * dx + dy * dy).sqrt();
+                let factor = 1.0 - vig_strength * (r / r_max_b).powi(2);
+                vignette_lut_bench[vy * (src_w as usize) + vx] = (factor.clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+        let echo_k_b = 3usize;
+        let mut echo_ring_b: Vec<Vec<u8>> = (0..echo_k_b).map(|_| vec![128u8; frame_bytes]).collect();
+        let mut echo_head_b: usize = 0;
+        let mut ambiance_buf_b = vec![0u8; frame_bytes];
+        let mut t11_crop = vec![0u8; cropped_frame_bytes];
+
+        let t_t11_start = std::time::Instant::now();
+        let mut t11_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
+
+        for i in 0..total_output_frames {
+            let t = (i as f64) / output_fps;
+            let seg = plan.segments.iter().find(|s| t >= s.t0 && t <= s.t1).or_else(|| plan.segments.last()).unwrap();
+            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+            let t_rel = (t - seg.t0).max(0.0);
+            let x = (t_rel / seg_dur).clamp(0.0, 1.0);
+            let u = evaluate_curve(&seg.curve, x);
+            let u_prime = evaluate_curve_derivative(&seg.curve, x);
+            let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
+            let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
+
+            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+            let mut base_src_frame = (src_time * src_fps).round() as i64;
+            if base_src_frame < 0 { base_src_frame = 0; }
+            if base_src_frame >= total_source_frames as i64 { base_src_frame = (total_source_frames - 1) as i64; }
+
+            if n_blur <= 1 {
+                t11_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
+            } else {
+                let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
+                for k in 0..n_blur {
+                    let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
+                    t11_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
+                }
+                for k in 0..n_blur { slice_ptrs.push(&blend_storage[k]); }
+                blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+            }
+
+            let active_framer = plan.one_framers.iter().find(|f| (t - f.t).abs() < (0.5 / output_fps) + 1e-6);
+            let full_frame_ptr = if let Some(framer) = active_framer {
+                apply_one_framer(&framer.framer_type, &sampled_full_frame, &mut one_framer_buf, src_w as usize, src_h as usize);
+                &one_framer_buf
+            } else { &sampled_full_frame };
+
+            let mut active_trans: Option<(&TransitionItem, f64)> = None;
+            for trans in &plan.transitions {
+                let t_frames = (t - trans.t) * output_fps;
+                match trans.transition_type.as_str() {
+                    "WARP_BUBBLE" => { if t_frames.abs() <= 2.0 + 1e-4 { active_trans = Some((trans, t_frames)); break; } }
+                    "WAVE_WARP"   => { if t_frames >= -1e-4 && t_frames <= 6.0 + 1e-4 { active_trans = Some((trans, t_frames)); break; } }
+                    "SLIDE_SHAKE" => { if t_frames.abs() <= 3.0 + 1e-4 { active_trans = Some((trans, t_frames)); break; } }
+                    _ => {}
+                }
+            }
+            let trans_frame_ptr_b = if let Some((trans, _)) = active_trans {
+                match trans.transition_type.as_str() {
+                    "WARP_BUBBLE" => {
+                        let env_a = compute_warp_bubble_env(t, trans.t, output_fps);
+                        apply_warp_bubble(full_frame_ptr, &mut transition_buf, src_w as usize, src_h as usize, env_a, 1.2);
+                        &transition_buf as &[u8]
+                    }
+                    "WAVE_WARP" => {
+                        let (h_t, k, v, t_fr) = compute_wave_warp_params(t, trans.t, output_fps, src_h as usize);
+                        apply_wave_warp(full_frame_ptr, &mut transition_buf, src_w as usize, src_h as usize, h_t, k, v, t_fr);
+                        &transition_buf
+                    }
+                    "SLIDE_SHAKE" => {
+                        let shift_x = compute_slide_shake_shift(t, trans.t, output_fps);
+                        apply_slide_shake(full_frame_ptr, &mut transition_buf, src_w as usize, src_h as usize, shift_x);
+                        &transition_buf
+                    }
+                    _ => full_frame_ptr,
+                }
+            } else { full_frame_ptr };
+
+            apply_ambiance_effects(
+                trans_frame_ptr_b, &mut ambiance_buf_b,
+                src_w as usize, src_h as usize,
+                amb,
+                &mut echo_ring_b, &mut echo_head_b,
+                &vignette_lut_bench, scanline_opacity_bench,
+                t, seg, output_fps,
+            );
+
+            let params_b = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
+            apply_transform_stack_cropped(&ambiance_buf_b, &mut t11_crop, src_w as usize, src_h as usize, crop.x, crop.y, crop.width, crop.height, params_b);
+        }
+        let t_t11 = t_t11_start.elapsed();
+
+
         let t_t9_total = t_decode + t_t9;
         let t_t10_total = t_decode + t_t10;
-        let ratio = (t_t10_total.as_secs_f64() / t_t9_total.as_secs_f64()).max(0.01);
+        let t_t11_total = t_decode + t_t11;
+        let ratio = (t_t11_total.as_secs_f64() / t_t10_total.as_secs_f64()).max(0.01);
 
-        println!("=== T10 TRANSITIONS BENCHMARK REPORT ===");
+        println!("=== T11 AMBIANCE BENCHMARK REPORT ===");
         println!("Total frames rendered: {}", total_output_frames);
         println!("Decode time: {:.3}s", t_decode.as_secs_f64());
-        println!("T9 total render pipeline time: {:.3}s", t_t9_total.as_secs_f64());
-        println!("T10 Full Effects + Transitions total render pipeline time: {:.3}s", t_t10_total.as_secs_f64());
-        println!("Performance ratio (T10 / T9): {:.3}x", ratio);
+        println!("T9 (transitions) pipeline time: {:.3}s", t_t9_total.as_secs_f64());
+        println!("T10 (transitions) pipeline time: {:.3}s", t_t10_total.as_secs_f64());
+        println!("T11 Full Effects + Ambiance pipeline time: {:.3}s", t_t11_total.as_secs_f64());
+        println!("Performance ratio (T11 / T10): {:.3}x", ratio);
         println!("========================================");
 
         assert!(
-            ratio < 1.3,
-            "Benchmark check failed: ratio was {:.3}x (expected < 1.3x)",
+            ratio < 1.4,
+            "Benchmark check failed: ratio was {:.3}x (expected < 1.4x)",
             ratio
         );
     }

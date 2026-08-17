@@ -54,6 +54,7 @@
   let customHeight = $state(1080);
   let customArError = $state('');
   let borderless = $state(true); // always true internally
+  let echoTrailEnabled = $state(false); // T11 echo/trail, default OFF
 
   const STYLE_OPTIONS = [
     {
@@ -305,6 +306,7 @@
       const hasReverse = parsed.segments.some((s) => s.effects && s.effects.reverse);
       const hasOneFramers = parsed.one_framers && parsed.one_framers.length > 0;
       const hasTransitions = (parsed.transitions && parsed.transitions.length > 0) || parsed.segments.some((s) => s.transition);
+      const hasAmbiance = !!parsed.ambiance;
       planSummary = {
         segmentsCount: parsed.segments.length,
         loops: parsed.loops,
@@ -319,6 +321,8 @@
         reverse: hasReverse,
         oneFramers: hasOneFramers,
         transitions: hasTransitions,
+        ambiance: hasAmbiance,
+        echoTrail: echoTrailEnabled,
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
@@ -326,6 +330,7 @@
         planJson,
         scenePath,
         audioPath,
+        echoTrail: echoTrailEnabled,
       });
 
       console.log('[RENDER] Render completed successfully:', outMp4Path);
@@ -822,6 +827,26 @@
                     <span class="inline-ar-error mono">{customArError}</span>
                   {/if}
                 </div>
+
+                <!-- 4. T11 Echo/Trail toggle -->
+                <div class="control-group">
+                  <div class="toggle-row">
+                    <div class="toggle-row-label">
+                      <span class="group-label">ECHO / TRAIL</span>
+                      <span class="toggle-row-desc">Time Blend — blends current frame with 3 previous frames (α=0.3). Default OFF.</span>
+                    </div>
+                    <button
+                      id="toggle-echo-trail"
+                      class="toggle-btn"
+                      class:active={echoTrailEnabled}
+                      onclick={() => echoTrailEnabled = !echoTrailEnabled}
+                      type="button"
+                      aria-pressed={echoTrailEnabled}
+                    >
+                      {echoTrailEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <!-- Render Execution Cards (T6) -->
@@ -901,8 +926,13 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">EFFECTS</span>
-                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'} · ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} · TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'}</span>
+                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'} · ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} · TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} · AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} · ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
                     </div>
+                    {#if planSummary.ambiance}
+                    <div class="plan-stat flicker-warning">
+                      <span class="flicker-badge">⚠ FLICKER ACTIVE — photosensitive epilepsy warning</span>
+                    </div>
+                    {/if}
                     <div class="plan-stat">
                       <span class="stat-label">SEGMENTS</span>
                       <span class="stat-value mono">{planSummary.segmentsCount} cuts</span>
@@ -1929,6 +1959,73 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+  }
+
+  /* T11: Echo/Trail toggle row */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .toggle-row-label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+  }
+
+  .toggle-row-desc {
+    font-size: 10px;
+    color: #71717a;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+  }
+
+  .toggle-btn {
+    padding: 5px 14px;
+    background: #18181b;
+    color: #52525b;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    min-width: 48px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .toggle-btn.active {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+  }
+
+  .toggle-btn:hover:not(.active) {
+    border-color: #52525b;
+    color: #a1a1aa;
+  }
+
+  /* T11: Flicker photosensitivity warning badge */
+  .flicker-warning {
+    background: rgba(220, 38, 38, 0.08);
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    border-radius: 4px;
+    padding: 6px 10px;
+  }
+
+  .flicker-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    color: #ef4444;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 
   /* Footer Actions */
