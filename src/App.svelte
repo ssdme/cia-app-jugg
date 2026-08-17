@@ -1,4 +1,4 @@
-<script>
+﻿<script>
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -93,6 +93,29 @@
 
   let effectOverrides = $state(getDefaultOverrides('HARD', true));
 
+  // T18 Custom Params â€” per-effect numeric overrides
+  let customParams = $state(null); // null = use style preset defaults
+
+  // Fetch style defaults from Rust when style changes or when opening DETAILS
+  async function loadCustomParamsDefaults() {
+    try {
+      const defaults = await invoke('cmd_get_style_defaults', { style: selectedStyle });
+      if (customParams === null) {
+        customParams = defaults;
+      }
+    } catch (e) {
+      console.error('[T18] Failed to load style defaults:', e);
+    }
+  }
+
+  async function handleResetToStyleDefaults() {
+    try {
+      customParams = await invoke('cmd_get_style_defaults', { style: selectedStyle });
+    } catch (e) {
+      console.error('[T18] Failed to reset custom params:', e);
+    }
+  }
+
   function handleToggleFullFx() {
     fullFxEnabled = !fullFxEnabled;
     effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
@@ -175,7 +198,7 @@
         sceneError = '';
         sceneInfo = null;
       } else {
-        sceneError = 'Expected: video — mp4/mkv/webm/mov/avi';
+        sceneError = 'Expected: video â€” mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -186,7 +209,7 @@
         downbeats = null;
         bpm = null;
       } else {
-        drumsError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
+        drumsError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
       }
     } else if (zone === 'audio') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -194,7 +217,7 @@
         audioError = '';
         audioInfo = null;
       } else {
-        audioError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
+        audioError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
       }
     }
   }
@@ -360,6 +383,7 @@
         bpm: bpm || 120.0,
         fullFx: fullFxEnabled,
         effectOverrides,
+        customParams: customParams || null,
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -588,6 +612,9 @@
       console.error('Failed to load effect previews:', e);
     }
 
+    // T18: pre-load custom params defaults for selected style
+    await loadCustomParamsDefaults();
+
     try {
       unlistenProgress = await listen('render-progress', (event) => {
         if (event.payload) {
@@ -791,7 +818,7 @@
                     <span class="source-name mono" title={scenePath}>{getFileName(scenePath)}</span>
                     {#if sceneInfo}
                       <span class="meta-pill mono">
-                        {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(0)}fps
+                        {sceneInfo.duration.toFixed(2)}s Â· {sceneInfo.width}x{sceneInfo.height} Â· {sceneInfo.fps.toFixed(0)}fps
                       </span>
                     {/if}
                   </div>
@@ -802,7 +829,7 @@
                     <span class="source-name mono" title={drumsPath}>{getFileName(drumsPath)}</span>
                     {#if drumsInfo}
                       <span class="meta-pill mono">
-                        {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate}Hz · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
+                        {drumsInfo.duration.toFixed(2)}s Â· {drumsInfo.audioSampleRate}Hz Â· {bpm ? bpm.toFixed(1) : 'â€”'} BPM Â· {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
                       </span>
                     {/if}
                   </div>
@@ -813,7 +840,7 @@
                     <span class="source-name mono" title={audioPath}>{getFileName(audioPath)}</span>
                     {#if audioInfo}
                       <span class="meta-pill mono">
-                        {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate}Hz · {audioInfo.audioChannels}ch
+                        {audioInfo.duration.toFixed(2)}s Â· {audioInfo.audioSampleRate}Hz Â· {audioInfo.audioChannels}ch
                       </span>
                     {/if}
                   </div>
@@ -914,7 +941,7 @@
                   <div class="toggle-row">
                     <div class="toggle-row-label">
                       <span class="group-label">FULL FX</span>
-                      <span class="toggle-row-desc">All effects — one-framers, transitions, tint, vignette, scanlines. Default ON.</span>
+                      <span class="toggle-row-desc">All effects â€” one-framers, transitions, tint, vignette, scanlines. Default ON.</span>
                     </div>
                     <div class="toggle-actions-group">
                       <button
@@ -944,7 +971,7 @@
                   <div class="toggle-row">
                     <div class="toggle-row-label">
                       <span class="group-label">ECHO / TRAIL</span>
-                      <span class="toggle-row-desc">Time Blend — blends current frame with 3 previous frames (α=0.3). Default OFF.</span>
+                      <span class="toggle-row-desc">Time Blend â€” blends current frame with 3 previous frames (Î±=0.3). Default OFF.</span>
                     </div>
                     <button
                       id="toggle-echo-trail"
@@ -993,7 +1020,7 @@
                       <span class="pro-dot active"></span>
                       <span class="render-done-title">RENDER COMPLETE</span>
                     </div>
-                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} · {renderStats?.targetFps || fpsValue} FPS</span>
+                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} Â· {renderStats?.targetFps || fpsValue} FPS</span>
                   </div>
 
                   {#if renderStats}
@@ -1054,19 +1081,19 @@
                   <div class="plan-summary-grid">
                     <div class="plan-stat">
                       <span class="stat-label">STYLE / FPS</span>
-                      <span class="stat-value mono">{planSummary.style} · {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} · BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
+                      <span class="stat-value mono">{planSummary.style} Â· {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} Â· BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">EFFECTS</span>
-                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'} · ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} · TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} · AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} · ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
+                      <span class="stat-value mono">SHAKES ON Â· ZOOM ON Â· REVERSE {planSummary.reverse ? 'ON' : 'OFF'} Â· ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} Â· TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} Â· AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} Â· ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">FX MODE</span>
-                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} · ADV SHAKES ON</span>
+                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} Â· ADV SHAKES ON</span>
                     </div>
                     {#if planSummary.ambiance}
                     <div class="plan-stat flicker-warning">
-                      <span class="flicker-badge">⚠ FLICKER ACTIVE — photosensitive epilepsy warning</span>
+                      <span class="flicker-badge">âš  FLICKER ACTIVE â€” photosensitive epilepsy warning</span>
                     </div>
                     {/if}
                     <div class="plan-stat">
@@ -1075,7 +1102,7 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">LOOPS / DURATION</span>
-                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} · {planSummary.targetDuration.toFixed(2)}s</span>
+                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} Â· {planSummary.targetDuration.toFixed(2)}s</span>
                     </div>
                   </div>
                   <div class="plan-saved-path">
@@ -1204,7 +1231,7 @@
     </div>
   {/if}
 
-  <!-- T17 Effect Details & Previews Modal -->
+  <!-- T17/T18 Effect Details, Previews & Custom Params Modal -->
   {#if showDetailsModal}
     <div
       class="modal-backdrop"
@@ -1224,7 +1251,7 @@
             <h2>EFFECT DETAILS & TOGGLES</h2>
             <span class="modal-subtitle">Configure individual effects for project plans and preview algorithm output</span>
           </div>
-          <button class="btn-close-modal" onclick={() => showDetailsModal = false} aria-label="Close details">✕</button>
+          <button class="btn-close-modal" onclick={() => showDetailsModal = false} aria-label="Close details">âœ•</button>
         </div>
 
         <div class="details-toolbar">
@@ -1239,6 +1266,9 @@
         </div>
 
         <div class="modal-body details-modal-body">
+
+          <!-- SECTION 1: EFFECT TOGGLES & PREVIEWS -->
+          <div class="details-section-header">EFFECT TOGGLES &amp; PREVIEWS</div>
           <div class="effects-grid">
             {#each availableEffects as effect (effect.id)}
               <div
@@ -1288,10 +1318,77 @@
               </div>
             {/each}
           </div>
+
+          <!-- SECTION 2: CUSTOM PARAMETERS -->
+          {#if customParams !== null}
+          <div class="custom-params-section">
+            <div class="custom-params-header">
+              <span class="details-section-header">CUSTOM PARAMETERS</span>
+              <button class="btn-toolbar btn-reset-defaults" onclick={handleResetToStyleDefaults} type="button">RESET TO STYLE DEFAULTS</button>
+            </div>
+
+            <!-- SHAKES -->
+            <div class="cp-group">
+              <div class="cp-group-label">SHAKES</div>
+              <div class="cp-sliders">
+                <GlowSlider id="cp-shake-a0" label="Harmonic Amplitude (a0)" bind:value={customParams.shakeA0} min={0} max={30} step={0.1} precision={2} />
+                <GlowSlider id="cp-shake-omega" label="Harmonic Frequency (Ï‰)" bind:value={customParams.shakeOmega} min={0} max={30} step={0.1} precision={2} />
+                <GlowSlider id="cp-shake-k" label="Harmonic Decay (k)" bind:value={customParams.shakeK} min={0} max={10} step={0.01} precision={3} />
+                <GlowSlider id="cp-bouncy-amp" label="Bouncy Amplitude (px)" bind:value={customParams.bouncyAmplitude} min={0} max={60} step={0.5} precision={1} />
+                <GlowSlider id="cp-dissolve-pct" label="Dissolve %" bind:value={customParams.dissolvePct} min={0} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-skew-s0" label="Skew Degrees" bind:value={customParams.skewS0} min={0} max={30} step={0.5} precision={1} />
+                <GlowSlider id="cp-squish-ymin" label="Squish scale_y_min" bind:value={customParams.squishScaleYMin} min={0.5} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-squish-xmax" label="Squish scale_x_max" bind:value={customParams.squishScaleXMax} min={1} max={1.5} step={0.01} precision={2} />
+                <GlowSlider id="cp-optics-k0" label="Optics k0" bind:value={customParams.opticsK0} min={0} max={0.3} step={0.001} precision={3} />
+                <GlowSlider id="cp-stretch-scale" label="Warp Stretch Max Scale" bind:value={customParams.stretchScale} min={1} max={2} step={0.01} precision={2} />
+              </div>
+            </div>
+
+            <!-- ZOOM -->
+            <div class="cp-group">
+              <div class="cp-group-label">ZOOM</div>
+              <div class="cp-sliders">
+                <GlowSlider id="cp-zoom-start" label="Scale Start" bind:value={customParams.zoomScaleStart} min={0.8} max={1.5} step={0.01} precision={2} />
+                <GlowSlider id="cp-zoom-end" label="Scale End" bind:value={customParams.zoomScaleEnd} min={0.8} max={1.5} step={0.01} precision={2} />
+                <GlowSlider id="cp-zoom-beat-offset" label="Beat Offset Frames" bind:value={customParams.zoomBeatOffsetFrames} min={0} max={8} step={1} precision={0} />
+              </div>
+            </div>
+
+            <!-- AMBIANCE -->
+            <div class="cp-group">
+              <div class="cp-group-label">AMBIANCE</div>
+              <div class="cp-sliders">
+                <GlowSlider id="cp-flicker-amp" label="Flicker Amplitude" bind:value={customParams.flickerAmplitude} min={0} max={0.5} step={0.01} precision={2} />
+                <GlowSlider id="cp-flicker-freq" label="Flicker Frequency (Hz)" bind:value={customParams.flickerFrequencyHz} min={1} max={30} step={0.5} precision={1} />
+                <GlowSlider id="cp-exposure-peak" label="Exposure Flash Peak" bind:value={customParams.exposureFlashPeak} min={0} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-echo-alpha" label="Echo Alpha" bind:value={customParams.echoAlpha} min={0} max={0.9} step={0.01} precision={2} />
+                <GlowSlider id="cp-echo-depth" label="Echo Depth (k)" bind:value={customParams.echoKDepth} min={1} max={8} step={1} precision={0} />
+                <GlowSlider id="cp-tint-r" label="Tint R Offset" bind:value={customParams.tintROffset} min={-50} max={50} step={1} precision={0} />
+                <GlowSlider id="cp-tint-g" label="Tint G Offset" bind:value={customParams.tintGOffset} min={-50} max={50} step={1} precision={0} />
+                <GlowSlider id="cp-tint-b" label="Tint B Offset" bind:value={customParams.tintBOffset} min={-50} max={50} step={1} precision={0} />
+                <GlowSlider id="cp-vignette" label="Vignette Strength" bind:value={customParams.vignetteStrength} min={0} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-scanlines" label="Scanlines Opacity" bind:value={customParams.scanlinesOpacity} min={0} max={0.5} step={0.01} precision={2} />
+              </div>
+            </div>
+
+            <!-- TRANSITIONS -->
+            <div class="cp-group">
+              <div class="cp-group-label">TRANSITIONS</div>
+              <div class="cp-sliders">
+                <GlowSlider id="cp-warp-amp" label="Warp Bubble Amplitude" bind:value={customParams.warpBubbleAmplitude} min={0} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-warp-freq" label="Warp Bubble Frequency" bind:value={customParams.warpBubbleFrequency} min={0.5} max={5} step={0.1} precision={1} />
+                <GlowSlider id="cp-wave-height" label="Wave Warp Height (px)" bind:value={customParams.waveWarpHeight} min={0} max={600} step={5} precision={0} />
+                <GlowSlider id="cp-wave-speed" label="Wave Warp Speed" bind:value={customParams.waveWarpSpeed} min={0.5} max={4} step={0.1} precision={1} />
+                <GlowSlider id="cp-slide-px" label="Slide Shake Pixels" bind:value={customParams.slideShakePixels} min={0} max={200} step={5} precision={0} />
+              </div>
+            </div>
+          </div>
+          {/if}
+
         </div>
 
         <div class="modal-footer">
-          <button class="btn-primary-modal" onclick={() => showDetailsModal = false} type="button">APPLY & CLOSE</button>
+          <button class="btn-primary-modal" onclick={() => showDetailsModal = false} type="button">APPLY &amp; CLOSE</button>
         </div>
       </div>
     </div>
@@ -1314,7 +1411,7 @@
         width="256"
         height="256"
       />
-      <div class="large-preview-footer">256 × 256 GENERIC PATTERN PREVIEW</div>
+      <div class="large-preview-footer">256 Ã— 256 GENERIC PATTERN PREVIEW</div>
     </div>
   {/if}
 
@@ -2781,7 +2878,7 @@
     color: #71717a;
   }
 
-  /* ─── T17 EFFECT DETAILS & PREVIEWS ─────────────────────────────────────── */
+  /* â”€â”€â”€ T17 EFFECT DETAILS & PREVIEWS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   .toggle-actions-group {
     display: flex;
     align-items: center;
@@ -3020,7 +3117,7 @@
     background: #09090b;
   }
 
-  /* ─── T17 LARGE HOVER PREVIEW POPOVER ──────────────────────────────────── */
+  /* â”€â”€â”€ T17 LARGE HOVER PREVIEW POPOVER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   .large-preview-popover {
     position: fixed;
     z-index: 99999;
@@ -3085,4 +3182,63 @@
     text-align: center;
     letter-spacing: 0.05em;
   }
+  /* â”€â”€â”€ T18 CUSTOM PARAMETERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  .details-section-header {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #71717a;
+    text-transform: uppercase;
+    padding: 8px 0 4px;
+    display: block;
+  }
+
+  .custom-params-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid #1c1c22;
+  }
+
+  .custom-params-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .btn-reset-defaults {
+    font-size: 8px;
+    padding: 4px 10px;
+    border-color: #3f3f46;
+    color: #e4e4e7;
+  }
+  .btn-reset-defaults:hover {
+    background: #1c1c24;
+    border-color: #71717a;
+    color: #ffffff;
+  }
+
+  .cp-group {
+    margin-bottom: 16px;
+  }
+
+  .cp-group-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #52525b;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #18181c;
+  }
+
+  .cp-sliders {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 8px 20px;
+  }
 </style>
+
