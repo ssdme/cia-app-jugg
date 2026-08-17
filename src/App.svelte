@@ -953,7 +953,7 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">FX MODE</span>
-                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'}</span>
+                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} · ADV SHAKES ON</span>
                     </div>
                     {#if planSummary.ambiance}
                     <div class="plan-stat flicker-warning">
