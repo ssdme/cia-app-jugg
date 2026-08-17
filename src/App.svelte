@@ -310,6 +310,7 @@
         style: parsed.style,
         fps: parsed.fps,
         aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
+        motionBlur: parsed.motion_blur,
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
@@ -888,7 +889,7 @@
                   <div class="plan-summary-grid">
                     <div class="plan-stat">
                       <span class="stat-label">STYLE / FPS</span>
-                      <span class="stat-value mono">{planSummary.style} · {planSummary.fps} FPS</span>
+                      <span class="stat-value mono">{planSummary.style} · {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} · BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">SEGMENTS</span>

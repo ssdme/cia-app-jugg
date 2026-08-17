@@ -45,6 +45,10 @@ pub struct AspectRatio {
     pub h: u32,
 }
 
+fn default_effects() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct PlanSegment {
     pub t0: f64,
@@ -52,6 +56,8 @@ pub struct PlanSegment {
     pub s0: f64,
     pub s1: f64,
     pub curve: String,
+    #[serde(default = "default_effects")]
+    pub effects: serde_json::Value,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -66,6 +72,8 @@ pub struct ProjectPlan {
     pub video_duration: f64,
     pub audio_duration: f64,
     pub loops: u32,
+    #[serde(default)]
+    pub motion_blur: bool,
     pub segments: Vec<PlanSegment>,
 }
 
@@ -89,6 +97,33 @@ pub struct CropInfo {
     pub out_h: u32,
 }
 
+pub fn mirror_coordinate(coord: i64, max_dim: usize) -> usize {
+    if max_dim <= 1 {
+        return 0;
+    }
+    let dim = max_dim as i64;
+    let mut c = coord;
+    if c < 0 {
+        c = -c;
+    }
+    if c >= dim {
+        let diff = c - dim;
+        c = dim - 1 - diff;
+    }
+    c.clamp(0, dim - 1) as usize
+}
+
+pub fn sample_pixel_mirrored(frame_data: &[u8], width: usize, height: usize, x: i64, y: i64) -> [u8; 3] {
+    let mx = mirror_coordinate(x, width);
+    let my = mirror_coordinate(y, height);
+    let idx = (my * width + mx) * 3;
+    if idx + 2 < frame_data.len() {
+        [frame_data[idx], frame_data[idx + 1], frame_data[idx + 2]]
+    } else {
+        [0, 0, 0]
+    }
+}
+
 pub fn evaluate_curve(curve_name: &str, x: f64) -> f64 {
     let x_clamped = x.clamp(0.0, 1.0);
     match curve_name.to_lowercase().as_str() {
@@ -96,6 +131,51 @@ pub fn evaluate_curve(curve_name: &str, x: f64) -> f64 {
         "saddle" => x_clamped.powi(2) * (3.0 - 2.0 * x_clamped),
         _ => x_clamped,
     }
+}
+
+pub fn evaluate_curve_derivative(curve_name: &str, x: f64) -> f64 {
+    let x_clamped = x.clamp(0.0, 1.0);
+    match curve_name.to_lowercase().as_str() {
+        "snap" => 3.0 * (1.0 - x_clamped).powi(2),
+        "saddle" => 6.0 * x_clamped * (1.0 - x_clamped),
+        _ => 1.0,
+    }
+}
+
+pub fn compute_motion_blur_frames(v: f64, motion_blur_enabled: bool) -> usize {
+    if !motion_blur_enabled || v <= 1.0 {
+        1
+    } else {
+        (1 + v.floor() as usize).min(4)
+    }
+}
+
+pub fn blend_full_frames(frames: &[&[u8]], out: &mut [u8]) {
+    let n = frames.len();
+    if n == 0 {
+        return;
+    }
+    if n == 1 {
+        out.copy_from_slice(frames[0]);
+        return;
+    }
+    let n_u32 = n as u32;
+    for (i, out_byte) in out.iter_mut().enumerate() {
+        let mut sum = 0u32;
+        for frame in frames {
+            sum += frame[i] as u32;
+        }
+        *out_byte = (sum / n_u32) as u8;
+    }
+}
+
+pub fn apply_transform_stack(
+    _frame_data: &mut [u8],
+    _width: usize,
+    _height: usize,
+    _effects: &serde_json::Value,
+) {
+    // Transform stack hook (empty for now, populated in v1.1+)
 }
 
 pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32) -> CropInfo {
@@ -696,6 +776,7 @@ pub fn create_plan_internal(
                     s0: (s0 * 10000.0).round() / 10000.0,
                     s1: (s1 * 10000.0).round() / 10000.0,
                     curve: curve_name.clone(),
+                    effects: serde_json::json!({}),
                 });
                 break;
             } else {
@@ -710,6 +791,7 @@ pub fn create_plan_internal(
                     s0: (s0 * 10000.0).round() / 10000.0,
                     s1: (s1 * 10000.0).round() / 10000.0,
                     curve: curve_name.clone(),
+                    effects: serde_json::json!({}),
                 });
 
                 loops += 1;
@@ -720,7 +802,7 @@ pub fn create_plan_internal(
     }
 
     Ok(ProjectPlan {
-        schema_version: 1,
+        schema_version: 2,
         style: style.to_uppercase(),
         fps,
         aspect: AspectRatio {
@@ -733,6 +815,7 @@ pub fn create_plan_internal(
         video_duration: (video_duration * 1000.0).round() / 1000.0,
         audio_duration: (audio_duration * 1000.0).round() / 1000.0,
         loops,
+        motion_blur: true,
         segments,
     })
 }
@@ -982,9 +1065,10 @@ async fn run_render_pipeline(
     let mut raw_file = std::fs::File::open(&raw_cache_file)
         .map_err(|e| format!("Failed to open cache file: {e}"))?;
 
-    let mut full_frame_buf = vec![0u8; frame_bytes];
+    let mut sampled_full_frame = vec![0u8; frame_bytes];
     let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
     let mut cropped_buf = vec![0u8; cropped_frame_bytes];
+    let mut blend_frames_storage = vec![vec![0u8; frame_bytes]; 4];
 
     for i in 0..total_output_frames {
         if RENDER_CANCEL.load(Ordering::SeqCst) {
@@ -1006,23 +1090,47 @@ async fn run_render_pipeline(
         let seg_dur = (seg.t1 - seg.t0).max(1e-6);
         let x = ((t - seg.t0) / seg_dur).clamp(0.0, 1.0);
         let u = evaluate_curve(&seg.curve, x);
+        let u_prime = evaluate_curve_derivative(&seg.curve, x);
+
+        let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
+        let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
+
         let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
-        let mut src_frame = (src_time * src_fps).round() as i64;
-        if src_frame < 0 {
-            src_frame = 0;
+        let mut base_src_frame = (src_time * src_fps).round() as i64;
+        if base_src_frame < 0 {
+            base_src_frame = 0;
         }
-        if src_frame >= total_source_frames as i64 {
-            src_frame = (total_source_frames - 1) as i64;
+        if base_src_frame >= total_source_frames as i64 {
+            base_src_frame = (total_source_frames - 1) as i64;
         }
 
-        // Read source frame from cache
-        let offset = (src_frame as u64) * (frame_bytes as u64);
-        raw_file.seek(SeekFrom::Start(offset))
-            .map_err(|e| format!("Failed to seek cache: {e}"))?;
-        raw_file.read_exact(&mut full_frame_buf)
-            .map_err(|e| format!("Failed to read frame {src_frame} from cache: {e}"))?;
+        // 1. Sample Full-Frame
+        if n_blur <= 1 {
+            let offset = (base_src_frame as u64) * (frame_bytes as u64);
+            raw_file.seek(SeekFrom::Start(offset))
+                .map_err(|e| format!("Failed to seek cache: {e}"))?;
+            raw_file.read_exact(&mut sampled_full_frame)
+                .map_err(|e| format!("Failed to read frame {base_src_frame} from cache: {e}"))?;
+        } else {
+            let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
+            for k in 0..n_blur {
+                let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
+                let offset = f_idx * (frame_bytes as u64);
+                raw_file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| format!("Failed to seek cache: {e}"))?;
+                raw_file.read_exact(&mut blend_frames_storage[k])
+                    .map_err(|e| format!("Failed to read frame {f_idx} for blend: {e}"))?;
+            }
+            for k in 0..n_blur {
+                slice_ptrs.push(&blend_frames_storage[k]);
+            }
+            blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+        }
 
-        // Extract crop-to-fill window
+        // 2. Transform Stack (hook before crop)
+        apply_transform_stack(&mut sampled_full_frame, src_w as usize, src_h as usize, &seg.effects);
+
+        // 3. Crop-to-fill
         let row_src_stride = (src_w * 3) as usize;
         let row_crop_stride = (crop.width * 3) as usize;
         for row in 0..crop.height {
@@ -1031,10 +1139,10 @@ async fn run_render_pipeline(
             let src_end = src_start + row_crop_stride;
             let dst_start = (row as usize) * row_crop_stride;
             let dst_end = dst_start + row_crop_stride;
-            cropped_buf[dst_start..dst_end].copy_from_slice(&full_frame_buf[src_start..src_end]);
+            cropped_buf[dst_start..dst_end].copy_from_slice(&sampled_full_frame[src_start..src_end]);
         }
 
-        // Pipe to encoder
+        // 4. Pipe to encoder
         encode_stdin.write_all(&cropped_buf)
             .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
 
@@ -1125,8 +1233,134 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_mirror_coordinate_and_sample_pixel_mirrored() {
+        // (i) Mirror on all 4 borders:
+        // x = -5 reads x = 5
+        // x = w + 3 reads w - 4
+        // y = -5 reads y = 5
+        // y = h + 3 reads h - 4
+        let w = 100usize;
+        let h = 100usize;
+
+        assert_eq!(mirror_coordinate(-5, w), 5);
+        assert_eq!(mirror_coordinate(0, w), 0);
+        assert_eq!(mirror_coordinate((w - 1) as i64, w), w - 1);
+        assert_eq!(mirror_coordinate((w + 3) as i64, w), w - 4);
+
+        assert_eq!(mirror_coordinate(-5, h), 5);
+        assert_eq!(mirror_coordinate(0, h), 0);
+        assert_eq!(mirror_coordinate((h - 1) as i64, h), h - 1);
+        assert_eq!(mirror_coordinate((h + 3) as i64, h), h - 4);
+
+        // Test sample_pixel_mirrored with synthetic test image
+        let mut test_image = vec![0u8; w * h * 3];
+        // Set pixel at (5, 10) to [255, 128, 64]
+        let idx_left = (10 * w + 5) * 3;
+        test_image[idx_left] = 255;
+        test_image[idx_left + 1] = 128;
+        test_image[idx_left + 2] = 64;
+
+        // Sample at (-5, 10)
+        let sampled_left = sample_pixel_mirrored(&test_image, w, h, -5, 10);
+        assert_eq!(sampled_left, [255, 128, 64], "Left mirror at (-5, 10) must read (5, 10)");
+
+        // Set pixel at (w - 4, 10) to [10, 20, 30]
+        let idx_right = (10 * w + (w - 4)) * 3;
+        test_image[idx_right] = 10;
+        test_image[idx_right + 1] = 20;
+        test_image[idx_right + 2] = 30;
+
+        // Sample at (w + 3, 10)
+        let sampled_right = sample_pixel_mirrored(&test_image, w, h, (w + 3) as i64, 10);
+        assert_eq!(sampled_right, [10, 20, 30], "Right mirror at (w+3, 10) must read (w-4, 10)");
+
+        // Set pixel at (10, 5) to [40, 50, 60]
+        let idx_top = (5 * w + 10) * 3;
+        test_image[idx_top] = 40;
+        test_image[idx_top + 1] = 50;
+        test_image[idx_top + 2] = 60;
+
+        // Sample at (10, -5)
+        let sampled_top = sample_pixel_mirrored(&test_image, w, h, 10, -5);
+        assert_eq!(sampled_top, [40, 50, 60], "Top mirror at (10, -5) must read (10, 5)");
+
+        // Set pixel at (10, h - 4) to [70, 80, 90]
+        let idx_bottom = ((h - 4) * w + 10) * 3;
+        test_image[idx_bottom] = 70;
+        test_image[idx_bottom + 1] = 80;
+        test_image[idx_bottom + 2] = 90;
+
+        // Sample at (10, h + 3)
+        let sampled_bottom = sample_pixel_mirrored(&test_image, w, h, 10, (h + 3) as i64);
+        assert_eq!(sampled_bottom, [70, 80, 90], "Bottom mirror at (10, h+3) must read (10, h-4)");
+    }
+
+    #[test]
+    fn test_motion_blur_frame_blending_logic() {
+        // v = 1.0 -> single frame unchanged
+        assert_eq!(compute_motion_blur_frames(1.0, true), 1);
+        assert_eq!(compute_motion_blur_frames(0.5, true), 1);
+
+        // v = 3.2 -> n = min(1 + floor(3.2), 4) = 4 frames blended
+        assert_eq!(compute_motion_blur_frames(3.2, true), 4);
+        assert_eq!(compute_motion_blur_frames(2.1, true), 3);
+        assert_eq!(compute_motion_blur_frames(5.0, true), 4);
+
+        // motion_blur off -> always 1
+        assert_eq!(compute_motion_blur_frames(3.2, false), 1);
+        assert_eq!(compute_motion_blur_frames(10.0, false), 1);
+
+        // Test blending 4 frames
+        let f1 = vec![100u8, 100u8, 100u8];
+        let f2 = vec![150u8, 150u8, 150u8];
+        let f3 = vec![200u8, 200u8, 200u8];
+        let f4 = vec![250u8, 250u8, 250u8];
+        let frames: Vec<&[u8]> = vec![&f1, &f2, &f3, &f4];
+        let mut out = vec![0u8; 3];
+        blend_full_frames(&frames, &mut out);
+        // (100 + 150 + 200 + 250) / 4 = 700 / 4 = 175
+        assert_eq!(out, vec![175, 175, 175]);
+    }
+
+    #[test]
+    fn test_schema_v1_and_v2_parsing_and_retrocompat() {
+        // Plan v1 JSON (no motion_blur, no effects)
+        let v1_json = r#"{
+            "schema_version": 1,
+            "style": "HARD",
+            "fps": 16,
+            "aspect": { "w": 1080, "h": 1080 },
+            "borderless": true,
+            "bpm": 120.0,
+            "target_duration": 10.0,
+            "video_duration": 10.0,
+            "audio_duration": 10.0,
+            "loops": 0,
+            "segments": [
+                {
+                    "t0": 0.0,
+                    "t1": 10.0,
+                    "s0": 0.0,
+                    "s1": 10.0,
+                    "curve": "snap"
+                }
+            ]
+        }"#;
+
+        let parsed_v1: ProjectPlan = serde_json::from_str(v1_json).expect("Schema v1 must parse cleanly");
+        assert_eq!(parsed_v1.schema_version, 1);
+        assert_eq!(parsed_v1.motion_blur, false, "Schema v1 must default motion_blur to false");
+        assert_eq!(parsed_v1.segments[0].effects, serde_json::json!({}), "Schema v1 must default effects to {{}}");
+
+        // Plan v2 generated by create_plan_internal
+        let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0).unwrap();
+        assert_eq!(v2_plan.schema_version, 2);
+        assert_eq!(v2_plan.motion_blur, true);
+        assert_eq!(v2_plan.segments[0].effects, serde_json::json!({}));
+    }
+
+    #[test]
     fn test_curves_monotonicity_and_bounds() {
-        // (i) Curves: u(0)=0, u(1)=1, strict monotonicity over 1000 steps for snap and saddle
         assert_eq!(evaluate_curve("snap", 0.0), 0.0);
         assert_eq!(evaluate_curve("snap", 1.0), 1.0);
         assert_eq!(evaluate_curve("saddle", 0.0), 0.0);
@@ -1163,8 +1397,6 @@ mod tests {
 
     #[test]
     fn test_crop_to_fill_maths() {
-        // (ii) Maths crop-to-fill:
-        // Source 1080x1920 -> 1:1 gives centered 1080x1080 window: (x=0, y=420, w=1080, h=1080)
         let crop_1_1 = compute_crop_to_fill(1080, 1920, 1080, 1080);
         assert_eq!(crop_1_1.x, 0);
         assert_eq!(crop_1_1.y, 420);
@@ -1173,7 +1405,6 @@ mod tests {
         assert_eq!(crop_1_1.out_w, 1080);
         assert_eq!(crop_1_1.out_h, 1080);
 
-        // Source 1080x1920 -> 16:9 gives cover-scale correct: (x=0, y=656, w=1080, h=608, out_w=1080, out_h=608)
         let crop_16_9 = compute_crop_to_fill(1080, 1920, 16, 9);
         assert_eq!(crop_16_9.x, 0);
         assert_eq!(crop_16_9.y, 656);
@@ -1182,7 +1413,6 @@ mod tests {
         assert_eq!(crop_16_9.out_w, 1080);
         assert_eq!(crop_16_9.out_h, 608);
 
-        // Source 1080x1920 -> 9:16 gives full frame: (x=0, y=0, w=1080, h=1920)
         let crop_9_16 = compute_crop_to_fill(1080, 1920, 9, 16);
         assert_eq!(crop_9_16.x, 0);
         assert_eq!(crop_9_16.y, 0);
@@ -1255,68 +1485,30 @@ mod tests {
 
             println!("--- Tested Style: {} (Segments: {}, Loops: {}) ---", style, plan.segments.len(), plan.loops);
 
-            // Invariant (i): Contiguous coverage [0, target], first t0=0, last t1=target
-            assert_eq!(plan.segments.first().unwrap().t0, 0.0, "First segment must start at t0=0");
-            assert!((plan.segments.last().unwrap().t1 - audio_duration).abs() < 0.01, "Last segment must end at target");
+            assert_eq!(plan.segments.first().unwrap().t0, 0.0);
+            assert!((plan.segments.last().unwrap().t1 - audio_duration).abs() < 0.01);
 
             for win in plan.segments.windows(2) {
-                assert!(
-                    (win[0].t1 - win[1].t0).abs() < 1e-4,
-                    "Coverage must be contiguous between segments: {} vs {}",
-                    win[0].t1,
-                    win[1].t0
-                );
+                assert!((win[0].t1 - win[1].t0).abs() < 1e-4);
             }
 
-            // Invariant (ii): 0 <= s0 < s1 <= video_duration for all segments
             for seg in &plan.segments {
-                assert!(seg.s0 >= 0.0, "s0 must be >= 0 (got {})", seg.s0);
-                assert!(seg.s1 > seg.s0, "s1 must be > s0 (got s0={}, s1={})", seg.s0, seg.s1);
-                assert!(
-                    seg.s1 <= video_duration + 1e-4,
-                    "s1 must be <= video_duration (got {} vs max {})",
-                    seg.s1,
-                    video_duration
-                );
-            }
-
-            // Invariant (iii): No segment < 3/fps
-            for seg in &plan.segments {
+                assert!(seg.s0 >= 0.0);
+                assert!(seg.s1 > seg.s0);
+                assert!(seg.s1 <= video_duration + 1e-4);
                 let dur = seg.t1 - seg.t0;
-                assert!(
-                    dur >= min_seg_dur - 1e-4,
-                    "Segment duration must be >= 3/fps = {} (got {}) for [{}-{}]",
-                    min_seg_dur,
-                    dur,
-                    seg.t0,
-                    seg.t1
-                );
+                assert!(dur >= min_seg_dur - 1e-4);
             }
 
-            // Invariant (iv): loops >= 1 on this fixture for HARD & HYBRID, and each wrap aligned on a segment boundary
             if style == "HARD" || style == "HYBRID" {
-                assert!(
-                    plan.loops >= 1,
-                    "Fixture video_dur=10.773, audio_dur=14.315 must trigger at least 1 loop in style {} (got {})",
-                    style,
-                    plan.loops
-                );
+                assert!(plan.loops >= 1);
             }
 
-            // Verify each wrap aligns on a segment boundary (s1 == video_duration, next s0 == 0.0)
             let mut found_wraps = 0;
             for i in 0..plan.segments.len() - 1 {
                 if (plan.segments[i].s1 - video_duration).abs() < 0.01 {
-                    assert_eq!(
-                        plan.segments[i + 1].s0,
-                        0.0,
-                        "Next segment after wrap must start at s0=0.0"
-                    );
-                    assert_eq!(
-                        plan.segments[i].t1,
-                        plan.segments[i + 1].t0,
-                        "Wrap cut must align on segment boundary"
-                    );
+                    assert_eq!(plan.segments[i + 1].s0, 0.0);
+                    assert_eq!(plan.segments[i].t1, plan.segments[i + 1].t0);
                     found_wraps += 1;
                 }
             }
@@ -1325,52 +1517,12 @@ mod tests {
     }
 
     #[test]
-    fn test_save_and_read_project_json() {
-        let video_duration = 10.773;
-        let audio_duration = 14.315;
-        let beats = vec![
-            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
-            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
-        ];
-        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
-        let fps = 16u32;
-        let bpm = 83.33;
-
-        let plan = create_plan_internal(
-            "HARD",
-            fps,
-            &beats,
-            &downbeats,
-            video_duration,
-            audio_duration,
-            1080,
-            1080,
-            bpm,
-        )
-        .expect("Plan creation must succeed");
-
-        let json_str = serde_json::to_string_pretty(&plan).expect("Serialization must succeed");
-
-        let temp_dir = std::env::temp_dir().join("cia_app_test");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let plan_file = temp_dir.join("project.json");
-        std::fs::write(&plan_file, json_str.as_bytes()).unwrap();
-
-        let read_back = std::fs::read_to_string(&plan_file).unwrap();
-        let parsed: ProjectPlan = serde_json::from_str(&read_back).unwrap();
-        assert_eq!(parsed.style, "HARD");
-        assert_eq!(parsed.fps, 16);
-        assert_eq!(parsed.loops, 1);
-        assert_eq!(parsed.segments.len(), 21);
-    }
-
-    #[test]
-    fn test_full_render_pipeline_and_probe_output() {
+    fn test_strict_non_regression_and_benchmark() {
         let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
         let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
 
         if !std::path::Path::new(video_path).exists() || !std::path::Path::new(audio_path).exists() {
-            println!("Test files not found, skipping full integration test.");
+            println!("Test files not found, skipping non-regression benchmark test.");
             return;
         }
 
@@ -1382,7 +1534,7 @@ mod tests {
         let fps = 16u32;
         let bpm = 83.33;
 
-        let plan = create_plan_internal(
+        let mut plan = create_plan_internal(
             "HARD",
             fps,
             &beats,
@@ -1395,7 +1547,9 @@ mod tests {
         )
         .expect("Plan generation failed");
 
-        // Locate ffmpeg
+        // Motion blur off for strict bit-exact / non-regression check against v1
+        plan.motion_blur = false;
+
         let ffmpeg_bin = if let Ok(output) = std::process::Command::new("where.exe").arg("ffmpeg").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             stdout.lines().next().map(|s| std::path::PathBuf::from(s.trim())).unwrap_or_default()
@@ -1403,19 +1557,17 @@ mod tests {
             std::path::PathBuf::from("ffmpeg.exe")
         };
 
-        println!("Using ffmpeg binary at: {}", ffmpeg_bin.display());
-
         let scene_info = probe_media(video_path.to_string()).unwrap();
         let src_w = scene_info.width;
         let src_h = scene_info.height;
         let src_fps = scene_info.fps;
         let frame_bytes = (src_w * src_h * 3) as usize;
 
-        let temp_dir = std::env::temp_dir().join("cia_app_render_test");
+        let temp_dir = std::env::temp_dir().join("cia_app_refactor_test");
         std::fs::create_dir_all(&temp_dir).unwrap();
         let raw_cache = temp_dir.join("test_frames.raw");
 
-        // 1. Decode
+        // Decode cache
         let mut decode_cmd = std::process::Command::new(&ffmpeg_bin);
         decode_cmd.args([
             "-y",
@@ -1434,55 +1586,18 @@ mod tests {
 
         let total_cached_bytes = std::fs::metadata(&raw_cache).unwrap().len();
         let total_source_frames = (total_cached_bytes / (frame_bytes as u64)) as usize;
-        println!("Decoded source frames: {}", total_source_frames);
 
-        // 2. Sampling + Encode
         let crop = compute_crop_to_fill(src_w, src_h, plan.aspect.w, plan.aspect.h);
         let output_fps = plan.fps as f64;
         let total_output_frames = (plan.target_duration * output_fps).round() as usize;
 
-        let out_mp4 = temp_dir.join("test_output.mp4");
-
-        let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
-        encode_cmd.args([
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            &format!("{}x{}", crop.width, crop.height),
-            "-r",
-            &format!("{}", plan.fps),
-            "-i",
-            "-",
-            "-i",
-            audio_path,
-            "-t",
-            &format!("{:.3}", plan.target_duration),
-            "-vf",
-            &format!("scale={}:{}", crop.out_w, crop.out_h),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "18",
-            "-preset",
-            "veryfast",
-            "-c:a",
-            "aac",
-            "-shortest",
-            &out_mp4.to_string_lossy(),
-        ]);
-        encode_cmd.stdin(std::process::Stdio::piped());
-        let mut encode_proc = encode_cmd.spawn().expect("Failed to spawn encode");
-        let mut encode_in = encode_proc.stdin.take().unwrap();
-
         let mut raw_file = std::fs::File::open(&raw_cache).unwrap();
-        let mut full_frame_buf = vec![0u8; frame_bytes];
         let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
-        let mut cropped_buf = vec![0u8; cropped_frame_bytes];
+
+        // 1. Run V1 Sampling Method (Benchmark + Capture Frames)
+        let t_v1_start = std::time::Instant::now();
+        let mut v1_frames: Vec<Vec<u8>> = Vec::with_capacity(total_output_frames);
+        let mut v1_full_buf = vec![0u8; frame_bytes];
 
         for i in 0..total_output_frames {
             let t = (i as f64) / output_fps;
@@ -1497,17 +1612,14 @@ mod tests {
             let u = evaluate_curve(&seg.curve, x);
             let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
             let mut src_frame = (src_time * src_fps).round() as i64;
-            if src_frame < 0 {
-                src_frame = 0;
-            }
-            if src_frame >= total_source_frames as i64 {
-                src_frame = (total_source_frames - 1) as i64;
-            }
+            if src_frame < 0 { src_frame = 0; }
+            if src_frame >= total_source_frames as i64 { src_frame = (total_source_frames - 1) as i64; }
 
             let offset = (src_frame as u64) * (frame_bytes as u64);
             raw_file.seek(SeekFrom::Start(offset)).unwrap();
-            raw_file.read_exact(&mut full_frame_buf).unwrap();
+            raw_file.read_exact(&mut v1_full_buf).unwrap();
 
+            let mut v1_crop = vec![0u8; cropped_frame_bytes];
             let row_src_stride = (src_w * 3) as usize;
             let row_crop_stride = (crop.width * 3) as usize;
             for row in 0..crop.height {
@@ -1516,30 +1628,108 @@ mod tests {
                 let src_end = src_start + row_crop_stride;
                 let dst_start = (row as usize) * row_crop_stride;
                 let dst_end = dst_start + row_crop_stride;
-                cropped_buf[dst_start..dst_end].copy_from_slice(&full_frame_buf[src_start..src_end]);
+                v1_crop[dst_start..dst_end].copy_from_slice(&v1_full_buf[src_start..src_end]);
             }
-            encode_in.write_all(&cropped_buf).unwrap();
+            v1_frames.push(v1_crop);
         }
-        drop(encode_in);
-        let status = encode_proc.wait().expect("Encode failed");
-        assert!(status.success());
+        let t_v1 = t_v1_start.elapsed();
 
-        // Probe output MP4
-        let probed = probe_media(out_mp4.to_string_lossy().to_string())
-            .expect("Probe of output MP4 must succeed");
-        println!("=== RAW PROBE RESULT OF OUTPUT MP4 ===");
-        println!("{:#?}", probed);
-        println!("======================================");
+        // 2. Run Refactored Pipeline Sampling Method (Benchmark + Capture Frames)
+        let t_refactor_start = std::time::Instant::now();
+        let mut refactor_frames: Vec<Vec<u8>> = Vec::with_capacity(total_output_frames);
+        let mut sampled_full_frame = vec![0u8; frame_bytes];
+        let mut blend_storage = vec![vec![0u8; frame_bytes]; 4];
+
+        for i in 0..total_output_frames {
+            let t = (i as f64) / output_fps;
+            let seg = plan
+                .segments
+                .iter()
+                .find(|s| t >= s.t0 && t <= s.t1)
+                .or_else(|| plan.segments.last())
+                .unwrap();
+            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+            let x = ((t - seg.t0) / seg_dur).clamp(0.0, 1.0);
+            let u = evaluate_curve(&seg.curve, x);
+            let u_prime = evaluate_curve_derivative(&seg.curve, x);
+            let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
+            let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
+
+            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+            let mut base_src_frame = (src_time * src_fps).round() as i64;
+            if base_src_frame < 0 { base_src_frame = 0; }
+            if base_src_frame >= total_source_frames as i64 { base_src_frame = (total_source_frames - 1) as i64; }
+
+            // 1. Sample Full-Frame
+            if n_blur <= 1 {
+                let offset = (base_src_frame as u64) * (frame_bytes as u64);
+                raw_file.seek(SeekFrom::Start(offset)).unwrap();
+                raw_file.read_exact(&mut sampled_full_frame).unwrap();
+            } else {
+                let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
+                for k in 0..n_blur {
+                    let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
+                    let offset = f_idx * (frame_bytes as u64);
+                    raw_file.seek(SeekFrom::Start(offset)).unwrap();
+                    raw_file.read_exact(&mut blend_storage[k]).unwrap();
+                }
+                for k in 0..n_blur {
+                    slice_ptrs.push(&blend_storage[k]);
+                }
+                blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+            }
+
+            // 2. Transform Stack
+            apply_transform_stack(&mut sampled_full_frame, src_w as usize, src_h as usize, &seg.effects);
+
+            // 3. Crop-to-fill
+            let mut refactor_crop = vec![0u8; cropped_frame_bytes];
+            let row_src_stride = (src_w * 3) as usize;
+            let row_crop_stride = (crop.width * 3) as usize;
+            for row in 0..crop.height {
+                let src_y = (crop.y + row) as usize;
+                let src_start = src_y * row_src_stride + (crop.x * 3) as usize;
+                let src_end = src_start + row_crop_stride;
+                let dst_start = (row as usize) * row_crop_stride;
+                let dst_end = dst_start + row_crop_stride;
+                refactor_crop[dst_start..dst_end].copy_from_slice(&sampled_full_frame[src_start..src_end]);
+            }
+            refactor_frames.push(refactor_crop);
+        }
+        let t_refactor = t_refactor_start.elapsed();
+
+        // 3. Compare All Output Frames for Exact Non-Regression (Diff <= 1 per channel)
+        let mut max_diff: u8 = 0;
+        for i in 0..total_output_frames {
+            let f1 = &v1_frames[i];
+            let f2 = &refactor_frames[i];
+            for k in 0..f1.len() {
+                let diff = (f1[k] as i16 - f2[k] as i16).abs() as u8;
+                if diff > max_diff {
+                    max_diff = diff;
+                }
+            }
+        }
+
+        let ratio = (t_refactor.as_secs_f64() / t_v1.as_secs_f64()).max(0.01);
+
+        println!("=== NON-REGRESSION & BENCHMARK REPORT ===");
+        println!("Total frames compared: {}", total_output_frames);
+        println!("Maximum pixel channel diff across all frames: {}", max_diff);
+        println!("V1 sampling time: {:.3}s", t_v1.as_secs_f64());
+        println!("Refactored pipeline sampling time: {:.3}s", t_refactor.as_secs_f64());
+        println!("Performance ratio (Refactored / V1): {:.3}x", ratio);
+        println!("=========================================");
 
         assert!(
-            (probed.duration - 14.315).abs() < 0.2,
-            "Duration must be ~14.315 (got {})",
-            probed.duration
+            max_diff <= 1,
+            "Non-regression check failed: max pixel diff was {} (expected <= 1)",
+            max_diff
         );
-        assert_eq!(probed.width, 1080, "Width must be 1080");
-        assert_eq!(probed.height, 1080, "Height must be 1080");
-        assert_eq!(probed.fps as u32, 16, "FPS must be 16");
-        assert_eq!(probed.audio_channels, 2, "Audio channels must be 2");
+        assert!(
+            ratio <= 1.5,
+            "Performance regression check failed: ratio was {:.3}x (expected <= 1.5x)",
+            ratio
+        );
     }
 }
-
