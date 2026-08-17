@@ -178,6 +178,100 @@ fn default_segment_effects() -> SegmentEffects {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectOverrides {
+    #[serde(default = "default_true")]
+    pub shakes: bool,
+    #[serde(default = "default_true")]
+    pub zoom: bool,
+    #[serde(default = "default_true")]
+    pub flicker: bool,
+    #[serde(default = "default_true")]
+    pub one_framers: bool,
+    #[serde(default = "default_true")]
+    pub transitions: bool,
+    #[serde(default = "default_true")]
+    pub tint: bool,
+    #[serde(default = "default_true")]
+    pub vignette: bool,
+    #[serde(default = "default_true")]
+    pub scanlines: bool,
+    #[serde(default = "default_true")]
+    pub echo_trail: bool,
+    #[serde(default = "default_true")]
+    pub exposure_flash: bool,
+    #[serde(default = "default_true")]
+    pub bouncy_shake: bool,
+    #[serde(default = "default_true")]
+    pub dissolve_shake: bool,
+    #[serde(default = "default_true")]
+    pub skew_shake: bool,
+    #[serde(default = "default_true")]
+    pub squish_pop: bool,
+    #[serde(default = "default_true")]
+    pub optics_bounce: bool,
+    #[serde(default = "default_true")]
+    pub buildup_chain: bool,
+    #[serde(default = "default_true")]
+    pub warp_stretch: bool,
+    #[serde(default = "default_true")]
+    pub zoom_beat_offset: bool,
+}
+
+impl Default for EffectOverrides {
+    fn default() -> Self {
+        Self {
+            shakes: true,
+            zoom: true,
+            flicker: true,
+            one_framers: true,
+            transitions: true,
+            tint: true,
+            vignette: true,
+            scanlines: true,
+            echo_trail: false,
+            exposure_flash: true,
+            bouncy_shake: true,
+            dissolve_shake: true,
+            skew_shake: true,
+            squish_pop: true,
+            optics_bounce: true,
+            buildup_chain: true,
+            warp_stretch: true,
+            zoom_beat_offset: true,
+        }
+    }
+}
+
+pub fn default_effects_for_style(style: &str, full_fx: bool) -> EffectOverrides {
+    let style_up = style.to_uppercase();
+    let is_smooth = style_up == "SMOOTH";
+    let is_hybrid = style_up == "HYBRID";
+    let is_hard = !is_smooth && !is_hybrid;
+
+    EffectOverrides {
+        shakes: true,
+        zoom: true,
+        flicker: true,
+        one_framers: full_fx && (is_hard || is_hybrid),
+        transitions: true,
+        tint: full_fx,
+        vignette: full_fx,
+        scanlines: full_fx,
+        echo_trail: false,
+        exposure_flash: full_fx && is_hard,
+        bouncy_shake: is_hard || is_hybrid,
+        dissolve_shake: is_hard || is_hybrid,
+        skew_shake: is_hard || is_hybrid,
+        squish_pop: is_hard || is_hybrid,
+        optics_bounce: is_hard || is_hybrid,
+        buildup_chain: true,
+        warp_stretch: is_hard || is_hybrid,
+        zoom_beat_offset: true,
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct SegmentTransition {
     #[serde(rename = "type")]
     pub transition_type: String,
@@ -1683,6 +1777,355 @@ pub fn compute_render_stats(
     }
 }
 
+// ─── T17 Generic Effect Preview Engine ──────────────────────────────────────
+
+pub fn generate_generic_preview_frame(width: usize, height: usize) -> Vec<u8> {
+    let mut frame = vec![0u8; width * height * 3];
+    let max_sum = ((width + height).saturating_sub(2)).max(1) as f64;
+    for y in 0..height {
+        for x in 0..width {
+            let val = (((x + y) as f64 / max_sum) * 255.0).round().clamp(0.0, 255.0) as u8;
+            let idx = (y * width + x) * 3;
+            frame[idx] = val;
+            frame[idx + 1] = val;
+            frame[idx + 2] = val;
+        }
+    }
+    frame
+}
+
+pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Vec<u8> {
+    let base_frame = generate_generic_preview_frame(width, height);
+    let mut out_frame = vec![0u8; width * height * 3];
+    let cx = width as f64 / 2.0;
+    let cy = height as f64 / 2.0;
+
+    match effect_id {
+        "shakes" => {
+            let params = TransformParams {
+                dx: 24.0,
+                dy: 16.0,
+                scale: 1.05,
+                tilt_rad: 0.08,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "zoom" => {
+            let params = TransformParams {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.35,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "flicker" => {
+            for (i, p) in base_frame.iter().enumerate() {
+                out_frame[i] = ((*p as f64 * 1.45).clamp(0.0, 255.0)) as u8;
+            }
+        }
+        "one_framers" => {
+            for (i, p) in base_frame.iter().enumerate() {
+                out_frame[i] = 255 - *p;
+            }
+        }
+        "transitions" => {
+            apply_warp_bubble(&base_frame, &mut out_frame, width, height, 0.8, 1.25);
+        }
+        "tint" => {
+            for (i, chunk) in base_frame.chunks(3).enumerate() {
+                let out_idx = i * 3;
+                out_frame[out_idx] = (chunk[0] as i16 + 50).clamp(0, 255) as u8;
+                out_frame[out_idx + 1] = (chunk[1] as i16 - 30).clamp(0, 255) as u8;
+                out_frame[out_idx + 2] = (chunk[2] as i16 + 60).clamp(0, 255) as u8;
+            }
+        }
+        "vignette" => {
+            let r_max = (cx * cx + cy * cy).sqrt();
+            for y in 0..height {
+                let dy = (y as f64) - cy;
+                for x in 0..width {
+                    let dx = (x as f64) - cx;
+                    let r = (dx * dx + dy * dy).sqrt();
+                    let factor = 1.0 - 0.75 * (r / r_max).powi(2);
+                    let idx = (y * width + x) * 3;
+                    for c in 0..3 {
+                        out_frame[idx + c] = (base_frame[idx + c] as f64 * factor.clamp(0.0, 1.0)) as u8;
+                    }
+                }
+            }
+        }
+        "scanlines" => {
+            for y in 0..height {
+                let factor = if y % 3 == 0 { 0.45 } else { 1.0 };
+                for x in 0..width {
+                    let idx = (y * width + x) * 3;
+                    for c in 0..3 {
+                        out_frame[idx + c] = (base_frame[idx + c] as f64 * factor) as u8;
+                    }
+                }
+            }
+        }
+        "echo_trail" => {
+            let mut ghost = vec![0u8; width * height * 3];
+            let params = TransformParams {
+                dx: -20.0,
+                dy: -14.0,
+                scale: 1.08,
+                tilt_rad: -0.06,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut ghost, width, height, params);
+            for i in 0..out_frame.len() {
+                out_frame[i] = ((base_frame[i] as u32 * 170 + ghost[i] as u32 * 86) >> 8) as u8;
+            }
+        }
+        "exposure_flash" => {
+            for (i, p) in base_frame.iter().enumerate() {
+                out_frame[i] = (*p as u16 + 115).min(255) as u8;
+            }
+        }
+        "bouncy_shake" => {
+            let params = TransformParams {
+                dx: -38.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "dissolve_shake" => {
+            let mut ghost = vec![0u8; width * height * 3];
+            let params = TransformParams {
+                dx: 30.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut ghost, width, height, params);
+            for i in 0..out_frame.len() {
+                out_frame[i] = ((base_frame[i] as u32 * 170 + ghost[i] as u32 * 86) >> 8) as u8;
+            }
+        }
+        "skew_shake" => {
+            let params = TransformParams {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.25,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "squish_pop" => {
+            let params = TransformParams {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 0.85,
+                scale_x: 1.18,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "optics_bounce" => {
+            let params = TransformParams {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.28,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "buildup_chain" => {
+            let params = TransformParams {
+                dx: 20.0,
+                dy: 20.0,
+                scale: 1.06,
+                tilt_rad: 0.05,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "warp_stretch" => {
+            let params = TransformParams {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.0,
+                tilt_rad: 0.0,
+                skew_x: 0.0,
+                scale_y: 1.48,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        "zoom_beat_offset" => {
+            let params = TransformParams {
+                dx: -14.0,
+                dy: 0.0,
+                scale: 1.26,
+                tilt_rad: 0.04,
+                skew_x: 0.0,
+                scale_y: 1.0,
+                scale_x: 1.0,
+                barrel_k: 0.0,
+            };
+            apply_transform_stack(&base_frame, &mut out_frame, width, height, params);
+        }
+        _ => {
+            out_frame.copy_from_slice(&base_frame);
+        }
+    }
+    out_frame
+}
+
+pub fn rgb_to_bmp_data_url(rgb: &[u8], width: u32, height: u32) -> String {
+    let row_bytes = (width * 3 + 3) & !3;
+    let image_size = row_bytes * height;
+    let file_size = 54 + image_size;
+    let mut bmp = Vec::with_capacity(file_size as usize);
+
+    // BITMAPFILEHEADER (14 bytes)
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&[0, 0, 0, 0]);
+    bmp.extend_from_slice(&54u32.to_le_bytes());
+
+    // BITMAPINFOHEADER (40 bytes)
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&(width as i32).to_le_bytes());
+    bmp.extend_from_slice(&(-(height as i32)).to_le_bytes()); // top-down
+    bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
+    bmp.extend_from_slice(&24u16.to_le_bytes()); // 24-bit RGB
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    bmp.extend_from_slice(&image_size.to_le_bytes());
+    bmp.extend_from_slice(&2835u32.to_le_bytes()); // 72 DPI
+    bmp.extend_from_slice(&2835u32.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+
+    let pad = (row_bytes - width * 3) as usize;
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let idx = (y * width as usize + x) * 3;
+            // BMP pixel order is BGR
+            bmp.push(rgb[idx + 2]);
+            bmp.push(rgb[idx + 1]);
+            bmp.push(rgb[idx]);
+        }
+        for _ in 0..pad {
+            bmp.push(0);
+        }
+    }
+
+    let base64_str = to_base64(&bmp);
+    format!("data:image/bmp;base64,{base64_str}")
+}
+
+pub fn to_base64(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut res = String::with_capacity(bytes.len() * 4 / 3 + 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        res.push(CHARS[(n >> 18) & 63] as char);
+        res.push(CHARS[(n >> 12) & 63] as char);
+        if chunk.len() > 1 {
+            res.push(CHARS[(n >> 6) & 63] as char);
+        } else {
+            res.push('=');
+        }
+        if chunk.len() > 2 {
+            res.push(CHARS[n & 63] as char);
+        } else {
+            res.push('=');
+        }
+    }
+    res
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectItemInfo {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub preview_data_url: String,
+}
+
+#[tauri::command]
+fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
+    const EFFECTS_METADATA: &[(&str, &str, &str, &str)] = &[
+        ("shakes", "Harmonic Shakes (X/Y/Z/Tilt)", "SHAKES", "Smooth exponential damped oscillations on 4 axes"),
+        ("bouncy_shake", "Bouncy Shake", "SHAKES", "BlurMoCurves-style piecewise keyframe bounce"),
+        ("dissolve_shake", "Dissolve Ghost Shake", "SHAKES", "Ghost frame blend ±2 frames with envelope"),
+        ("skew_shake", "Skew Shake", "SHAKES", "Damped cisaillement / horizontal perspective skew"),
+        ("squish_pop", "Squish Pop", "WARP", "Scale Y compression into spring overshoot"),
+        ("optics_bounce", "Optics Bounce", "WARP", "Dynamic parabolic barrel distortion at beat onsets"),
+        ("warp_stretch", "Warp Transform Stretch", "WARP", "Vertical / horizontal scale stretch with saddle curve"),
+        ("zoom", "Beat Zoom", "ZOOM", "Continuous rhythmic scale zooms matching beat cadence"),
+        ("zoom_beat_offset", "Zoom Past-The-Beat", "ZOOM", "Micro-delayed zoom peak offset +1..+2 frames"),
+        ("buildup_chain", "Buildup Chaining", "MOTION", "Continuous shake envelope bleed into next segment"),
+        ("transitions", "Geometric Transitions", "TRANSITIONS", "Warp Bubble, Wave Warp, and Slide Shake cuts"),
+        ("one_framers", "One-Framers Library", "CUTS", "1-frame visual impact hits at downbeats"),
+        ("flicker", "Flicker Oscillation", "AMBIANCE", "Sinusoidal luminosity micro-oscillations"),
+        ("exposure_flash", "Exposure Flash", "AMBIANCE", "Sharp white flashes at musical impact points"),
+        ("echo_trail", "Echo / Trail", "AMBIANCE", "Motion time blend with trailing ghost frames"),
+        ("tint", "RGB Color Tint", "AMBIANCE", "Dynamic chromatic shifts and color palette tone"),
+        ("vignette", "Vignette Darkening", "AMBIANCE", "Radial corner darkening focusing visual center"),
+        ("scanlines", "CRT Scanlines", "AMBIANCE", "Retro television horizontal scanline rasterization"),
+    ];
+
+    let mut list = Vec::with_capacity(EFFECTS_METADATA.len());
+    for &(id, name, cat, desc) in EFFECTS_METADATA {
+        let frame_rgb = render_effect_preview(id, 256, 256);
+        let preview_data_url = rgb_to_bmp_data_url(&frame_rgb, 256, 256);
+        list.push(EffectItemInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            category: cat.to_string(),
+            description: desc.to_string(),
+            preview_data_url,
+        });
+    }
+    Ok(list)
+}
+
 fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
@@ -2242,6 +2685,7 @@ pub fn create_plan_internal(
     aspect_h: u32,
     bpm: f64,
     full_fx: bool,
+    effect_overrides: Option<EffectOverrides>,
 ) -> Result<ProjectPlan, String> {
     if fps == 0 {
         return Err("FPS must be greater than 0".to_string());
@@ -2253,6 +2697,7 @@ pub fn create_plan_internal(
         return Err("Audio duration must be greater than 0".to_string());
     }
 
+    let overrides = effect_overrides.unwrap_or_else(|| default_effects_for_style(style, full_fx));
     let target = audio_duration;
     let min_seg_dur = 3.0 / (fps as f64);
 
@@ -2358,17 +2803,19 @@ pub fn create_plan_internal(
             let span = r * dt;
 
             // Zoom continuity: alternating between 1.0 and zoom_max
-            let (scale_start, scale_end) = if seg_index % 2 == 0 {
+            let (mut scale_start, mut scale_end) = if seg_index % 2 == 0 {
                 (1.0, zoom_max)
             } else {
                 (zoom_max, 1.0)
             };
+            if !overrides.zoom {
+                scale_start = 1.0;
+                scale_end = 1.0;
+            }
 
             let seed = ((seg_index as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
 
             // ── T14 engine generation ─────────────────────────────────────────
-            // All engines are deterministic from seed; probability scaled by style.
-            // lcg(x) = x.wrapping_mul(1664525).wrapping_add(1013904223)
             let s1 = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             let s2 = s1.wrapping_mul(1664525).wrapping_add(1013904223);
             let s3 = s2.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -2390,9 +2837,33 @@ pub fn create_plan_internal(
                 chain_prob,
                 stretch_prob,
             ) = match style_up.as_str() {
-                "SMOOTH" => (0u32, 0.0f64, 0u32, 0.0f64, 0u32, 0.0f64, 0u32, 0u32, 10u32, 0u32),
-                "HYBRID" => (15u32, 25.0, 10u32, 15.0, 10u32, 7.0, 20u32, 10u32, 15u32, 10u32),
-                _        => (30u32, 40.0, 25u32, 30.0, 20u32, 10.0, 40u32, 25u32, 30u32, 20u32),
+                "SMOOTH" => (
+                    if overrides.bouncy_shake { 30u32 } else { 0u32 }, 25.0f64,
+                    if overrides.dissolve_shake { 25u32 } else { 0u32 }, 15.0f64,
+                    if overrides.skew_shake { 20u32 } else { 0u32 }, 7.0f64,
+                    if overrides.squish_pop { 40u32 } else { 0u32 },
+                    if overrides.optics_bounce { 25u32 } else { 0u32 },
+                    if overrides.buildup_chain { 30u32 } else { 0u32 },
+                    if overrides.warp_stretch { 20u32 } else { 0u32 },
+                ),
+                "HYBRID" => (
+                    if overrides.bouncy_shake { 15u32 } else { 0u32 }, 25.0,
+                    if overrides.dissolve_shake { 10u32 } else { 0u32 }, 15.0,
+                    if overrides.skew_shake { 10u32 } else { 0u32 }, 7.0,
+                    if overrides.squish_pop { 20u32 } else { 0u32 },
+                    if overrides.optics_bounce { 10u32 } else { 0u32 },
+                    if overrides.buildup_chain { 15u32 } else { 0u32 },
+                    if overrides.warp_stretch { 10u32 } else { 0u32 },
+                ),
+                _ => (
+                    if overrides.bouncy_shake { 30u32 } else { 0u32 }, 40.0,
+                    if overrides.dissolve_shake { 25u32 } else { 0u32 }, 30.0,
+                    if overrides.skew_shake { 20u32 } else { 0u32 }, 10.0,
+                    if overrides.squish_pop { 40u32 } else { 0u32 },
+                    if overrides.optics_bounce { 25u32 } else { 0u32 },
+                    if overrides.buildup_chain { 30u32 } else { 0u32 },
+                    if overrides.warp_stretch { 20u32 } else { 0u32 },
+                ),
             };
 
             // Bouncy: 30%/15%/0%; when active, zero out harmonic a0
@@ -2401,8 +2872,10 @@ pub fn create_plan_internal(
             } else {
                 None
             };
-            // If bouncy active, harmonic shake is suppressed (a0 zeroed in compute_transform_params via bounce override)
-            let effective_a0 = if bouncy_shake.is_some() { 0.0 } else { a0 };
+            let mut effective_a0 = if bouncy_shake.is_some() { 0.0 } else { a0 };
+            if !overrides.shakes {
+                effective_a0 = 0.0;
+            }
 
             // Dissolve: ghost-blend pct
             let dissolve_shake = if dissolve_prob > 0 && pct(s2) < dissolve_prob {
@@ -2433,7 +2906,7 @@ pub fn create_plan_internal(
             };
 
             // Buildup chain: set chain_next on current; pair_chain_from_prev set later on next segment
-            let buildup_chain = if pct(s6) < chain_prob {
+            let buildup_chain = if chain_prob > 0 && pct(s6) < chain_prob {
                 Some(BuildupChain { chain_next: true, chain_from_prev: false })
             } else {
                 None
@@ -2448,7 +2921,7 @@ pub fn create_plan_internal(
             };
 
             // Zoom beat offset: 0..=2 frames (all styles)
-            let zoom_beat_offset = s8 % 3; // 0, 1, or 2
+            let zoom_beat_offset = if overrides.zoom_beat_offset { s8 % 3 } else { 0 };
 
             let effects = SegmentEffects {
                 shake: ShakeEffect {
@@ -2488,45 +2961,41 @@ pub fn create_plan_internal(
                 }
 
                 segments.push(PlanSegment {
-                    t0: (seg_t0 * 10000.0).round() / 10000.0,
-                    t1: (seg_t1 * 10000.0).round() / 10000.0,
-                    s0: (s0 * 10000.0).round() / 10000.0,
-                    s1: (s1 * 10000.0).round() / 10000.0,
+                    t0: seg_t0,
+                    t1: seg_t1,
+                    s0: (s0 * 1000.0).round() / 1000.0,
+                    s1: (s1 * 1000.0).round() / 1000.0,
                     curve: curve_name.clone(),
                     effects,
                     transition: None,
                 });
-
-                if is_exact_wrap && seg_t1 < target - 1e-6 {
-                    wrap_indices.push(segments.len());
-                }
-
                 seg_index += 1;
-                break;
+                seg_t0 = seg_t1;
             } else {
-                let t_wrap = seg_t0 + (video_duration - s_cursor) / r;
-                let mut s0 = s_cursor;
-                let mut s1 = video_duration;
+                let available = video_duration - s_cursor;
+                if available > 1e-6 {
+                    let dt_sub = available / r;
+                    let mut s0 = s_cursor;
+                    let mut s1 = video_duration;
+                    if reverse_this_segment {
+                        std::mem::swap(&mut s0, &mut s1);
+                    }
 
-                if reverse_this_segment {
-                    std::mem::swap(&mut s0, &mut s1);
+                    segments.push(PlanSegment {
+                        t0: seg_t0,
+                        t1: seg_t0 + dt_sub,
+                        s0: (s0 * 1000.0).round() / 1000.0,
+                        s1: (s1 * 1000.0).round() / 1000.0,
+                        curve: curve_name.clone(),
+                        effects: effects.clone(),
+                        transition: None,
+                    });
+                    seg_index += 1;
+                    seg_t0 += dt_sub;
                 }
-
-                segments.push(PlanSegment {
-                    t0: (seg_t0 * 10000.0).round() / 10000.0,
-                    t1: (t_wrap * 10000.0).round() / 10000.0,
-                    s0: (s0 * 10000.0).round() / 10000.0,
-                    s1: (s1 * 10000.0).round() / 10000.0,
-                    curve: curve_name.clone(),
-                    effects,
-                    transition: None,
-                });
-
-                wrap_indices.push(segments.len());
-                loops += 1;
                 s_cursor = 0.0;
-                seg_t0 = t_wrap;
-                seg_index += 1;
+                loops += 1;
+                wrap_indices.push(segments.len());
             }
         }
     }
@@ -2545,36 +3014,55 @@ pub fn create_plan_internal(
         }
     }
 
-    let one_framers = if full_fx {
+    let one_framers = if overrides.one_framers {
         generate_one_framers(style, &segments, downbeats, fps, target_dur)
     } else {
         vec![]
     };
     // Geometric transitions (WARP_BUBBLE, WAVE_WARP, SLIDE_SHAKE, future STRETCH)
-    // are always generated — they survive in MOTION ONLY mode.
-    let transitions = generate_transitions(style, &mut segments, &wrap_indices, fps);
+    let transitions = if overrides.transitions {
+        generate_transitions(style, &mut segments, &wrap_indices, fps)
+    } else {
+        vec![]
+    };
 
-    let ambiance = if full_fx {
-        let tint_offset = {
+    let has_any_ambiance = overrides.flicker
+        || overrides.exposure_flash
+        || overrides.echo_trail
+        || overrides.tint
+        || overrides.vignette
+        || overrides.scanlines;
+
+    let ambiance = if has_any_ambiance {
+        let mut a = default_ambiance(style, downbeats);
+        if overrides.tint {
             let seed = 0x9e3779b9u32;
             let r = ((seed.wrapping_mul(1664525).wrapping_add(1013904223)) % 21) as i16 - 10;
             let g = ((seed.wrapping_mul(22695477).wrapping_add(1)) % 11) as i16 - 5;
             let b = ((seed.wrapping_mul(6364136223846793005u64 as u32).wrapping_add(1442695040)) % 17) as i16 - 8;
-            [r, g, b]
-        };
-        let mut a = default_ambiance(style, downbeats);
-        a.tint.offset_rgb = tint_offset;
+            a.tint.offset_rgb = [r, g, b];
+        } else {
+            a.tint.offset_rgb = [0, 0, 0];
+        }
+        if !overrides.flicker {
+            a.flicker.amplitude = 0.0;
+        }
+        if !overrides.exposure_flash {
+            a.exposure_flash.times.clear();
+            a.exposure_flash.peak = 0.0;
+        }
+        if !overrides.echo_trail {
+            a.echo_trail.enabled = false;
+        }
+        if !overrides.vignette {
+            a.vignette.strength = 0.0;
+        }
+        if !overrides.scanlines {
+            a.scanlines.opacity = 0.0;
+        }
         Some(a)
     } else {
-        // Motion-only: keep flicker, strip everything else
-        Some(AmbianceConfig {
-            flicker: default_ambiance(style, downbeats).flicker,
-            exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
-            echo_trail: EchoTrailConfig { enabled: false, alpha: 0.0, k: 0 },
-            tint: TintConfig { offset_rgb: [0, 0, 0] },
-            vignette: VignetteConfig { strength: 0.0 },
-            scanlines: ScanlinesConfig { opacity: 0.0 },
-        })
+        None
     };
 
     Ok(ProjectPlan {
@@ -2612,6 +3100,7 @@ fn generate_plan(
     aspect_h: u32,
     bpm: f64,
     full_fx: bool,
+    effect_overrides: Option<EffectOverrides>,
 ) -> Result<String, String> {
     let plan = create_plan_internal(
         &style,
@@ -2624,6 +3113,7 @@ fn generate_plan(
         aspect_h,
         bpm,
         full_fx,
+        effect_overrides,
     )?;
     serde_json::to_string_pretty(&plan).map_err(|e| format!("Failed to serialize plan: {e}"))
 }
@@ -3209,7 +3699,8 @@ pub fn run() {
             save_plan,
             cancel_render,
             open_target_folder,
-            run_render_pipeline
+            run_render_pipeline,
+            get_effect_previews
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
@@ -3254,7 +3745,7 @@ mod tests {
         let downbeats = vec![1.0, 2.0, 3.0];
 
         for style in ["HARD", "SMOOTH", "HYBRID"] {
-            let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0, true).unwrap();
+            let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0, true, None).unwrap();
 
             for win in plan.segments.windows(2) {
                 let seg_n = &win[0];
@@ -3278,7 +3769,7 @@ mod tests {
         ];
         let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
 
-        let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true).unwrap();
+        let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None).unwrap();
         let mut reverse_found = false;
 
         for seg in &hard_plan.segments {
@@ -3292,7 +3783,7 @@ mod tests {
         assert!(reverse_found, "HARD style on fixture must contain at least one reversed downbeat segment");
 
         // SMOOTH style must have 0% reverse
-        let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true).unwrap();
+        let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None).unwrap();
         for seg in &smooth_plan.segments {
             assert!(!seg.effects.reverse, "SMOOTH style must not contain reversed segments");
             assert!(seg.s0 < seg.s1);
@@ -3399,7 +3890,7 @@ mod tests {
         assert_eq!(parsed_v1.transitions.len(), 0);
         assert_eq!(parsed_v1.segments[0].transition, None);
 
-        let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true).unwrap();
+        let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true, None).unwrap();
         assert_eq!(v2_plan.schema_version, 2);
         assert_eq!(v2_plan.motion_blur, true);
         assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
@@ -3466,6 +3957,7 @@ mod tests {
             1080,
             bpm,
             true,
+            None,
         )
         .unwrap();
 
@@ -3499,6 +3991,7 @@ mod tests {
             1080,
             bpm,
             true,
+            None,
         )
         .unwrap();
         assert!(plan_smooth.one_framers.len() < plan_hard.one_framers.len());
@@ -3515,6 +4008,7 @@ mod tests {
             1080,
             bpm,
             true,
+            None,
         )
         .unwrap();
         assert!(plan_hybrid.one_framers.len() > plan_smooth.one_framers.len());
@@ -3532,8 +4026,8 @@ mod tests {
         let fps = 16u32;
         let bpm = 83.33;
 
-        let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
-        let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
+        let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None).unwrap();
+        let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None).unwrap();
 
         assert_eq!(plan1.one_framers, plan2.one_framers);
         for (f1, f2) in plan1.one_framers.iter().zip(plan2.one_framers.iter()) {
@@ -3675,6 +4169,7 @@ mod tests {
                 1080,
                 bpm,
                 true,
+                None,
             )
             .expect("Plan generation must succeed");
 
@@ -3707,7 +4202,7 @@ mod tests {
     fn test_ambiance_flicker_oscillation() {
         let fps = 16.0;
         let t_cut = 0.0;
-        let mut seg = PlanSegment {
+        let seg = PlanSegment {
             t0: 0.0, t1: 1.0, s0: 0.0, s1: 1.0,
             curve: "snap".to_string(),
             effects: crate::SegmentEffects {
@@ -3979,7 +4474,7 @@ mod tests {
         let fps = 16u32;
         let bpm = 83.33;
 
-        let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
+        let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None).unwrap();
 
         let wrap_transitions: Vec<_> = plan_hard.transitions.iter().filter(|t| t.is_wrap).collect();
         assert_eq!(wrap_transitions.len(), 1, "HARD plan should have 1 wrap transition");
@@ -3999,13 +4494,13 @@ mod tests {
         assert!((cut_waves as i32 - 4).abs() <= 2, "Wave cuts count should be ~4");
         assert!((cut_slides as i32 - 8).abs() <= 2, "Slide cuts count should be ~8");
 
-        let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
+        let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None).unwrap();
         let smooth_warps = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
         let smooth_waves = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
         assert_eq!(smooth_warps, 0, "SMOOTH style has 0% warp on cuts");
         assert_eq!(smooth_waves, 0, "SMOOTH style has 0% wave on cuts");
 
-        let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
+        let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None).unwrap();
         assert!(plan_hybrid.transitions.len() > plan_smooth.transitions.len());
     }
 
@@ -4038,6 +4533,7 @@ mod tests {
             1080,
             bpm,
             true,
+            None,
         )
         .expect("Plan generation failed");
 
@@ -4503,7 +4999,7 @@ mod tests {
 
         let plan = create_plan_internal(
             "HARD", 16, &beats, &downbeats,
-            video_duration, audio_duration, 1080, 1080, 83.33, false,
+            video_duration, audio_duration, 1080, 1080, 83.33, false, None,
         ).expect("Plan generation must succeed");
 
         assert_eq!(plan.full_fx, false);
@@ -4535,7 +5031,7 @@ mod tests {
 
         let plan = create_plan_internal(
             "HARD", 16, &beats, &downbeats,
-            video_duration, audio_duration, 1080, 1080, 83.33, true,
+            video_duration, audio_duration, 1080, 1080, 83.33, true, None,
         ).expect("Plan generation must succeed");
 
         assert_eq!(plan.full_fx, true);
@@ -4643,9 +5139,9 @@ mod tests {
         // Same input → same plan every time
         let beats = vec![0.42, 1.14, 1.88, 2.60, 3.32, 4.04];
         let downbeats = vec![2.60];
-        let plan1 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true)
+        let plan1 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None)
             .expect("plan1 ok");
-        let plan2 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true)
+        let plan2 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None)
             .expect("plan2 ok");
         assert_eq!(plan1.segments, plan2.segments, "Segments must be identical for same seed");
         println!("T14 reproducibility: {} segments, seed-stable", plan1.segments.len());
@@ -4655,7 +5151,7 @@ mod tests {
     fn test_t14_adv_shakes_present_in_hard() {
         let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
         let downbeats = vec![2.88, 5.76, 8.64];
-        let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true)
+        let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None)
             .expect("plan ok");
         let has_bouncy = plan.segments.iter().any(|s| s.effects.bouncy_shake.is_some());
         let has_squish = plan.segments.iter().any(|s| s.effects.squish_pop.is_some());
@@ -4671,7 +5167,7 @@ mod tests {
     fn test_render_stats_computation() {
         let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
         let downbeats = vec![2.88, 5.76, 8.64];
-        let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true)
+        let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None)
             .expect("plan ok");
 
         let temp_dir = std::env::temp_dir();
@@ -4688,6 +5184,108 @@ mod tests {
 
         println!("T16 Render Stats: time={:.2}s, size={:.2}MB, fps={}, effects={}",
             stats.render_time_secs, stats.file_size_mb, stats.target_fps, stats.effects_count);
+    }
+
+    // ─── T17 Effect Preview & Overrides Tests ─────────────────────────────────
+
+    #[test]
+    fn test_generic_preview_frame_pattern() {
+        let w = 256usize;
+        let h = 256usize;
+        let frame = generate_generic_preview_frame(w, h);
+        assert_eq!(frame.len(), w * h * 3);
+
+        // (0,0) must be black
+        assert_eq!(frame[0], 0);
+        assert_eq!(frame[1], 0);
+        assert_eq!(frame[2], 0);
+
+        // (255,255) must be white
+        let last_idx = ((h - 1) * w + (w - 1)) * 3;
+        assert_eq!(frame[last_idx], 255);
+        assert_eq!(frame[last_idx + 1], 255);
+        assert_eq!(frame[last_idx + 2], 255);
+
+        // Diagonal symmetry: (x, y) == (y, x)
+        for y in 0..h {
+            for x in 0..w {
+                let idx1 = (y * w + x) * 3;
+                let idx2 = (x * w + y) * 3;
+                assert_eq!(frame[idx1], frame[idx2], "Symmetry check failed at ({}, {})", x, y);
+            }
+        }
+
+        // Monotonic along main diagonal
+        for i in 0..(w - 1) {
+            let idx_curr = (i * w + i) * 3;
+            let idx_next = ((i + 1) * w + (i + 1)) * 3;
+            assert!(frame[idx_curr] <= frame[idx_next], "Monotonicity failed at diagonal index {}", i);
+        }
+        println!("T17 generic preview frame: 256x256 diagonal gradient verified");
+    }
+
+    #[test]
+    fn test_all_18_effect_previews_produce_diff() {
+        let previews = get_effect_previews().expect("get_effect_previews must succeed");
+        assert_eq!(previews.len(), 18, "Must generate previews for exactly 18 effects");
+
+        let base_frame = generate_generic_preview_frame(256, 256);
+
+        for item in &previews {
+            assert!(item.preview_data_url.starts_with("data:image/bmp;base64,"),
+                "Effect {} preview must be a valid BMP data URI", item.id);
+
+            let preview_frame = render_effect_preview(&item.id, 256, 256);
+            let diff: i64 = base_frame
+                .iter()
+                .zip(preview_frame.iter())
+                .map(|(&a, &b)| (a as i64 - b as i64).abs())
+                .sum();
+
+            println!("T17 Effect [{}] category=[{}] total pixel diff={}", item.id, item.category, diff);
+            assert!(diff > 0, "Effect [{}] must modify generic frame (diff > 0)", item.id);
+        }
+    }
+
+    #[test]
+    fn test_plan_with_manual_effect_overrides() {
+        let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
+        let downbeats = vec![2.88, 5.76, 8.64];
+
+        // 1. Manually disable shakes, zoom, one-framers, transitions, flicker
+        let mut ov = default_effects_for_style("HARD", true);
+        ov.shakes = false;
+        ov.zoom = false;
+        ov.one_framers = false;
+        ov.transitions = false;
+        ov.flicker = false;
+
+        let plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov),
+        ).expect("Plan generation with overrides ok");
+
+        for seg in &plan.segments {
+            assert_eq!(seg.effects.shake.a0, 0.0, "Shakes must be disabled when overridden to false");
+            assert_eq!(seg.effects.zoom.scale_start, 1.0, "Zoom must be disabled when overridden to false");
+            assert_eq!(seg.effects.zoom.scale_end, 1.0, "Zoom must be disabled when overridden to false");
+        }
+        assert!(plan.one_framers.is_empty(), "one_framers must be empty when overridden to false");
+        assert!(plan.transitions.is_empty(), "transitions must be empty when overridden to false");
+        if let Some(ref amb) = plan.ambiance {
+            assert_eq!(amb.flicker.amplitude, 0.0, "Flicker amplitude must be 0 when overridden to false");
+        }
+
+        // 2. Enable bouncy_shake manually on SMOOTH style
+        let mut ov_smooth = default_effects_for_style("SMOOTH", true);
+        ov_smooth.bouncy_shake = true;
+
+        let plan_smooth = create_plan_internal(
+            "SMOOTH", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov_smooth),
+        ).expect("SMOOTH plan with bouncy override ok");
+
+        let has_bouncy = plan_smooth.segments.iter().any(|s| s.effects.bouncy_shake.is_some());
+        assert!(has_bouncy, "Manually enabled bouncy_shake must appear in SMOOTH plan");
+        println!("T17 effect overrides successfully applied and verified");
     }
 }
 

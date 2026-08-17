@@ -58,6 +58,66 @@
   let fullFxEnabled = $state(true);    // T13 full fx, default ON
   let renderStats = $state(null);      // T16 render logs & stats
 
+  // T17 Generic Effect Preview and Toggleable Overrides
+  let showDetailsModal = $state(false);
+  let availableEffects = $state([]);
+  let hoveredPreview = $state(null);
+  let hoverPos = $state({ x: 0, y: 0 });
+
+  function getDefaultOverrides(style, fullFx) {
+    const isSmooth = style === 'SMOOTH';
+    const isHybrid = style === 'HYBRID';
+    const isHard = !isSmooth && !isHybrid;
+
+    return {
+      shakes: true,
+      zoom: true,
+      flicker: true,
+      oneFramers: fullFx && (isHard || isHybrid),
+      transitions: true,
+      tint: fullFx,
+      vignette: fullFx,
+      scanlines: fullFx,
+      echoTrail: echoTrailEnabled,
+      exposureFlash: fullFx && isHard,
+      bouncyShake: isHard || isHybrid,
+      dissolveShake: isHard || isHybrid,
+      skewShake: isHard || isHybrid,
+      squishPop: isHard || isHybrid,
+      opticsBounce: isHard || isHybrid,
+      buildupChain: true,
+      warpStretch: isHard || isHybrid,
+      zoomBeatOffset: true,
+    };
+  }
+
+  let effectOverrides = $state(getDefaultOverrides('HARD', true));
+
+  function handleToggleFullFx() {
+    fullFxEnabled = !fullFxEnabled;
+    effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+  }
+
+  function handleSelectAllEffects() {
+    const next = { ...effectOverrides };
+    for (const key of Object.keys(next)) {
+      next[key] = true;
+    }
+    effectOverrides = next;
+  }
+
+  function handleDeselectAllEffects() {
+    const next = { ...effectOverrides };
+    for (const key of Object.keys(next)) {
+      next[key] = false;
+    }
+    effectOverrides = next;
+  }
+
+  function handleResetEffectsToPreset() {
+    effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+  }
+
   const STYLE_OPTIONS = [
     {
       id: 'HARD',
@@ -299,6 +359,7 @@
         aspectH,
         bpm: bpm || 120.0,
         fullFx: fullFxEnabled,
+        effectOverrides,
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -519,6 +580,12 @@
       appVersion = await invoke('get_app_version');
     } catch (e) {
       console.error('Failed to retrieve app version:', e);
+    }
+
+    try {
+      availableEffects = await invoke('get_effect_previews');
+    } catch (e) {
+      console.error('Failed to load effect previews:', e);
     }
 
     try {
@@ -763,7 +830,10 @@
                       <button
                         class="style-card"
                         class:selected={selectedStyle === style.id}
-                        onclick={() => selectedStyle = style.id}
+                        onclick={() => {
+                          selectedStyle = style.id;
+                          effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+                        }}
                         type="button"
                       >
                         <div class="style-card-header">
@@ -839,23 +909,33 @@
                   {/if}
                 </div>
 
-                <!-- 4. T13 Full FX toggle -->
+                <!-- 4. T13 Full FX toggle & T17 Details button -->
                 <div class="control-group">
                   <div class="toggle-row">
                     <div class="toggle-row-label">
                       <span class="group-label">FULL FX</span>
                       <span class="toggle-row-desc">All effects — one-framers, transitions, tint, vignette, scanlines. Default ON.</span>
                     </div>
-                    <button
-                      id="toggle-full-fx"
-                      class="toggle-btn"
-                      class:active={fullFxEnabled}
-                      onclick={() => fullFxEnabled = !fullFxEnabled}
-                      type="button"
-                      aria-pressed={fullFxEnabled}
-                    >
-                      {fullFxEnabled ? 'ON' : 'OFF'}
-                    </button>
+                    <div class="toggle-actions-group">
+                      <button
+                        id="btn-details-fx"
+                        class="btn-details-fx"
+                        onclick={() => showDetailsModal = true}
+                        type="button"
+                      >
+                        DETAILS
+                      </button>
+                      <button
+                        id="toggle-full-fx"
+                        class="toggle-btn"
+                        class:active={fullFxEnabled}
+                        onclick={handleToggleFullFx}
+                        type="button"
+                        aria-pressed={fullFxEnabled}
+                      >
+                        {fullFxEnabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -1121,6 +1201,120 @@
           {/if}
         </div>
       </div>
+    </div>
+  {/if}
+
+  <!-- T17 Effect Details & Previews Modal -->
+  {#if showDetailsModal}
+    <div
+      class="modal-backdrop"
+      onclick={(e) => { if (e.target === e.currentTarget) showDetailsModal = false; }}
+      role="presentation"
+    >
+      <div
+        class="modal-card details-modal-card"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="0"
+      >
+        <div class="modal-header">
+          <div class="modal-header-titles">
+            <h2>EFFECT DETAILS & TOGGLES</h2>
+            <span class="modal-subtitle">Configure individual effects for project plans and preview algorithm output</span>
+          </div>
+          <button class="btn-close-modal" onclick={() => showDetailsModal = false} aria-label="Close details">✕</button>
+        </div>
+
+        <div class="details-toolbar">
+          <div class="details-toolbar-left">
+            <span class="effects-count-badge">{availableEffects.filter(e => effectOverrides[e.id]).length} / {availableEffects.length} ACTIVE</span>
+          </div>
+          <div class="details-toolbar-actions">
+            <button class="btn-toolbar" onclick={handleSelectAllEffects} type="button">SELECT ALL</button>
+            <button class="btn-toolbar" onclick={handleDeselectAllEffects} type="button">DESELECT ALL</button>
+            <button class="btn-toolbar" onclick={handleResetEffectsToPreset} type="button">RESET TO STYLE</button>
+          </div>
+        </div>
+
+        <div class="modal-body details-modal-body">
+          <div class="effects-grid">
+            {#each availableEffects as effect (effect.id)}
+              <div
+                class="effect-card"
+                class:active={effectOverrides[effect.id]}
+                onclick={() => effectOverrides[effect.id] = !effectOverrides[effect.id]}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { effectOverrides[effect.id] = !effectOverrides[effect.id]; e.preventDefault(); } }}
+              >
+                <div
+                  class="effect-card-thumb-wrap"
+                  role="presentation"
+                  onmouseenter={(e) => {
+                    hoveredPreview = effect;
+                    hoverPos = { x: e.clientX, y: e.clientY };
+                  }}
+                  onmousemove={(e) => {
+                    hoverPos = { x: e.clientX, y: e.clientY };
+                  }}
+                  onmouseleave={() => {
+                    hoveredPreview = null;
+                  }}
+                >
+                  <img src={effect.previewDataUrl} alt={effect.name} class="effect-thumb-img" width="128" height="128" />
+                  <span class="hover-hint-badge">HOVER TO ENLARGE</span>
+                </div>
+
+                <div class="effect-card-info">
+                  <div class="effect-card-top">
+                    <div class="effect-card-title-row">
+                      <span class="effect-card-name">{effect.name}</span>
+                      <span class="effect-category-pill">{effect.category}</span>
+                    </div>
+                    <label class="effect-toggle-label">
+                      <input
+                        type="checkbox"
+                        checked={effectOverrides[effect.id]}
+                        onclick={(e) => e.stopPropagation()}
+                        onchange={(e) => effectOverrides[effect.id] = e.target.checked}
+                      />
+                      <span class="effect-toggle-custom"></span>
+                    </label>
+                  </div>
+                  <p class="effect-card-desc">{effect.description}</p>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-primary-modal" onclick={() => showDetailsModal = false} type="button">APPLY & CLOSE</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- T17 Floating Large Preview Hover Box -->
+  {#if hoveredPreview}
+    <div
+      class="large-preview-popover"
+      style="left: {Math.min(window?.innerWidth ? window.innerWidth - 300 : 800, hoverPos.x + 24)}px; top: {Math.min(window?.innerHeight ? window.innerHeight - 340 : 600, Math.max(20, hoverPos.y - 140))}px;"
+    >
+      <div class="large-preview-header">
+        <span class="large-preview-title">{hoveredPreview.name}</span>
+        <span class="large-preview-cat">{hoveredPreview.category}</span>
+      </div>
+      <img
+        src={hoveredPreview.previewDataUrl}
+        alt={hoveredPreview.name}
+        class="large-preview-img"
+        width="256"
+        height="256"
+      />
+      <div class="large-preview-footer">256 × 256 GENERIC PATTERN PREVIEW</div>
     </div>
   {/if}
 
@@ -2585,5 +2779,310 @@
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     color: #71717a;
+  }
+
+  /* ─── T17 EFFECT DETAILS & PREVIEWS ─────────────────────────────────────── */
+  .toggle-actions-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-details-fx {
+    padding: 6px 12px;
+    background: #121216;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    color: #a1a1aa;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  }
+  .btn-details-fx:hover {
+    background: #1f1f26;
+    border-color: #52525b;
+    color: #ffffff;
+  }
+
+  .details-modal-card {
+    width: 820px;
+    max-width: 94vw;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modal-header-titles {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .modal-subtitle {
+    font-size: 11px;
+    color: #71717a;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+
+  .details-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    background: #09090c;
+    border-bottom: 1px solid #1c1c22;
+  }
+  .effects-count-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: #e4e4e7;
+    background: #18181c;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid #27272a;
+  }
+  .details-toolbar-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .btn-toolbar {
+    padding: 4px 9px;
+    background: #121216;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    color: #a1a1aa;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  }
+  .btn-toolbar:hover {
+    background: #1c1c24;
+    border-color: #52525b;
+    color: #ffffff;
+  }
+
+  .details-modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 18px;
+    background: #09090b;
+  }
+
+  .effects-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 12px;
+  }
+
+  .effect-card {
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    background: #0d0d12;
+    border: 1px solid #1c1c22;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 150ms ease, background-color 150ms ease;
+    user-select: none;
+  }
+  .effect-card:hover {
+    border-color: #3f3f46;
+    background: #121218;
+  }
+  .effect-card.active {
+    border-color: #52525b;
+    background: #111117;
+  }
+
+  .effect-card-thumb-wrap {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    flex-shrink: 0;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid #27272a;
+    background: #000000;
+  }
+  .effect-thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .hover-hint-badge {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.85);
+    color: #71717a;
+    font-size: 7px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 700;
+    text-align: center;
+    padding: 2px 0;
+    letter-spacing: 0.02em;
+    opacity: 0;
+    transition: opacity 150ms ease;
+  }
+  .effect-card-thumb-wrap:hover .hover-hint-badge {
+    opacity: 1;
+    color: #e4e4e7;
+  }
+
+  .effect-card-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+  }
+  .effect-card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .effect-card-title-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .effect-card-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f4f4f5;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+  .effect-category-pill {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    color: #a1a1aa;
+    background: #181820;
+    border: 1px solid #272730;
+    border-radius: 3px;
+    padding: 1px 5px;
+    width: fit-content;
+    letter-spacing: 0.04em;
+  }
+  .effect-card-desc {
+    font-size: 10px;
+    color: #71717a;
+    line-height: 1.35;
+    margin-top: 4px;
+  }
+
+  .effect-toggle-label {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+  .effect-toggle-label input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .effect-toggle-custom {
+    width: 32px;
+    height: 18px;
+    background: #1c1c24;
+    border: 1px solid #3f3f46;
+    border-radius: 9px;
+    position: relative;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+  .effect-toggle-custom::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #71717a;
+    top: 2px;
+    left: 2px;
+    transition: transform 150ms ease, background-color 150ms ease;
+  }
+  .effect-toggle-label input:checked + .effect-toggle-custom {
+    background: #e4e4e7;
+    border-color: #ffffff;
+  }
+  .effect-toggle-label input:checked + .effect-toggle-custom::after {
+    transform: translateX(14px);
+    background: #09090b;
+  }
+
+  /* ─── T17 LARGE HOVER PREVIEW POPOVER ──────────────────────────────────── */
+  .large-preview-popover {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    background: #0a0a0f;
+    border: 1px solid #3f3f46;
+    border-radius: 8px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.85), 0 0 1px rgba(255, 255, 255, 0.2);
+    overflow: hidden;
+    width: 272px;
+    display: flex;
+    flex-direction: column;
+    animation: popoverFadeIn 120ms ease-out;
+  }
+  @keyframes popoverFadeIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .large-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    background: #121218;
+    border-bottom: 1px solid #27272a;
+  }
+  .large-preview-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #f4f4f5;
+    font-family: 'IBM Plex Sans', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+  }
+  .large-preview-cat {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    color: #a1a1aa;
+    background: #1c1c24;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .large-preview-img {
+    width: 256px;
+    height: 256px;
+    margin: 8px auto;
+    border-radius: 4px;
+    border: 1px solid #27272a;
+    display: block;
+    object-fit: cover;
+  }
+  .large-preview-footer {
+    padding: 5px 8px;
+    background: #08080c;
+    border-top: 1px solid #18181c;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    color: #52525b;
+    text-align: center;
+    letter-spacing: 0.05em;
   }
 </style>
