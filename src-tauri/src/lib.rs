@@ -196,6 +196,8 @@ fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
     }
 }
 
+fn default_true() -> bool { true }
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectPlan {
     pub schema_version: u32,
@@ -210,6 +212,8 @@ pub struct ProjectPlan {
     pub loops: u32,
     #[serde(default)]
     pub motion_blur: bool,
+    #[serde(default = "default_true")]
+    pub full_fx: bool,
     #[serde(default)]
     pub one_framers: Vec<OneFramer>,
     #[serde(default)]
@@ -1424,6 +1428,36 @@ fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
     download_and_extract_ffmpeg(app)
 }
 
+fn get_ffprobe_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    // Derive ffprobe path from ffmpeg path (they ship together)
+    let ffmpeg_path = get_ffmpeg_binary(app)?;
+    let ffprobe_path = ffmpeg_path.with_file_name("ffprobe.exe");
+    if ffprobe_path.exists() {
+        return Ok(ffprobe_path);
+    }
+    // Fallback: check system PATH
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Ok(output) = std::process::Command::new("where.exe")
+            .arg("ffprobe")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = std::path::PathBuf::from(first_line.trim());
+                    if path.exists() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+    }
+    Err("ffprobe binary not found (required for fallback probe)".to_string())
+}
+
 fn download_and_extract_ffmpeg(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let data_dir = app
         .path()
@@ -1553,8 +1587,13 @@ fn pick_file(kind: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn probe_media(file_path: String) -> Result<MediaInfo, String> {
-    let path = std::path::Path::new(&file_path);
+fn probe_media(app: tauri::AppHandle, file_path: String) -> Result<MediaInfo, String> {
+    let ffprobe_bin = get_ffprobe_binary(&app).ok();
+    probe_media_internal(&file_path, ffprobe_bin.as_deref())
+}
+
+fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Path>) -> Result<MediaInfo, String> {
+    let path = std::path::Path::new(file_path);
     if !path.exists() {
         return Err(format!("File not found: {file_path}"));
     }
@@ -1634,8 +1673,80 @@ fn probe_media(file_path: String) -> Result<MediaInfo, String> {
         }
     }
 
-    // 2. Audio and other containers (via symphonia crate)
-    probe_audio_symphonia(&file_path, &ext)
+    // 2. ffprobe fallback for video files when pure-Rust probe missed dimensions
+    let video_exts = ["mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "ts", "m2ts", "mxf"];
+    if video_exts.contains(&ext.as_str()) {
+        if let Some(ffprobe_bin) = ffprobe_bin {
+            #[cfg(target_os = "windows")]
+            use std::os::windows::process::CommandExt;
+            let mut cmd = std::process::Command::new(ffprobe_bin);
+            cmd.args([
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,duration",
+                "-of", "json",
+                file_path,
+            ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                        if let Some(streams) = json["streams"].as_array() {
+                            if let Some(stream) = streams.first() {
+                                let width = stream["width"].as_u64().unwrap_or(0) as u32;
+                                let height = stream["height"].as_u64().unwrap_or(0) as u32;
+                                let mut fps = 0.0f64;
+                                // Try avg_frame_rate first, then r_frame_rate
+                                for key in ["avg_frame_rate", "r_frame_rate"] {
+                                    if let Some(rate_str) = stream[key].as_str() {
+                                        if let Some((num, den)) = rate_str.split_once('/') {
+                                            if let (Ok(n), Ok(d)) = (num.parse::<f64>(), den.parse::<f64>()) {
+                                                if d > 0.0 {
+                                                    fps = n / d;
+                                                    if (fps - fps.round()).abs() < 0.05 {
+                                                        fps = fps.round();
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let duration_str = stream["duration"].as_str().unwrap_or("0");
+                                let probe_dur = duration_str.parse::<f64>().unwrap_or(0.0);
+                                // Complement with symphonia for audio info
+                                let (audio_ch, audio_sr, sym_dur) = if let Ok(ai) = probe_audio_symphonia(file_path, &ext) {
+                                    (ai.audio_channels, ai.audio_sample_rate, ai.duration)
+                                } else { (0, 0, 0.0) };
+                                let final_dur = if probe_dur > 0.0 { probe_dur } else { sym_dur };
+                                if width > 0 && height > 0 {
+                                    return Ok(MediaInfo {
+                                        duration: final_dur,
+                                        fps,
+                                        width,
+                                        height,
+                                        audio_channels: audio_ch,
+                                        audio_sample_rate: audio_sr,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // If ffprobe also failed for a video file, return specific error
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or(file_path);
+        return Err(format!(
+            "Could not probe video dimensions for '{}' ({} container). Try re-encoding to H.264 MP4.",
+            filename, ext
+        ));
+    }
+
+    // 3. Audio and other containers (via symphonia crate)
+    probe_audio_symphonia(file_path, &ext)
 }
 
 fn probe_audio_symphonia(file_path: &str, ext: &str) -> Result<MediaInfo, String> {
@@ -1800,6 +1911,7 @@ pub fn create_plan_internal(
     aspect_w: u32,
     aspect_h: u32,
     bpm: f64,
+    full_fx: bool,
 ) -> Result<ProjectPlan, String> {
     if fps == 0 {
         return Err("FPS must be greater than 0".to_string());
@@ -1998,22 +2110,38 @@ pub fn create_plan_internal(
     }
 
     let target_dur = (target * 1000.0).round() / 1000.0;
-    let one_framers = generate_one_framers(style, &segments, downbeats, fps, target_dur);
-    let transitions = generate_transitions(style, &mut segments, &wrap_indices, fps);
-
-    // Build per-segment tint offsets (deterministic by segment index)
-    let tint_offset = {
-        let seed = 0x9e3779b9u32;
-        let r = ((seed.wrapping_mul(1664525).wrapping_add(1013904223)) % 21) as i16 - 10;
-        let g = ((seed.wrapping_mul(22695477).wrapping_add(1)) % 11) as i16 - 5;
-        let b = ((seed.wrapping_mul(6364136223846793005u64 as u32).wrapping_add(1442695040)) % 17) as i16 - 8;
-        [r, g, b]
+    let one_framers = if full_fx {
+        generate_one_framers(style, &segments, downbeats, fps, target_dur)
+    } else {
+        vec![]
+    };
+    let transitions = if full_fx {
+        generate_transitions(style, &mut segments, &wrap_indices, fps)
+    } else {
+        vec![]
     };
 
-    let ambiance = {
+    let ambiance = if full_fx {
+        let tint_offset = {
+            let seed = 0x9e3779b9u32;
+            let r = ((seed.wrapping_mul(1664525).wrapping_add(1013904223)) % 21) as i16 - 10;
+            let g = ((seed.wrapping_mul(22695477).wrapping_add(1)) % 11) as i16 - 5;
+            let b = ((seed.wrapping_mul(6364136223846793005u64 as u32).wrapping_add(1442695040)) % 17) as i16 - 8;
+            [r, g, b]
+        };
         let mut a = default_ambiance(style, downbeats);
         a.tint.offset_rgb = tint_offset;
-        a
+        Some(a)
+    } else {
+        // Motion-only: keep flicker, strip everything else
+        Some(AmbianceConfig {
+            flicker: default_ambiance(style, downbeats).flicker,
+            exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
+            echo_trail: EchoTrailConfig { enabled: false, alpha: 0.0, k: 0 },
+            tint: TintConfig { offset_rgb: [0, 0, 0] },
+            vignette: VignetteConfig { strength: 0.0 },
+            scanlines: ScanlinesConfig { opacity: 0.0 },
+        })
     };
 
     Ok(ProjectPlan {
@@ -2031,9 +2159,10 @@ pub fn create_plan_internal(
         audio_duration: (audio_duration * 1000.0).round() / 1000.0,
         loops,
         motion_blur: true,
+        full_fx,
         one_framers,
         transitions,
-        ambiance: Some(ambiance),
+        ambiance,
         segments,
     })
 }
@@ -2049,6 +2178,7 @@ fn generate_plan(
     aspect_w: u32,
     aspect_h: u32,
     bpm: f64,
+    full_fx: bool,
 ) -> Result<String, String> {
     let plan = create_plan_internal(
         &style,
@@ -2060,6 +2190,7 @@ fn generate_plan(
         aspect_w,
         aspect_h,
         bpm,
+        full_fx,
     )?;
     serde_json::to_string_pretty(&plan).map_err(|e| format!("Failed to serialize plan: {e}"))
 }
@@ -2133,25 +2264,54 @@ async fn run_render_pipeline(
 
     let ffmpeg_bin = get_ffmpeg_binary(&app)?;
 
-    // 1. Probe scene info
-    let scene_info = probe_media(scene_path.clone())?;
+    // 1. Probe scene info (with ffprobe fallback)
+    let scene_info = probe_media(app.clone(), scene_path.clone())?;
     if scene_info.width == 0 || scene_info.height == 0 {
         return Err("Invalid scene dimensions for rendering".to_string());
     }
 
-    let src_w = scene_info.width;
-    let src_h = scene_info.height;
+    let mut src_w = scene_info.width;
+    let mut src_h = scene_info.height;
     let src_fps = if scene_info.fps > 0.0 { scene_info.fps } else { 30.0 };
-    let frame_bytes = (src_w * src_h * 3) as usize;
 
     let estimated_frames = (scene_info.duration * src_fps).ceil() as u64;
-    let estimated_cache_size = estimated_frames * (frame_bytes as u64);
-
-    // Safeguard: 4 GB maximum cache size
     const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-    if estimated_cache_size > MAX_CACHE_BYTES {
-        return Err("source too heavy for beta renderer".to_string());
+
+    // Adaptive decode resolution: scale down if cache would exceed 4 GB
+    let mut scale_filter: Option<String> = None;
+    {
+        let raw_frame_bytes = (src_w as u64) * (src_h as u64) * 3;
+        let raw_cache = estimated_frames * raw_frame_bytes;
+        if raw_cache > MAX_CACHE_BYTES {
+            let s = ((MAX_CACHE_BYTES as f64) / (raw_cache as f64)).sqrt();
+            // Floor: long-side must remain >= 1080 after scale
+            let long_side = src_w.max(src_h) as f64;
+            let floor_scale = 1080.0 / long_side;
+            let s_clamped = s.max(floor_scale).min(1.0);
+
+            let new_w = ((src_w as f64 * s_clamped) as u32) & !1; // round to even
+            let new_h = ((src_h as f64 * s_clamped) as u32) & !1;
+
+            // Check if even at floor scale, cache still exceeds 4 GB
+            let floor_frame_bytes = (new_w as u64) * (new_h as u64) * 3;
+            let floor_cache = estimated_frames * floor_frame_bytes;
+            if floor_cache > MAX_CACHE_BYTES {
+                let max_frames_at_floor = MAX_CACHE_BYTES / floor_frame_bytes;
+                let max_seconds = (max_frames_at_floor as f64) / src_fps;
+                return Err(format!(
+                    "Source too long for beta renderer (max ~{:.0}s at this resolution)",
+                    max_seconds
+                ));
+            }
+
+            src_w = new_w;
+            src_h = new_h;
+            scale_filter = Some(format!("scale={}:{}", new_w, new_h));
+        }
     }
+
+    let frame_bytes = (src_w * src_h * 3) as usize;
+    let estimated_cache_size = estimated_frames * (frame_bytes as u64);
 
     let cache_dir = app
         .path()
@@ -2175,9 +2335,11 @@ async fn run_render_pipeline(
 
     let mut decode_child = {
         let mut cmd = std::process::Command::new(&ffmpeg_bin);
+        cmd.args(["-y", "-i", &scene_path]);
+        if let Some(ref vf) = scale_filter {
+            cmd.args(["-vf", vf]);
+        }
         cmd.args([
-            "-y",
-            "-i", &scene_path,
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
             "-an",
@@ -2623,7 +2785,7 @@ mod tests {
         let downbeats = vec![1.0, 2.0, 3.0];
 
         for style in ["HARD", "SMOOTH", "HYBRID"] {
-            let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0).unwrap();
+            let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0, true).unwrap();
 
             for win in plan.segments.windows(2) {
                 let seg_n = &win[0];
@@ -2647,7 +2809,7 @@ mod tests {
         ];
         let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
 
-        let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33).unwrap();
+        let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true).unwrap();
         let mut reverse_found = false;
 
         for seg in &hard_plan.segments {
@@ -2661,7 +2823,7 @@ mod tests {
         assert!(reverse_found, "HARD style on fixture must contain at least one reversed downbeat segment");
 
         // SMOOTH style must have 0% reverse
-        let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33).unwrap();
+        let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true).unwrap();
         for seg in &smooth_plan.segments {
             assert!(!seg.effects.reverse, "SMOOTH style must not contain reversed segments");
             assert!(seg.s0 < seg.s1);
@@ -2768,7 +2930,7 @@ mod tests {
         assert_eq!(parsed_v1.transitions.len(), 0);
         assert_eq!(parsed_v1.segments[0].transition, None);
 
-        let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0).unwrap();
+        let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true).unwrap();
         assert_eq!(v2_plan.schema_version, 2);
         assert_eq!(v2_plan.motion_blur, true);
         assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
@@ -2834,6 +2996,7 @@ mod tests {
             1080,
             1080,
             bpm,
+            true,
         )
         .unwrap();
 
@@ -2866,6 +3029,7 @@ mod tests {
             1080,
             1080,
             bpm,
+            true,
         )
         .unwrap();
         assert!(plan_smooth.one_framers.len() < plan_hard.one_framers.len());
@@ -2881,6 +3045,7 @@ mod tests {
             1080,
             1080,
             bpm,
+            true,
         )
         .unwrap();
         assert!(plan_hybrid.one_framers.len() > plan_smooth.one_framers.len());
@@ -2898,8 +3063,8 @@ mod tests {
         let fps = 16u32;
         let bpm = 83.33;
 
-        let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
-        let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
+        let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
 
         assert_eq!(plan1.one_framers, plan2.one_framers);
         for (f1, f2) in plan1.one_framers.iter().zip(plan2.one_framers.iter()) {
@@ -2967,7 +3132,7 @@ mod tests {
     fn test_probe_media_video_pure_rust() {
         let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
         if std::path::Path::new(video_path).exists() {
-            let res = probe_media(video_path.to_string()).expect("Probe should succeed");
+            let res = probe_media_internal(video_path, None).expect("Probe should succeed");
             println!("Video probe result: {:?}", res);
             assert!(res.duration > 10.0);
             assert_eq!(res.width, 1080);
@@ -2980,7 +3145,7 @@ mod tests {
     fn test_probe_media_audio_pure_rust() {
         let drums_path = r"C:\Users\cia\Downloads\jugg video & audio tester\audio [drums].mp3";
         if std::path::Path::new(drums_path).exists() {
-            let res = probe_media(drums_path.to_string()).expect("Probe should succeed");
+            let res = probe_media_internal(drums_path, None).expect("Probe should succeed");
             println!("Drums audio probe result: {:?}", res);
             assert!(res.duration > 14.0);
             assert_eq!(res.audio_channels, 2);
@@ -2989,7 +3154,7 @@ mod tests {
 
         let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
         if std::path::Path::new(audio_path).exists() {
-            let res = probe_media(audio_path.to_string()).expect("Probe should succeed");
+            let res = probe_media_internal(audio_path, None).expect("Probe should succeed");
             println!("Target audio probe result: {:?}", res);
             assert!(res.duration > 14.0);
             assert_eq!(res.audio_channels, 2);
@@ -3021,6 +3186,7 @@ mod tests {
                 1080,
                 1080,
                 bpm,
+                true,
             )
             .expect("Plan generation must succeed");
 
@@ -3322,7 +3488,7 @@ mod tests {
         let fps = 16u32;
         let bpm = 83.33;
 
-        let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
 
         let wrap_transitions: Vec<_> = plan_hard.transitions.iter().filter(|t| t.is_wrap).collect();
         assert_eq!(wrap_transitions.len(), 1, "HARD plan should have 1 wrap transition");
@@ -3342,13 +3508,13 @@ mod tests {
         assert!((cut_waves as i32 - 4).abs() <= 2, "Wave cuts count should be ~4");
         assert!((cut_slides as i32 - 8).abs() <= 2, "Slide cuts count should be ~8");
 
-        let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
         let smooth_warps = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
         let smooth_waves = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
         assert_eq!(smooth_warps, 0, "SMOOTH style has 0% warp on cuts");
         assert_eq!(smooth_waves, 0, "SMOOTH style has 0% wave on cuts");
 
-        let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true).unwrap();
         assert!(plan_hybrid.transitions.len() > plan_smooth.transitions.len());
     }
 
@@ -3380,6 +3546,7 @@ mod tests {
             1080,
             1080,
             bpm,
+            true,
         )
         .expect("Plan generation failed");
 
@@ -3390,7 +3557,7 @@ mod tests {
             std::path::PathBuf::from("ffmpeg.exe")
         };
 
-        let scene_info = probe_media(video_path.to_string()).unwrap();
+        let scene_info = probe_media_internal(video_path, None).unwrap();
         let src_w = scene_info.width;
         let src_h = scene_info.height;
         let src_fps = scene_info.fps;
@@ -3773,4 +3940,121 @@ mod tests {
             ratio
         );
     }
+
+    // ─── T12: Adaptive scale tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_adaptive_scale_4k() {
+        // 3840x2160 @ 30fps for 60s = 1800 frames
+        // Raw cache = 3840*2160*3*1800 = ~44.8 GB — far exceeds 4 GB
+        let w: u32 = 3840;
+        let h: u32 = 2160;
+        let frames: u64 = 1800;
+        let max_cache: u64 = 4 * 1024 * 1024 * 1024;
+        let raw_cache = (w as u64) * (h as u64) * 3 * frames;
+        assert!(raw_cache > max_cache, "4K source should exceed 4GB cache");
+
+        let s = ((max_cache as f64) / (raw_cache as f64)).sqrt();
+        let long_side = w.max(h) as f64;
+        let floor_scale = 1080.0 / long_side;
+        let s_clamped = s.max(floor_scale).min(1.0);
+
+        let new_w = ((w as f64 * s_clamped) as u32) & !1;
+        let new_h = ((h as f64 * s_clamped) as u32) & !1;
+
+        assert!(new_w.max(new_h) >= 1080, "Long side must be >= 1080 after scale");
+        let scaled_cache = (new_w as u64) * (new_h as u64) * 3 * frames;
+        assert!(scaled_cache <= max_cache, "Scaled cache must fit in 4GB: got {}GB", scaled_cache / 1_073_741_824);
+        println!("4K adaptive: {}x{} -> {}x{}, cache {:.2}GB -> {:.2}GB",
+            w, h, new_w, new_h,
+            raw_cache as f64 / 1e9, scaled_cache as f64 / 1e9);
+    }
+
+    #[test]
+    fn test_adaptive_scale_1080p_short() {
+        // 1080x1920 @ 30fps for ~10.77s = 323 frames — ~1.9 GB, no scale needed
+        let w: u32 = 1080;
+        let h: u32 = 1920;
+        let frames: u64 = 323;
+        let max_cache: u64 = 4 * 1024 * 1024 * 1024;
+        let raw_cache = (w as u64) * (h as u64) * 3 * frames;
+        assert!(raw_cache < max_cache, "1080p short source should fit in 4GB without scaling");
+        println!("1080p short: {}x{} x {} frames = {:.2}GB (no scale needed)",
+            w, h, frames, raw_cache as f64 / 1e9);
+    }
+
+    #[test]
+    fn test_adaptive_scale_max_duration() {
+        // At floor 1080 long-side (1080x608 for 16:9), compute max seconds @ 30fps
+        let fps: f64 = 30.0;
+        let floor_w: u32 = 1080;
+        let floor_h: u32 = 608; // even, ~16:9
+        let max_cache: u64 = 4 * 1024 * 1024 * 1024;
+        let floor_frame_bytes = (floor_w as u64) * (floor_h as u64) * 3;
+        let max_frames = max_cache / floor_frame_bytes;
+        let max_seconds = (max_frames as f64) / fps;
+        assert!(max_seconds > 60.0, "At 1080x608 @ 30fps, max should be > 60s, got {:.1}s", max_seconds);
+        println!("Max duration at {}x{} @ {}fps: {:.1}s ({} frames)",
+            floor_w, floor_h, fps, max_seconds, max_frames);
+    }
+
+    // ─── T13: FULL FX toggle tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_full_fx_off_strips_effects() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94,
+            7.64, 8.38, 9.10, 9.82, 10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+
+        let plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats,
+            video_duration, audio_duration, 1080, 1080, 83.33, false,
+        ).expect("Plan generation must succeed");
+
+        assert_eq!(plan.full_fx, false);
+        assert!(plan.one_framers.is_empty(), "full_fx=false must produce empty one_framers");
+        assert!(plan.transitions.is_empty(), "full_fx=false must produce empty transitions");
+
+        let amb = plan.ambiance.as_ref().unwrap();
+        assert!(amb.flicker.amplitude > 0.0, "Flicker must be preserved in MOTION ONLY mode");
+        assert!(amb.exposure_flash.times.is_empty(), "Exposure flash times must be empty");
+        assert!(!amb.echo_trail.enabled);
+        assert_eq!(amb.vignette.strength, 0.0);
+        assert_eq!(amb.scanlines.opacity, 0.0);
+        assert_eq!(amb.tint.offset_rgb, [0, 0, 0]);
+        println!("full_fx=false: one_framers={}, transitions={}, flicker.A={}",
+            plan.one_framers.len(), plan.transitions.len(), amb.flicker.amplitude);
+    }
+
+    #[test]
+    fn test_full_fx_on_matches_head() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94,
+            7.64, 8.38, 9.10, 9.82, 10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+
+        let plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats,
+            video_duration, audio_duration, 1080, 1080, 83.33, true,
+        ).expect("Plan generation must succeed");
+
+        assert_eq!(plan.full_fx, true);
+        assert!(!plan.one_framers.is_empty(), "full_fx=true must have one_framers");
+        assert!(!plan.transitions.is_empty(), "full_fx=true must have transitions");
+        let amb = plan.ambiance.as_ref().unwrap();
+        assert!(amb.flicker.amplitude > 0.0);
+        assert!(!amb.exposure_flash.times.is_empty());
+        assert!(amb.vignette.strength > 0.0);
+        assert!(amb.scanlines.opacity > 0.0);
+        println!("full_fx=true: one_framers={}, transitions={}",
+            plan.one_framers.len(), plan.transitions.len());
+    }
 }
+
