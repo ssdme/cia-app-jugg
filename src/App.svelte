@@ -56,6 +56,7 @@
   let borderless = $state(true); // always true internally
   let echoTrailEnabled = $state(false); // T11 echo/trail, default OFF
   let fullFxEnabled = $state(true);    // T13 full fx, default ON
+  let renderStats = $state(null);      // T16 render logs & stats
 
   const STYLE_OPTIONS = [
     {
@@ -329,15 +330,22 @@
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
-      const outMp4Path = await invoke('run_render_pipeline', {
+      const renderRes = await invoke('run_render_pipeline', {
         planJson,
         scenePath,
         audioPath,
         echoTrail: echoTrailEnabled,
       });
 
-      console.log('[RENDER] Render completed successfully:', outMp4Path);
-      renderOutputMp4 = outMp4Path;
+      console.log('[RENDER] Render completed successfully:', renderRes);
+      renderStats = typeof renderRes === 'object' && renderRes !== null ? renderRes : {
+        outputPath: renderRes,
+        renderTimeSecs: 0,
+        fileSizeMb: 0,
+        targetFps: fpsValue,
+        effectsCount: 0
+      };
+      renderOutputMp4 = renderStats.outputPath;
       renderState = 'done';
       showToast('Render completed successfully!', 'success');
     } catch (err) {
@@ -905,8 +913,29 @@
                       <span class="pro-dot active"></span>
                       <span class="render-done-title">RENDER COMPLETE</span>
                     </div>
-                    <span class="done-specs mono">1080x1080 · {fpsValue} FPS</span>
+                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} · {renderStats?.targetFps || fpsValue} FPS</span>
                   </div>
+
+                  {#if renderStats}
+                  <div class="render-stats-grid">
+                    <div class="render-stat-item">
+                      <span class="stat-label">RENDER TIME</span>
+                      <span class="stat-value mono">{renderStats.renderTimeSecs.toFixed(2)}s</span>
+                    </div>
+                    <div class="render-stat-item">
+                      <span class="stat-label">FILE SIZE</span>
+                      <span class="stat-value mono">{renderStats.fileSizeMb.toFixed(2)} MB</span>
+                    </div>
+                    <div class="render-stat-item">
+                      <span class="stat-label">AVG FPS</span>
+                      <span class="stat-value mono">{renderStats.targetFps} FPS</span>
+                    </div>
+                    <div class="render-stat-item">
+                      <span class="stat-label">EFFECTS APPLIED</span>
+                      <span class="stat-value mono">{renderStats.effectsCount}</span>
+                    </div>
+                  </div>
+                  {/if}
 
                   <div class="done-path-box">
                     <span class="stat-label">OUTPUT:</span>
@@ -1854,6 +1883,23 @@
     font-size: 8.5px;
     font-weight: 600;
     color: #4ade80;
+  }
+
+  .render-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    padding: 6px 8px;
+  }
+
+  .render-stat-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2px 4px;
   }
 
   .done-path-box {

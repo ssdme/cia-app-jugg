@@ -317,6 +317,16 @@ pub struct RenderProgressPayload {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderStats {
+    pub output_path: String,
+    pub render_time_secs: f64,
+    pub file_size_mb: f64,
+    pub target_fps: u32,
+    pub effects_count: usize,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct CropInfo {
     pub x: u32,
     pub y: u32,
@@ -1628,6 +1638,51 @@ pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32
     }
 }
 
+pub fn compute_effects_count(plan: &ProjectPlan) -> usize {
+    let one_framers_count = plan.one_framers.len();
+    let transitions_count = plan.transitions.len();
+    let mut ambiance_count = 0;
+    if let Some(ref amb) = plan.ambiance {
+        if amb.flicker.amplitude > 0.0 {
+            ambiance_count += 1;
+        }
+        if !amb.exposure_flash.times.is_empty() {
+            ambiance_count += 1;
+        }
+        if amb.echo_trail.enabled {
+            ambiance_count += 1;
+        }
+        if amb.tint.offset_rgb != [0, 0, 0] {
+            ambiance_count += 1;
+        }
+        if amb.vignette.strength > 0.0 {
+            ambiance_count += 1;
+        }
+        if amb.scanlines.opacity > 0.0 {
+            ambiance_count += 1;
+        }
+    }
+    one_framers_count + transitions_count + ambiance_count
+}
+
+pub fn compute_render_stats(
+    plan: &ProjectPlan,
+    out_mp4_path: &std::path::Path,
+    render_time_secs: f64,
+) -> RenderStats {
+    let file_size_mb = std::fs::metadata(out_mp4_path)
+        .map(|m| (m.len() as f64) / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+    let effects_count = compute_effects_count(plan);
+    RenderStats {
+        output_path: out_mp4_path.to_string_lossy().to_string(),
+        render_time_secs: (render_time_secs * 100.0).round() / 100.0,
+        file_size_mb: (file_size_mb * 100.0).round() / 100.0,
+        target_fps: plan.fps,
+        effects_count,
+    }
+}
+
 fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
@@ -2629,8 +2684,9 @@ async fn run_render_pipeline(
     scene_path: String,
     audio_path: String,
     echo_trail: bool,
-) -> Result<String, String> {
+) -> Result<RenderStats, String> {
     RENDER_CANCEL.store(false, Ordering::SeqCst);
+    let start_time = std::time::Instant::now();
 
     let mut plan: ProjectPlan = serde_json::from_str(&plan_json)
         .map_err(|e| format!("Invalid plan JSON: {e}"))?;
@@ -2723,6 +2779,8 @@ async fn run_render_pipeline(
             "-an",
             &raw_cache_file.to_string_lossy(),
         ]);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn()
@@ -3104,6 +3162,9 @@ async fn run_render_pipeline(
         return Err("FFmpeg video encoding failed".to_string());
     }
 
+    let render_time_secs = start_time.elapsed().as_secs_f64();
+    let stats = compute_render_stats(&plan, &out_mp4_path, render_time_secs);
+
     let _ = app.emit("render-progress", RenderProgressPayload {
         phase: "ENCODING".to_string(),
         percent: 100,
@@ -3112,7 +3173,7 @@ async fn run_render_pipeline(
         message: "Render completed successfully".to_string(),
     });
 
-    Ok(out_mp4_path.to_string_lossy().to_string())
+    Ok(stats)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4604,6 +4665,29 @@ mod tests {
         assert!(has_zoom_off, "All styles should have zoom_beat_offset > 0 on some segments");
         println!("T14 HARD: bouncy={}, squish={}, zoom_off={}",
             has_bouncy, has_squish, has_zoom_off);
+    }
+
+    #[test]
+    fn test_render_stats_computation() {
+        let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
+        let downbeats = vec![2.88, 5.76, 8.64];
+        let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true)
+            .expect("plan ok");
+
+        let temp_dir = std::env::temp_dir();
+        let dummy_mp4 = temp_dir.join("test_stats_fixture.mp4");
+        std::fs::write(&dummy_mp4, vec![0u8; 1024 * 512]).expect("write dummy file");
+
+        let stats = compute_render_stats(&plan, &dummy_mp4, 2.45);
+        let _ = std::fs::remove_file(&dummy_mp4);
+
+        assert!(stats.render_time_secs > 0.0, "Render time must be > 0, got {}", stats.render_time_secs);
+        assert!(stats.file_size_mb > 0.0, "File size must be > 0 MB, got {}", stats.file_size_mb);
+        assert_eq!(stats.target_fps, 16, "Target FPS must be 16, got {}", stats.target_fps);
+        assert!(stats.effects_count > 0, "Effects count must be > 0, got {}", stats.effects_count);
+
+        println!("T16 Render Stats: time={:.2}s, size={:.2}MB, fps={}, effects={}",
+            stats.render_time_secs, stats.file_size_mb, stats.target_fps, stats.effects_count);
     }
 }
 
