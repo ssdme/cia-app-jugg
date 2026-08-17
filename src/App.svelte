@@ -46,14 +46,14 @@
   let isAnalyzing = $state(false);
   let analyzingStep = $state('');
 
-  // Settings Configuration State (T4)
+  // Settings Configuration State (T4.5)
   let selectedStyle = $state('HARD'); // 'HARD' | 'SMOOTH' | 'HYBRID'
   let fpsValue = $state(16); // min 12, max 60, step 1, default 16
-  let selectedAspectRatio = $state('9:16'); // '16:9' | '9:16' | '1:1' | 'CUSTOM'
+  let selectedAspectRatio = $state('1:1'); // '16:9' | '9:16' | '1:1' | 'CUSTOM' (default 1:1)
   let customWidth = $state(1080);
-  let customHeight = $state(1920);
+  let customHeight = $state(1080);
   let customArError = $state('');
-  let borderless = $state(true); // default ON
+  let borderless = $state(true); // always true internally
 
   const STYLE_OPTIONS = [
     {
@@ -175,22 +175,6 @@
     try {
       analyzingStep = 'Probing scene video...';
       sceneInfo = await invoke('probe_media', { filePath: scenePath });
-
-      // Automatically detect aspect ratio from video dimensions
-      if (sceneInfo && sceneInfo.width > 0 && sceneInfo.height > 0) {
-        const ratio = sceneInfo.width / sceneInfo.height;
-        if (Math.abs(ratio - 16 / 9) < 0.05) {
-          selectedAspectRatio = '16:9';
-        } else if (Math.abs(ratio - 9 / 16) < 0.05) {
-          selectedAspectRatio = '9:16';
-        } else if (Math.abs(ratio - 1.0) < 0.05) {
-          selectedAspectRatio = '1:1';
-        } else {
-          selectedAspectRatio = 'CUSTOM';
-          customWidth = sceneInfo.width;
-          customHeight = sceneInfo.height;
-        }
-      }
 
       analyzingStep = 'Probing drums audio...';
       drumsInfo = await invoke('probe_media', { filePath: drumsPath });
@@ -567,49 +551,43 @@
             <div class="settings-container">
               <!-- Summary Probed Sources -->
               <div class="settings-sources-card">
-                <header class="settings-header">
-                  <span class="about-kicker">cia app / TIME REMAP</span>
+                <div class="settings-sources-header">
+                  <span class="settings-kicker">cia app / TIME REMAP</span>
                   <h1>SETTINGS</h1>
-                </header>
+                </div>
 
-                <div class="selected-paths-list">
+                <div class="compact-sources-list">
                   <!-- SCENE -->
-                  <div class="path-item">
-                    <div class="path-item-header">
-                      <span class="path-label">SCENE (VIDEO)</span>
-                      {#if sceneInfo}
-                        <span class="meta-pill mono">
-                          {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(2)} fps
-                        </span>
-                      {/if}
-                    </div>
-                    <span class="path-value mono">{scenePath}</span>
+                  <div class="source-row">
+                    <span class="source-tag">SCENE</span>
+                    <span class="source-name mono" title={scenePath}>{getFileName(scenePath)}</span>
+                    {#if sceneInfo}
+                      <span class="meta-pill mono">
+                        {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(0)}fps
+                      </span>
+                    {/if}
                   </div>
 
                   <!-- DRUMS -->
-                  <div class="path-item">
-                    <div class="path-item-header">
-                      <span class="path-label">DRUMS (AUDIO)</span>
-                      {#if drumsInfo}
-                        <span class="meta-pill mono">
-                          {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate} Hz · {drumsInfo.audioChannels} ch · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
-                        </span>
-                      {/if}
-                    </div>
-                    <span class="path-value mono">{drumsPath}</span>
+                  <div class="source-row">
+                    <span class="source-tag">DRUMS</span>
+                    <span class="source-name mono" title={drumsPath}>{getFileName(drumsPath)}</span>
+                    {#if drumsInfo}
+                      <span class="meta-pill mono">
+                        {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate}Hz · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
+                      </span>
+                    {/if}
                   </div>
 
                   <!-- AUDIO -->
-                  <div class="path-item">
-                    <div class="path-item-header">
-                      <span class="path-label">AUDIO (AUDIO)</span>
-                      {#if audioInfo}
-                        <span class="meta-pill mono">
-                          {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate} Hz · {audioInfo.audioChannels} ch
-                        </span>
-                      {/if}
-                    </div>
-                    <span class="path-value mono">{audioPath}</span>
+                  <div class="source-row">
+                    <span class="source-tag">AUDIO</span>
+                    <span class="source-name mono" title={audioPath}>{getFileName(audioPath)}</span>
+                    {#if audioInfo}
+                      <span class="meta-pill mono">
+                        {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate}Hz · {audioInfo.audioChannels}ch
+                      </span>
+                    {/if}
                   </div>
                 </div>
               </div>
@@ -650,26 +628,12 @@
                   />
                 </div>
 
-                <!-- 3. Aspect Ratio & Borderless -->
-                <div class="control-group-row">
-                  <!-- Aspect Ratio Preset Selector -->
-                  <div class="control-subgroup ar-subgroup">
+                <!-- 3. Aspect Ratio Preset Selector -->
+                <div class="control-group">
+                  <div class="ar-control-header">
                     <span class="group-label">ASPECT RATIO</span>
-                    <div class="ar-buttons-row">
-                      {#each ASPECT_RATIO_PRESETS as ar}
-                        <button
-                          class="btn-ar"
-                          class:active={selectedAspectRatio === ar}
-                          onclick={() => handleAspectRatioSelect(ar)}
-                          type="button"
-                        >
-                          {ar}
-                        </button>
-                      {/each}
-                    </div>
-
                     {#if selectedAspectRatio === 'CUSTOM'}
-                      <div class="custom-ar-inputs">
+                      <div class="custom-ar-inputs-inline">
                         <div class="input-field">
                           <span class="input-prefix">W:</span>
                           <input
@@ -678,7 +642,7 @@
                             value={customWidth}
                             oninput={handleCustomWidthInput}
                             class="mono-input"
-                            placeholder="Width"
+                            placeholder="W"
                           />
                         </div>
                         <span class="ar-divider">x</span>
@@ -690,34 +654,28 @@
                             value={customHeight}
                             oninput={handleCustomHeightInput}
                             class="mono-input"
-                            placeholder="Height"
+                            placeholder="H"
                           />
                         </div>
                       </div>
-                      {#if customArError}
-                        <span class="inline-ar-error mono">{customArError}</span>
-                      {/if}
                     {/if}
                   </div>
 
-                  <!-- Borderless Toggle Switch -->
-                  <div class="control-subgroup borderless-subgroup">
-                    <span class="group-label">CANVAS CROPPING</span>
-                    <button
-                      class="toggle-card"
-                      class:active={borderless}
-                      onclick={() => borderless = !borderless}
-                      type="button"
-                    >
-                      <div class="toggle-info">
-                        <span class="toggle-title">BORDERLESS</span>
-                        <span class="toggle-desc">Crop-to-fill (no black bars)</span>
-                      </div>
-                      <div class="switch-track" class:active={borderless}>
-                        <div class="switch-thumb"></div>
-                      </div>
-                    </button>
+                  <div class="ar-buttons-row">
+                    {#each ASPECT_RATIO_PRESETS as ar}
+                      <button
+                        class="btn-ar"
+                        class:active={selectedAspectRatio === ar}
+                        onclick={() => handleAspectRatioSelect(ar)}
+                        type="button"
+                      >
+                        {ar}
+                      </button>
+                    {/each}
                   </div>
+                  {#if selectedAspectRatio === 'CUSTOM' && customArError}
+                    <span class="inline-ar-error mono">{customArError}</span>
+                  {/if}
                 </div>
               </div>
 
@@ -1206,6 +1164,7 @@
   }
 
   /* Full Settings Page (T4) */
+  /* Compact Settings Page (T4.5) */
   .settings-page {
     width: min(100%, 880px);
     margin: auto;
@@ -1214,13 +1173,13 @@
     height: 100%;
     justify-content: center;
     overflow-y: auto;
-    padding: 4px 0;
+    padding: 0;
   }
 
   .settings-container {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .settings-sources-card,
@@ -1228,83 +1187,94 @@
     background: #09090c;
     border: 1px solid #1c1c20;
     border-radius: 8px;
-    padding: 12px 16px;
+    padding: 8px 12px;
     display: flex;
     flex-direction: column;
+    gap: 6px;
+  }
+
+  .settings-sources-header {
+    display: flex;
+    align-items: baseline;
     gap: 8px;
   }
 
-  .settings-header h1 {
-    margin: 2px 0 0;
-    font-size: 15px;
+  .settings-kicker {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #71717a;
+  }
+
+  .settings-sources-header h1 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
     letter-spacing: 0.04em;
     color: #ffffff;
   }
 
-  .selected-paths-list {
+  .compact-sources-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     background: #050507;
     border: 1px solid #1c1c20;
     border-radius: 6px;
-    padding: 8px 12px;
+    padding: 5px 8px;
   }
 
-  .path-item {
+  .source-row {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
-    padding-bottom: 5px;
-    border-bottom: 1px solid #141417;
-  }
-
-  .path-item:last-child {
-    padding-bottom: 0;
-    border-bottom: none;
-  }
-
-  .path-item-header {
-    display: flex;
-    justify-content: space-between;
     align-items: center;
     gap: 8px;
+    min-height: 20px;
   }
 
-  .path-label {
-    font-size: 9px;
+  .source-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #71717a;
+    color: #a1a1aa;
+    background: #141417;
+    border: 1px solid #27272a;
+    border-radius: 3px;
+    padding: 1px 4px;
+    min-width: 42px;
+    text-align: center;
+  }
+
+  .source-name {
+    font-size: 10px;
+    font-weight: 600;
+    color: #e4e4e7;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .meta-pill {
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 700;
     color: #4ade80;
     background: rgba(34, 197, 94, 0.1);
     border: 1px solid rgba(34, 197, 94, 0.25);
-    border-radius: 4px;
-    padding: 1px 6px;
+    border-radius: 3px;
+    padding: 0 5px;
     white-space: nowrap;
-  }
-
-  .path-value {
-    font-size: 10px;
-    font-weight: 600;
-    color: #e4e4e7;
-    word-break: break-all;
   }
 
   /* Control Group Common */
   .control-group {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
 
   .group-label {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #71717a;
@@ -1314,20 +1284,20 @@
   .styles-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
+    gap: 6px;
   }
 
   .style-card {
     background: #050507;
     border: 1px solid #1c1c20;
     border-radius: 6px;
-    padding: 8px 10px;
+    padding: 6px 8px;
     cursor: pointer;
     text-align: left;
     transition: all 0.15s ease;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
   }
 
   .style-card:hover {
@@ -1338,7 +1308,7 @@
   .style-card.selected {
     border-color: rgba(255, 255, 255, 0.5);
     background: #111116;
-    box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.03);
+    box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.03);
   }
 
   .style-card-header {
@@ -1348,15 +1318,15 @@
   }
 
   .style-name {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.05em;
     color: #ffffff;
   }
 
   .style-desc {
-    font-size: 9px;
-    line-height: 1.3;
+    font-size: 8.5px;
+    line-height: 1.25;
     color: #71717a;
   }
 
@@ -1364,18 +1334,11 @@
     color: #a1a1aa;
   }
 
-  /* Aspect Ratio & Borderless Row */
-  .control-group-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    align-items: start;
-  }
-
-  .control-subgroup {
+  /* Aspect Ratio */
+  .ar-control-header {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    justify-content: space-between;
+    align-items: center;
   }
 
   .ar-buttons-row {
@@ -1385,13 +1348,13 @@
 
   .btn-ar {
     flex: 1;
-    padding: 6px 8px;
+    padding: 5px 8px;
     background: #050507;
     border: 1px solid #1c1c20;
     border-radius: 4px;
     color: #71717a;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -1408,11 +1371,10 @@
     border-color: rgba(255, 255, 255, 0.5);
   }
 
-  .custom-ar-inputs {
+  .custom-ar-inputs-inline {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-top: 4px;
+    gap: 4px;
   }
 
   .input-field {
@@ -1420,17 +1382,17 @@
     align-items: center;
     background: #050507;
     border: 1px solid #1c1c20;
-    border-radius: 4px;
-    padding: 3px 6px;
-    flex: 1;
+    border-radius: 3px;
+    padding: 1px 4px;
+    width: 60px;
   }
 
   .input-prefix {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 700;
     color: #71717a;
-    margin-right: 4px;
+    margin-right: 3px;
   }
 
   .mono-input {
@@ -1439,95 +1401,22 @@
     outline: none;
     color: #ffffff;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 600;
     width: 100%;
   }
 
   .ar-divider {
     color: #71717a;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
   }
 
   .inline-ar-error {
     color: #fca5a5;
-    font-size: 9px;
+    font-size: 8.5px;
     line-height: 1.2;
-    margin-top: 2px;
-  }
-
-  /* Borderless Toggle Card */
-  .toggle-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    padding: 8px 12px;
-    cursor: pointer;
-    text-align: left;
-    transition: all 0.15s ease;
-    height: 38px;
-  }
-
-  .toggle-card:hover {
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-
-  .toggle-card.active {
-    border-color: rgba(255, 255, 255, 0.35);
-    background: #0c0c10;
-  }
-
-  .toggle-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .toggle-title {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #ffffff;
-  }
-
-  .toggle-desc {
-    font-size: 9px;
-    color: #71717a;
-  }
-
-  .switch-track {
-    width: 28px;
-    height: 16px;
-    background: #1c1c20;
-    border: 1px solid #27272a;
-    border-radius: 8px;
-    position: relative;
-    transition: background-color 0.15s ease;
-  }
-
-  .switch-track.active {
-    background: #ffffff;
-    border-color: #ffffff;
-  }
-
-  .switch-thumb {
-    width: 10px;
-    height: 10px;
-    background: #71717a;
-    border-radius: 50%;
-    position: absolute;
-    top: 2px;
-    left: 3px;
-    transition: transform 0.15s ease, background-color 0.15s ease;
-  }
-
-  .switch-track.active .switch-thumb {
-    transform: translateX(12px);
-    background: #000000;
+    margin-top: 1px;
   }
 
   /* Footer Actions */
@@ -1535,7 +1424,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 2px;
+    margin-top: 1px;
   }
 
   .btn-run-process {
