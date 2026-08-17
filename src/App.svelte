@@ -5,6 +5,7 @@
   import { check } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { onMount } from 'svelte';
+  import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
   import appLogo from '../src-tauri/icons/128x128@2x.png';
 
@@ -44,6 +45,35 @@
   let bpm = $state(null);
   let isAnalyzing = $state(false);
   let analyzingStep = $state('');
+
+  // Settings Configuration State (T4)
+  let selectedStyle = $state('HARD'); // 'HARD' | 'SMOOTH' | 'HYBRID'
+  let fpsValue = $state(16); // min 12, max 60, step 1, default 16
+  let selectedAspectRatio = $state('9:16'); // '16:9' | '9:16' | '1:1' | 'CUSTOM'
+  let customWidth = $state(1080);
+  let customHeight = $state(1920);
+  let customArError = $state('');
+  let borderless = $state(true); // default ON
+
+  const STYLE_OPTIONS = [
+    {
+      id: 'HARD',
+      title: 'HARD',
+      desc: 'fast snaps, one-framers, strong shake'
+    },
+    {
+      id: 'SMOOTH',
+      title: 'SMOOTH',
+      desc: 'soft curves, subtle shake, continuous zoom'
+    },
+    {
+      id: 'HYBRID',
+      title: 'HYBRID',
+      desc: 'mixed snaps and saddles, medium shake'
+    }
+  ];
+
+  const ASPECT_RATIO_PRESETS = ['16:9', '9:16', '1:1', 'CUSTOM'];
 
   const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'webm', 'mov', 'avi'];
   const AUDIO_EXTENSIONS = ['mp3', 'wav', 'flac', 'm4a', 'ogg'];
@@ -146,6 +176,22 @@
       analyzingStep = 'Probing scene video...';
       sceneInfo = await invoke('probe_media', { filePath: scenePath });
 
+      // Automatically detect aspect ratio from video dimensions
+      if (sceneInfo && sceneInfo.width > 0 && sceneInfo.height > 0) {
+        const ratio = sceneInfo.width / sceneInfo.height;
+        if (Math.abs(ratio - 16 / 9) < 0.05) {
+          selectedAspectRatio = '16:9';
+        } else if (Math.abs(ratio - 9 / 16) < 0.05) {
+          selectedAspectRatio = '9:16';
+        } else if (Math.abs(ratio - 1.0) < 0.05) {
+          selectedAspectRatio = '1:1';
+        } else {
+          selectedAspectRatio = 'CUSTOM';
+          customWidth = sceneInfo.width;
+          customHeight = sceneInfo.height;
+        }
+      }
+
       analyzingStep = 'Probing drums audio...';
       drumsInfo = await invoke('probe_media', { filePath: drumsPath });
 
@@ -167,6 +213,46 @@
       isAnalyzing = false;
       analyzingStep = '';
     }
+  }
+
+  function handleAspectRatioSelect(ar) {
+    selectedAspectRatio = ar;
+    if (ar === 'CUSTOM') {
+      validateCustomDimensions();
+    } else {
+      customArError = '';
+    }
+  }
+
+  function validateCustomDimensions() {
+    const w = parseInt(String(customWidth), 10);
+    const h = parseInt(String(customHeight), 10);
+    if (isNaN(w) || w <= 0 || isNaN(h) || h <= 0) {
+      customArError = 'Width and height must be integers greater than 0';
+    } else {
+      customArError = '';
+    }
+  }
+
+  function handleCustomWidthInput(e) {
+    customWidth = parseInt(e.target.value, 10) || 0;
+    validateCustomDimensions();
+  }
+
+  function handleCustomHeightInput(e) {
+    customHeight = parseInt(e.target.value, 10) || 0;
+    validateCustomDimensions();
+  }
+
+  function handleRunProcess() {
+    if (selectedAspectRatio === 'CUSTOM') {
+      validateCustomDimensions();
+      if (customArError) {
+        showToast('Please specify valid custom dimensions before running', 'error');
+        return;
+      }
+    }
+    showToast('RUN — implemented in task T5', 'info');
   }
 
   function showToast(message, type = 'info') {
@@ -477,58 +563,171 @@
           </section>
 
         {:else if activePage === 'settings'}
-          <section class="settings-stub-page" aria-label="Settings configuration stub">
-            <div class="settings-card">
-              <header class="settings-header">
-                <span class="about-kicker">cia app / TIME REMAP</span>
-                <h1>SETTINGS</h1>
-                <p class="stub-notice">SETTINGS — probe complete, implemented in task T4</p>
-              </header>
+          <section class="settings-page" aria-label="Settings configuration">
+            <div class="settings-container">
+              <!-- Summary Probed Sources -->
+              <div class="settings-sources-card">
+                <header class="settings-header">
+                  <span class="about-kicker">cia app / TIME REMAP</span>
+                  <h1>SETTINGS</h1>
+                </header>
 
-              <div class="selected-paths-list">
-                <!-- SCENE -->
-                <div class="path-item">
-                  <div class="path-item-header">
-                    <span class="path-label">SCENE (VIDEO)</span>
-                    {#if sceneInfo}
-                      <span class="meta-pill mono">
-                        {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(2)} fps
-                      </span>
-                    {/if}
+                <div class="selected-paths-list">
+                  <!-- SCENE -->
+                  <div class="path-item">
+                    <div class="path-item-header">
+                      <span class="path-label">SCENE (VIDEO)</span>
+                      {#if sceneInfo}
+                        <span class="meta-pill mono">
+                          {sceneInfo.duration.toFixed(2)}s · {sceneInfo.width}x{sceneInfo.height} · {sceneInfo.fps.toFixed(2)} fps
+                        </span>
+                      {/if}
+                    </div>
+                    <span class="path-value mono">{scenePath}</span>
                   </div>
-                  <span class="path-value mono">{scenePath}</span>
-                </div>
 
-                <!-- DRUMS -->
-                <div class="path-item">
-                  <div class="path-item-header">
-                    <span class="path-label">DRUMS (AUDIO)</span>
-                    {#if drumsInfo}
-                      <span class="meta-pill mono">
-                        {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate} Hz · {drumsInfo.audioChannels} ch · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
-                      </span>
-                    {/if}
+                  <!-- DRUMS -->
+                  <div class="path-item">
+                    <div class="path-item-header">
+                      <span class="path-label">DRUMS (AUDIO)</span>
+                      {#if drumsInfo}
+                        <span class="meta-pill mono">
+                          {drumsInfo.duration.toFixed(2)}s · {drumsInfo.audioSampleRate} Hz · {drumsInfo.audioChannels} ch · {bpm ? bpm.toFixed(1) : '—'} BPM · {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
+                        </span>
+                      {/if}
+                    </div>
+                    <span class="path-value mono">{drumsPath}</span>
                   </div>
-                  <span class="path-value mono">{drumsPath}</span>
-                </div>
 
-                <!-- AUDIO -->
-                <div class="path-item">
-                  <div class="path-item-header">
-                    <span class="path-label">AUDIO (AUDIO)</span>
-                    {#if audioInfo}
-                      <span class="meta-pill mono">
-                        {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate} Hz · {audioInfo.audioChannels} ch
-                      </span>
-                    {/if}
+                  <!-- AUDIO -->
+                  <div class="path-item">
+                    <div class="path-item-header">
+                      <span class="path-label">AUDIO (AUDIO)</span>
+                      {#if audioInfo}
+                        <span class="meta-pill mono">
+                          {audioInfo.duration.toFixed(2)}s · {audioInfo.audioSampleRate} Hz · {audioInfo.audioChannels} ch
+                        </span>
+                      {/if}
+                    </div>
+                    <span class="path-value mono">{audioPath}</span>
                   </div>
-                  <span class="path-value mono">{audioPath}</span>
                 </div>
               </div>
 
-              <div class="settings-footer">
+              <!-- Controls Card -->
+              <div class="settings-controls-card">
+                <!-- 1. Style Selector (HARD / SMOOTH / HYBRID) -->
+                <div class="control-group">
+                  <span class="group-label">REMAP STYLE</span>
+                  <div class="styles-grid">
+                    {#each STYLE_OPTIONS as style}
+                      <button
+                        class="style-card"
+                        class:selected={selectedStyle === style.id}
+                        onclick={() => selectedStyle = style.id}
+                        type="button"
+                      >
+                        <div class="style-card-header">
+                          <span class="style-name">{style.title}</span>
+                          <span class="pro-dot" class:active={selectedStyle === style.id}></span>
+                        </div>
+                        <p class="style-desc">{style.desc}</p>
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                <!-- 2. Framerate (GlowSlider) -->
+                <div class="control-group">
+                  <GlowSlider
+                    bind:value={fpsValue}
+                    min={12}
+                    max={60}
+                    step={1}
+                    label="OUTPUT FRAMERATE"
+                    unit=" FPS"
+                    precision={0}
+                  />
+                </div>
+
+                <!-- 3. Aspect Ratio & Borderless -->
+                <div class="control-group-row">
+                  <!-- Aspect Ratio Preset Selector -->
+                  <div class="control-subgroup ar-subgroup">
+                    <span class="group-label">ASPECT RATIO</span>
+                    <div class="ar-buttons-row">
+                      {#each ASPECT_RATIO_PRESETS as ar}
+                        <button
+                          class="btn-ar"
+                          class:active={selectedAspectRatio === ar}
+                          onclick={() => handleAspectRatioSelect(ar)}
+                          type="button"
+                        >
+                          {ar}
+                        </button>
+                      {/each}
+                    </div>
+
+                    {#if selectedAspectRatio === 'CUSTOM'}
+                      <div class="custom-ar-inputs">
+                        <div class="input-field">
+                          <span class="input-prefix">W:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={customWidth}
+                            oninput={handleCustomWidthInput}
+                            class="mono-input"
+                            placeholder="Width"
+                          />
+                        </div>
+                        <span class="ar-divider">x</span>
+                        <div class="input-field">
+                          <span class="input-prefix">H:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={customHeight}
+                            oninput={handleCustomHeightInput}
+                            class="mono-input"
+                            placeholder="Height"
+                          />
+                        </div>
+                      </div>
+                      {#if customArError}
+                        <span class="inline-ar-error mono">{customArError}</span>
+                      {/if}
+                    {/if}
+                  </div>
+
+                  <!-- Borderless Toggle Switch -->
+                  <div class="control-subgroup borderless-subgroup">
+                    <span class="group-label">CANVAS CROPPING</span>
+                    <button
+                      class="toggle-card"
+                      class:active={borderless}
+                      onclick={() => borderless = !borderless}
+                      type="button"
+                    >
+                      <div class="toggle-info">
+                        <span class="toggle-title">BORDERLESS</span>
+                        <span class="toggle-desc">Crop-to-fill (no black bars)</span>
+                      </div>
+                      <div class="switch-track" class:active={borderless}>
+                        <div class="switch-thumb"></div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Footer Actions -->
+              <div class="settings-actions-footer">
                 <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
                   &lt; BACK TO SOURCES
+                </button>
+                <button class="btn-run-process" onclick={handleRunProcess}>
+                  RUN PROCESS &gt;
                 </button>
               </div>
             </div>
@@ -753,7 +952,7 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    padding: 16px;
+    padding: 12px 16px;
     background: #050507;
     display: flex;
     flex-direction: column;
@@ -1006,54 +1205,57 @@
     to { transform: rotate(360deg); }
   }
 
-  /* Settings Stub Page */
-  .settings-stub-page {
-    width: min(100%, 760px);
+  /* Full Settings Page (T4) */
+  .settings-page {
+    width: min(100%, 880px);
     margin: auto;
     display: flex;
     flex-direction: column;
+    height: 100%;
+    justify-content: center;
+    overflow-y: auto;
+    padding: 4px 0;
   }
 
-  .settings-card {
-    padding: 24px;
+  .settings-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settings-sources-card,
+  .settings-controls-card {
     background: #09090c;
     border: 1px solid #1c1c20;
     border-radius: 8px;
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 8px;
   }
 
   .settings-header h1 {
-    margin: 6px 0;
-    font-size: 18px;
+    margin: 2px 0 0;
+    font-size: 15px;
     letter-spacing: 0.04em;
     color: #ffffff;
-  }
-
-  .stub-notice {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    font-weight: 700;
-    color: #a1a1aa;
-    letter-spacing: 0.04em;
   }
 
   .selected-paths-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
     background: #050507;
     border: 1px solid #1c1c20;
     border-radius: 6px;
-    padding: 16px;
+    padding: 8px 12px;
   }
 
   .path-item {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding-bottom: 8px;
+    gap: 3px;
+    padding-bottom: 5px;
     border-bottom: 1px solid #141417;
   }
 
@@ -1080,23 +1282,279 @@
     font-size: 9px;
     font-weight: 700;
     color: #4ade80;
-    background: rgba(34, 197, 94, 0.12);
+    background: rgba(34, 197, 94, 0.1);
     border: 1px solid rgba(34, 197, 94, 0.25);
     border-radius: 4px;
-    padding: 2px 6px;
+    padding: 1px 6px;
     white-space: nowrap;
   }
 
   .path-value {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     color: #e4e4e7;
     word-break: break-all;
   }
 
-  .settings-footer {
+  /* Control Group Common */
+  .control-group {
     display: flex;
-    justify-content: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .group-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #71717a;
+  }
+
+  /* Style Selector Cards */
+  .styles-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .style-card {
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .style-card:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+    background: #0d0d10;
+  }
+
+  .style-card.selected {
+    border-color: rgba(255, 255, 255, 0.5);
+    background: #111116;
+    box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.03);
+  }
+
+  .style-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .style-name {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #ffffff;
+  }
+
+  .style-desc {
+    font-size: 9px;
+    line-height: 1.3;
+    color: #71717a;
+  }
+
+  .style-card.selected .style-desc {
+    color: #a1a1aa;
+  }
+
+  /* Aspect Ratio & Borderless Row */
+  .control-group-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: start;
+  }
+
+  .control-subgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ar-buttons-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .btn-ar {
+    flex: 1;
+    padding: 6px 8px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    color: #71717a;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-ar:hover {
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+
+  .btn-ar.active {
+    background: #121215;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.5);
+  }
+
+  .custom-ar-inputs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .input-field {
+    display: flex;
+    align-items: center;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    padding: 3px 6px;
+    flex: 1;
+  }
+
+  .input-prefix {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    color: #71717a;
+    margin-right: 4px;
+  }
+
+  .mono-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #ffffff;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    width: 100%;
+  }
+
+  .ar-divider {
+    color: #71717a;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .inline-ar-error {
+    color: #fca5a5;
+    font-size: 9px;
+    line-height: 1.2;
+    margin-top: 2px;
+  }
+
+  /* Borderless Toggle Card */
+  .toggle-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+    height: 38px;
+  }
+
+  .toggle-card:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+
+  .toggle-card.active {
+    border-color: rgba(255, 255, 255, 0.35);
+    background: #0c0c10;
+  }
+
+  .toggle-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .toggle-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #ffffff;
+  }
+
+  .toggle-desc {
+    font-size: 9px;
+    color: #71717a;
+  }
+
+  .switch-track {
+    width: 28px;
+    height: 16px;
+    background: #1c1c20;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    position: relative;
+    transition: background-color 0.15s ease;
+  }
+
+  .switch-track.active {
+    background: #ffffff;
+    border-color: #ffffff;
+  }
+
+  .switch-thumb {
+    width: 10px;
+    height: 10px;
+    background: #71717a;
+    border-radius: 50%;
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    transition: transform 0.15s ease, background-color 0.15s ease;
+  }
+
+  .switch-track.active .switch-thumb {
+    transform: translateX(12px);
+    background: #000000;
+  }
+
+  /* Footer Actions */
+  .settings-actions-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 2px;
+  }
+
+  .btn-run-process {
+    padding: 9px 24px;
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-run-process:hover {
+    background: #000000;
+    color: #ffffff;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
   }
 
   /* About */
@@ -1301,7 +1759,7 @@
     color: #ffffff;
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 4px;
-    padding: 9px 18px;
+    padding: 8px 16px;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.04em;
