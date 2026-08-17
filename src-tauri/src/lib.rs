@@ -106,6 +106,13 @@ pub struct PlanSegment {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct OneFramer {
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub framer_type: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectPlan {
     pub schema_version: u32,
     pub style: String,
@@ -119,6 +126,8 @@ pub struct ProjectPlan {
     pub loops: u32,
     #[serde(default)]
     pub motion_blur: bool,
+    #[serde(default)]
+    pub one_framers: Vec<OneFramer>,
     pub segments: Vec<PlanSegment>,
 }
 
@@ -501,6 +510,280 @@ pub fn blend_full_frames(frames: &[&[u8]], out: &mut [u8]) {
         }
         *out_byte = (sum / n_u32) as u8;
     }
+}
+
+pub const ONE_FRAMER_TYPES: [&str; 6] = [
+    "FLASH_WHITE",
+    "FLASH_BLACK",
+    "INVERT",
+    "TINT_SCENE",
+    "OFFSET_BLUR",
+    "RADIAL_BLUR",
+];
+
+pub fn deterministic_hash_pos(t: f64, salt: u64) -> u64 {
+    let bits = (t * 10000.0).round() as i64;
+    let mut h = (bits as u64) ^ 0x517cc1b727220a95 ^ salt;
+    h = h.wrapping_mul(0x6c62272e07bb0142).wrapping_add(1);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0x62a9d9ed799705f5);
+    h ^= h >> 28;
+    h
+}
+
+pub fn apply_one_framer_flash_white(frame_in: &[u8], frame_out: &mut [u8]) {
+    for (out, &inp) in frame_out.iter_mut().zip(frame_in.iter()) {
+        *out = (((inp as u32) * 2 + 2040) / 10).min(255) as u8;
+    }
+}
+
+pub fn apply_one_framer_flash_black(frame_in: &[u8], frame_out: &mut [u8]) {
+    for (out, &inp) in frame_out.iter_mut().zip(frame_in.iter()) {
+        *out = (((inp as u32) * 2) / 10) as u8;
+    }
+}
+
+pub fn apply_one_framer_invert(frame_in: &[u8], frame_out: &mut [u8]) {
+    for (out, &inp) in frame_out.iter_mut().zip(frame_in.iter()) {
+        *out = 255 - inp;
+    }
+}
+
+pub fn apply_one_framer_tint_scene(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let cx = (width / 2) as i64;
+    let cy = (height / 2) as i64;
+    let mut sum_r = 0u64;
+    let mut sum_g = 0u64;
+    let mut sum_b = 0u64;
+    let mut count = 0u64;
+
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let px = sample_pixel_mirrored(frame_in, width, height, cx + dx, cy + dy);
+            sum_r += px[0] as u64;
+            sum_g += px[1] as u64;
+            sum_b += px[2] as u64;
+            count += 1;
+        }
+    }
+    let avg_r = if count > 0 { (sum_r / count) as u32 } else { 128 };
+    let avg_g = if count > 0 { (sum_g / count) as u32 } else { 128 };
+    let avg_b = if count > 0 { (sum_b / count) as u32 } else { 128 };
+
+    let mut lut_r = [0u8; 256];
+    let mut lut_g = [0u8; 256];
+    let mut lut_b = [0u8; 256];
+    for i in 0..256 {
+        lut_r[i] = (((i as u32) * 4 + avg_r * 6) / 10).min(255) as u8;
+        lut_g[i] = (((i as u32) * 4 + avg_g * 6) / 10).min(255) as u8;
+        lut_b[i] = (((i as u32) * 4 + avg_b * 6) / 10).min(255) as u8;
+    }
+
+    for (chunk_in, chunk_out) in frame_in.chunks_exact(3).zip(frame_out.chunks_exact_mut(3)) {
+        chunk_out[0] = lut_r[chunk_in[0] as usize];
+        chunk_out[1] = lut_g[chunk_in[1] as usize];
+        chunk_out[2] = lut_b[chunk_in[2] as usize];
+    }
+}
+
+pub fn apply_one_framer_offset_blur(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let row_stride = width * 3;
+    let ext_len = width + 128;
+    let mut pref_r = vec![0u32; ext_len + 1];
+    let mut pref_g = vec![0u32; ext_len + 1];
+    let mut pref_b = vec![0u32; ext_len + 1];
+
+    for y in 0..height {
+        let row_in_offset = y * row_stride;
+        let row_in = &frame_in[row_in_offset..row_in_offset + row_stride];
+        let row_out = &mut frame_out[row_in_offset..row_in_offset + row_stride];
+
+        for i in 0..ext_len {
+            let orig_x = (i as i64) - 64;
+            let mx = mirror_coordinate(orig_x, width);
+            let idx = mx * 3;
+            pref_r[i + 1] = pref_r[i] + row_in[idx] as u32;
+            pref_g[i + 1] = pref_g[i] + row_in[idx + 1] as u32;
+            pref_b[i + 1] = pref_b[i] + row_in[idx + 2] as u32;
+        }
+
+        for x in 0..width {
+            let start_idx = 64 + x + 15;
+            let end_idx = 64 + x + 45;
+
+            let sum_r = pref_r[end_idx + 1] - pref_r[start_idx];
+            let sum_g = pref_g[end_idx + 1] - pref_g[start_idx];
+            let sum_b = pref_b[end_idx + 1] - pref_b[start_idx];
+
+            let out_idx = x * 3;
+            row_out[out_idx] = (sum_r / 31) as u8;
+            row_out[out_idx + 1] = (sum_g / 31) as u8;
+            row_out[out_idx + 2] = (sum_b / 31) as u8;
+        }
+    }
+}
+
+pub fn apply_one_framer_radial_blur(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let cx_i = (width / 2) as i32;
+    let cy_i = (height / 2) as i32;
+    let w_i = width as i32;
+    let h_i = height as i32;
+
+    for y in 0..height {
+        let vy = (y as i32) - cy_i;
+        let dy_fp = (vy * 65536) / 25;
+        let y_fp = ((y as i32) * 65536) + 32768;
+
+        let row_out_offset = y * width * 3;
+        let row_out = &mut frame_out[row_out_offset..row_out_offset + width * 3];
+
+        for x in 0..width {
+            let vx = (x as i32) - cx_i;
+            let dx_fp = (vx * 65536) / 25;
+            let x_fp = ((x as i32) * 65536) + 32768;
+
+            let mut acc_r = 0u32;
+            let mut acc_g = 0u32;
+            let mut acc_b = 0u32;
+
+            for k in 0..10 {
+                let xs = (x_fp - (k as i32) * dx_fp) >> 16;
+                let ys = (y_fp - (k as i32) * dy_fp) >> 16;
+
+                if xs >= 0 && xs < w_i && ys >= 0 && ys < h_i {
+                    let idx = ((ys as usize) * width + (xs as usize)) * 3;
+                    acc_r += frame_in[idx] as u32;
+                    acc_g += frame_in[idx + 1] as u32;
+                    acc_b += frame_in[idx + 2] as u32;
+                } else {
+                    let px = sample_pixel_mirrored(frame_in, width, height, xs as i64, ys as i64);
+                    acc_r += px[0] as u32;
+                    acc_g += px[1] as u32;
+                    acc_b += px[2] as u32;
+                }
+            }
+
+            let out_idx = x * 3;
+            row_out[out_idx] = (acc_r / 10) as u8;
+            row_out[out_idx + 1] = (acc_g / 10) as u8;
+            row_out[out_idx + 2] = (acc_b / 10) as u8;
+        }
+    }
+}
+
+pub fn apply_one_framer(
+    framer_type: &str,
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    match framer_type {
+        "FLASH_WHITE" => apply_one_framer_flash_white(frame_in, frame_out),
+        "FLASH_BLACK" => apply_one_framer_flash_black(frame_in, frame_out),
+        "INVERT" => apply_one_framer_invert(frame_in, frame_out),
+        "TINT_SCENE" => apply_one_framer_tint_scene(frame_in, frame_out, width, height),
+        "OFFSET_BLUR" => apply_one_framer_offset_blur(frame_in, frame_out, width, height),
+        "RADIAL_BLUR" => apply_one_framer_radial_blur(frame_in, frame_out, width, height),
+        _ => frame_out.copy_from_slice(frame_in),
+    }
+}
+
+pub fn generate_one_framers(
+    style: &str,
+    segments: &[PlanSegment],
+    downbeats: &[f64],
+    fps: u32,
+    target_duration: f64,
+) -> Vec<OneFramer> {
+    if fps == 0 || segments.is_empty() {
+        return Vec::new();
+    }
+    let dt = 1.0 / (fps as f64);
+    let mut raw_candidates: Vec<OneFramer> = Vec::new();
+    let style_upper = style.to_uppercase();
+
+    // 1. Cuts: boundaries between segments
+    for (seg_idx, seg) in segments.iter().enumerate() {
+        let t_cut = seg.t0;
+
+        let place_cut = match style_upper.as_str() {
+            "HARD" => true,
+            "SMOOTH" => deterministic_hash_pos(t_cut, 100) % 2 == 0,
+            "HYBRID" => true,
+            _ => true,
+        };
+
+        if place_cut {
+            let offsets = [-2.0 * dt, -1.0 * dt, 0.0, 1.0 * dt];
+            for (idx, &off) in offsets.iter().enumerate() {
+                let t_pos = t_cut + off;
+                let t_rounded = (t_pos * (fps as f64)).round() / (fps as f64);
+                let seed = deterministic_hash_pos(t_rounded, (seg_idx as u64) * 10 + (idx as u64) + 1);
+                let framer_type = ONE_FRAMER_TYPES[(seed % 6) as usize].to_string();
+                raw_candidates.push(OneFramer {
+                    t: t_rounded,
+                    framer_type,
+                });
+            }
+        }
+    }
+
+    // 2. Downbeats
+    for (db_idx, &db) in downbeats.iter().enumerate() {
+        let place_downbeat = match style_upper.as_str() {
+            "HARD" => true,
+            "SMOOTH" => true,
+            "HYBRID" => deterministic_hash_pos(db, 200) % 2 == 0,
+            _ => true,
+        };
+
+        if place_downbeat {
+            let t_rounded = (db * (fps as f64)).round() / (fps as f64);
+            let seed = deterministic_hash_pos(t_rounded, (db_idx as u64) * 100 + 777);
+            let framer_type = ONE_FRAMER_TYPES[(seed % 6) as usize].to_string();
+            raw_candidates.push(OneFramer {
+                t: t_rounded,
+                framer_type,
+            });
+        }
+    }
+
+    // Filter within [0.0, target_duration]
+    let mut valid_framers: Vec<OneFramer> = raw_candidates
+        .into_iter()
+        .filter(|f| f.t >= -1e-6 && f.t <= target_duration + 1e-6)
+        .collect();
+
+    // Sort ascending by t
+    valid_framers.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Deduplicate by frame index
+    let mut deduped: Vec<OneFramer> = Vec::new();
+    let mut seen_frames = std::collections::HashSet::new();
+    for framer in valid_framers {
+        let frame_idx = (framer.t * (fps as f64)).round() as i64;
+        if seen_frames.insert(frame_idx) {
+            deduped.push(framer);
+        }
+    }
+
+    deduped
 }
 
 pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32) -> CropInfo {
@@ -1189,6 +1472,9 @@ pub fn create_plan_internal(
         }
     }
 
+    let target_dur = (target * 1000.0).round() / 1000.0;
+    let one_framers = generate_one_framers(style, &segments, downbeats, fps, target_dur);
+
     Ok(ProjectPlan {
         schema_version: 2,
         style: style.to_uppercase(),
@@ -1199,11 +1485,12 @@ pub fn create_plan_internal(
         },
         borderless: true,
         bpm: (bpm * 100.0).round() / 100.0,
-        target_duration: (target * 1000.0).round() / 1000.0,
+        target_duration: target_dur,
         video_duration: (video_duration * 1000.0).round() / 1000.0,
         audio_duration: (audio_duration * 1000.0).round() / 1000.0,
         loops,
         motion_blur: true,
+        one_framers,
         segments,
     })
 }
@@ -1455,6 +1742,7 @@ async fn run_render_pipeline(
     let mut frame_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
 
     let mut sampled_full_frame = vec![0u8; frame_bytes];
+    let mut one_framer_buf = vec![0u8; frame_bytes];
     let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
     let mut cropped_buf = vec![0u8; cropped_frame_bytes];
     let mut blend_frames_storage = vec![vec![0u8; frame_bytes]; 4];
@@ -1509,10 +1797,29 @@ async fn run_render_pipeline(
             blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
         }
 
+        // 1.5. One-Framers Library effect if active
+        let active_framer = plan
+            .one_framers
+            .iter()
+            .find(|f| (t - f.t).abs() < (0.5 / output_fps) + 1e-6);
+
+        let full_frame_ptr = if let Some(framer) = active_framer {
+            apply_one_framer(
+                &framer.framer_type,
+                &sampled_full_frame,
+                &mut one_framer_buf,
+                src_w as usize,
+                src_h as usize,
+            );
+            &one_framer_buf
+        } else {
+            &sampled_full_frame
+        };
+
         // 2 & 3. Transform Stack + Crop
         let transform_params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
         apply_transform_stack_cropped(
-            &sampled_full_frame,
+            full_frame_ptr,
             &mut cropped_buf,
             src_w as usize,
             src_h as usize,
@@ -1789,11 +2096,143 @@ mod tests {
         assert_eq!(parsed_v1.schema_version, 1);
         assert_eq!(parsed_v1.motion_blur, false);
         assert_eq!(parsed_v1.segments[0].effects.reverse, false);
+        assert_eq!(parsed_v1.one_framers.len(), 0);
 
         let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0).unwrap();
         assert_eq!(v2_plan.schema_version, 2);
         assert_eq!(v2_plan.motion_blur, true);
         assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
+        assert!(v2_plan.one_framers.len() > 0);
+
+        let v2_serialized = serde_json::to_string(&v2_plan).unwrap();
+        assert!(v2_serialized.contains("\"one_framers\":["));
+        let v2_deserialized: ProjectPlan = serde_json::from_str(&v2_serialized).unwrap();
+        assert_eq!(v2_deserialized.one_framers.len(), v2_plan.one_framers.len());
+    }
+
+    #[test]
+    fn test_one_framers_library_diff() {
+        let width = 64usize;
+        let height = 64usize;
+        let mut frame_in = vec![0u8; width * height * 3];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 3;
+                frame_in[idx] = ((x * 4) % 256) as u8;
+                frame_in[idx + 1] = ((y * 4) % 256) as u8;
+                frame_in[idx + 2] = (((x + y) * 2) % 256) as u8;
+            }
+        }
+
+        for framer_type in ONE_FRAMER_TYPES {
+            let mut frame_out = vec![0u8; width * height * 3];
+            apply_one_framer(framer_type, &frame_in, &mut frame_out, width, height);
+
+            let diff: i64 = frame_in
+                .iter()
+                .zip(frame_out.iter())
+                .map(|(&a, &b)| (a as i64 - b as i64).abs())
+                .sum();
+
+            println!("One-Framer [{}] produced total pixel diff: {}", framer_type, diff);
+            assert!(diff > 0, "One-framer {} must modify frame (diff > 0)", framer_type);
+        }
+    }
+
+    #[test]
+    fn test_one_framers_auto_placement() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+
+        let plan_hard = create_plan_internal(
+            "HARD",
+            fps,
+            &beats,
+            &downbeats,
+            video_duration,
+            audio_duration,
+            1080,
+            1080,
+            bpm,
+        )
+        .unwrap();
+
+        // 21 segments -> 21 cuts * 4 framers + 5 downbeats * 1 framer = 89 raw candidate framers
+        let num_cuts = plan_hard.segments.len();
+        let num_downbeats = downbeats.len();
+        let total_raw_candidates = num_cuts * 4 + num_downbeats;
+        println!(
+            "HARD raw placement check: {} cuts * 4 + {} downbeats = {} candidates",
+            num_cuts, num_downbeats, total_raw_candidates
+        );
+        assert_eq!(num_cuts, 21);
+        assert_eq!(total_raw_candidates, 89);
+        assert!(plan_hard.one_framers.len() > 50, "Valid deduped framers in [0, target] should be substantial");
+
+        // Verify ordering
+        for win in plan_hard.one_framers.windows(2) {
+            assert!(win[0].t <= win[1].t, "one_framers list must be sorted ascending by t");
+            assert!(win[0].t >= 0.0 && win[1].t <= audio_duration + 0.1);
+        }
+
+        // Test SMOOTH has 50% cuts
+        let plan_smooth = create_plan_internal(
+            "SMOOTH",
+            fps,
+            &beats,
+            &downbeats,
+            video_duration,
+            audio_duration,
+            1080,
+            1080,
+            bpm,
+        )
+        .unwrap();
+        assert!(plan_smooth.one_framers.len() < plan_hard.one_framers.len());
+
+        // Test HYBRID has all cuts + 50% downbeats
+        let plan_hybrid = create_plan_internal(
+            "HYBRID",
+            fps,
+            &beats,
+            &downbeats,
+            video_duration,
+            audio_duration,
+            1080,
+            1080,
+            bpm,
+        )
+        .unwrap();
+        assert!(plan_hybrid.one_framers.len() > plan_smooth.one_framers.len());
+    }
+
+    #[test]
+    fn test_one_framers_reproducibility() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+
+        let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+
+        assert_eq!(plan1.one_framers, plan2.one_framers);
+        for (f1, f2) in plan1.one_framers.iter().zip(plan2.one_framers.iter()) {
+            assert_eq!(f1.t, f2.t);
+            assert_eq!(f1.framer_type, f2.framer_type);
+        }
     }
 
     #[test]
@@ -1981,7 +2420,7 @@ mod tests {
         let src_fps = scene_info.fps;
         let frame_bytes = (src_w * src_h * 3) as usize;
 
-        let temp_dir = std::env::temp_dir().join("cia_app_bench_t8");
+        let temp_dir = std::env::temp_dir().join("cia_app_bench_t9");
         std::fs::create_dir_all(&temp_dir).unwrap();
         let raw_cache = temp_dir.join("test_frames.raw");
 
@@ -2014,45 +2453,12 @@ mod tests {
         let mut raw_file = std::fs::File::open(&raw_cache).unwrap();
         let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
 
-        // 1. Baseline V1 (no effects, direct crop)
-        let t_v1_start = std::time::Instant::now();
-        let mut v1_full_buf = vec![0u8; frame_bytes];
-        let mut v1_crop = vec![0u8; cropped_frame_bytes];
-
-        for i in 0..total_output_frames {
-            let t = (i as f64) / output_fps;
-            let seg = plan.segments.iter().find(|s| t >= s.t0 && t <= s.t1).or_else(|| plan.segments.last()).unwrap();
-            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
-            let x = ((t - seg.t0) / seg_dur).clamp(0.0, 1.0);
-            let u = evaluate_curve(&seg.curve, x);
-            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
-            let mut src_frame = (src_time * src_fps).round() as i64;
-            if src_frame < 0 { src_frame = 0; }
-            if src_frame >= total_source_frames as i64 { src_frame = (total_source_frames - 1) as i64; }
-
-            let offset = (src_frame as u64) * (frame_bytes as u64);
-            raw_file.seek(SeekFrom::Start(offset)).unwrap();
-            raw_file.read_exact(&mut v1_full_buf).unwrap();
-
-            let row_src_stride = (src_w * 3) as usize;
-            let row_crop_stride = (crop.width * 3) as usize;
-            for row in 0..crop.height {
-                let src_y = (crop.y + row) as usize;
-                let src_start = src_y * row_src_stride + (crop.x * 3) as usize;
-                let src_end = src_start + row_crop_stride;
-                let dst_start = (row as usize) * row_crop_stride;
-                let dst_end = dst_start + row_crop_stride;
-                v1_crop[dst_start..dst_end].copy_from_slice(&v1_full_buf[src_start..src_end]);
-            }
-        }
-        let t_v1 = t_v1_start.elapsed();
-
-        // 2. Full Effects Pipeline (Shakes 4-axis, Zoom Continuity, Reverse Remap, Mirror Edges)
-        let t_effects_start = std::time::Instant::now();
-        let mut effects_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
+        // 1. Baseline T8 Effects Pipeline (Shakes 4-axis, Zoom Continuity, Reverse Remap, Mirror Edges)
+        let t_t8_start = std::time::Instant::now();
+        let mut t8_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
         let mut sampled_full_frame = vec![0u8; frame_bytes];
         let mut blend_storage = vec![vec![0u8; frame_bytes]; 4];
-        let mut effects_crop = vec![0u8; cropped_frame_bytes];
+        let mut t8_crop = vec![0u8; cropped_frame_bytes];
 
         for i in 0..total_output_frames {
             let t = (i as f64) / output_fps;
@@ -2072,12 +2478,12 @@ mod tests {
 
             // Sample Full-Frame
             if n_blur <= 1 {
-                effects_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
+                t8_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
             } else {
                 let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
                 for k in 0..n_blur {
                     let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
-                    effects_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
+                    t8_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
                 }
                 for k in 0..n_blur {
                     slice_ptrs.push(&blend_storage[k]);
@@ -2089,7 +2495,7 @@ mod tests {
             let params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
             apply_transform_stack_cropped(
                 &sampled_full_frame,
-                &mut effects_crop,
+                &mut t8_crop,
                 src_w as usize,
                 src_h as usize,
                 crop.x,
@@ -2099,23 +2505,95 @@ mod tests {
                 params,
             );
         }
-        let t_effects = t_effects_start.elapsed();
+        let t_t8 = t_t8_start.elapsed();
 
-        let t_v1_total = t_decode + t_v1;
-        let t_effects_total = t_decode + t_effects;
-        let ratio = (t_effects_total.as_secs_f64() / t_v1_total.as_secs_f64()).max(0.01);
+        // 2. T9 Full Pipeline (T8 Effects + One-Framers Library)
+        let t_t9_start = std::time::Instant::now();
+        let mut t9_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
+        let mut one_framer_buf = vec![0u8; frame_bytes];
+        let mut t9_crop = vec![0u8; cropped_frame_bytes];
 
-        println!("=== T8 FULL EFFECTS BENCHMARK REPORT ===");
+        for i in 0..total_output_frames {
+            let t = (i as f64) / output_fps;
+            let seg = plan.segments.iter().find(|s| t >= s.t0 && t <= s.t1).or_else(|| plan.segments.last()).unwrap();
+            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+            let t_rel = (t - seg.t0).max(0.0);
+            let x = (t_rel / seg_dur).clamp(0.0, 1.0);
+            let u = evaluate_curve(&seg.curve, x);
+            let u_prime = evaluate_curve_derivative(&seg.curve, x);
+            let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
+            let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
+
+            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+            let mut base_src_frame = (src_time * src_fps).round() as i64;
+            if base_src_frame < 0 { base_src_frame = 0; }
+            if base_src_frame >= total_source_frames as i64 { base_src_frame = (total_source_frames - 1) as i64; }
+
+            // Sample Full-Frame
+            if n_blur <= 1 {
+                t9_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
+            } else {
+                let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
+                for k in 0..n_blur {
+                    let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
+                    t9_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
+                }
+                for k in 0..n_blur {
+                    slice_ptrs.push(&blend_storage[k]);
+                }
+                blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+            }
+
+            // One-Framers Library effect
+            let active_framer = plan
+                .one_framers
+                .iter()
+                .find(|f| (t - f.t).abs() < (0.5 / output_fps) + 1e-6);
+
+            let full_frame_ptr = if let Some(framer) = active_framer {
+                apply_one_framer(
+                    &framer.framer_type,
+                    &sampled_full_frame,
+                    &mut one_framer_buf,
+                    src_w as usize,
+                    src_h as usize,
+                );
+                &one_framer_buf
+            } else {
+                &sampled_full_frame
+            };
+
+            // Transform Stack + Crop (Shakes + Zoom + Mirror Edges)
+            let params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
+            apply_transform_stack_cropped(
+                full_frame_ptr,
+                &mut t9_crop,
+                src_w as usize,
+                src_h as usize,
+                crop.x,
+                crop.y,
+                crop.width,
+                crop.height,
+                params,
+            );
+        }
+        let t_t9 = t_t9_start.elapsed();
+
+        let t_t8_total = t_decode + t_t8;
+        let t_t9_total = t_decode + t_t9;
+        let ratio = (t_t9_total.as_secs_f64() / t_t8_total.as_secs_f64()).max(0.01);
+
+        println!("=== T9 ONE-FRAMERS BENCHMARK REPORT ===");
         println!("Total frames rendered: {}", total_output_frames);
         println!("Decode time: {:.3}s", t_decode.as_secs_f64());
-        println!("V1 total render pipeline time: {:.3}s", t_v1_total.as_secs_f64());
-        println!("T8 Full Effects total render pipeline time: {:.3}s", t_effects_total.as_secs_f64());
-        println!("Performance ratio (Effects / V1): {:.3}x", ratio);
+        println!("T8 total render pipeline time: {:.3}s", t_t8_total.as_secs_f64());
+        println!("T9 Full Effects + One-Framers total render pipeline time: {:.3}s", t_t9_total.as_secs_f64());
+        println!("Performance ratio (T9 / T8): {:.3}x", ratio);
         println!("========================================");
 
         assert!(
-            ratio < 2.0,
-            "Benchmark check failed: ratio was {:.3}x (expected < 2.0x)",
+            ratio < 1.5,
+            "Benchmark check failed: ratio was {:.3}x (expected < 1.5x)",
             ratio
         );
     }

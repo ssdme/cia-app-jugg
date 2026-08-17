@@ -303,6 +303,7 @@
 
       const parsed = JSON.parse(planJson);
       const hasReverse = parsed.segments.some((s) => s.effects && s.effects.reverse);
+      const hasOneFramers = parsed.one_framers && parsed.one_framers.length > 0;
       planSummary = {
         segmentsCount: parsed.segments.length,
         loops: parsed.loops,
@@ -315,6 +316,7 @@
         shakes: true,
         zoom: true,
         reverse: hasReverse,
+        oneFramers: hasOneFramers,
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
@@ -897,7 +899,7 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">EFFECTS</span>
-                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'}</span>
+                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'} · ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">SEGMENTS</span>
