@@ -647,8 +647,7 @@ pub fn apply_transform_stack_cropped(
     let step_x_to_xs = inv_s * cos_t;
     let step_x_to_ys = -inv_s * sin_t;
 
-    let step_xs_fp = (step_x_to_xs * 65536.0).round() as i32;
-    let step_ys_fp = (step_x_to_ys * 65536.0).round() as i32;
+    // step_x_to_xs / step_x_to_ys are used per-row as step_xs_fp_sx (x-scale adjusted)
 
     let w_i32 = src_width as i32;
     let h_i32 = src_height as i32;
@@ -1591,48 +1590,39 @@ pub fn generate_transitions(
     transitions
 }
 
+pub fn compute_borderless_scale(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (f64, f64) {
+    if src_w == 0 || src_h == 0 {
+        return (1.0, 1.0);
+    }
+    let scale_x = (target_w as f64) / (src_w as f64);
+    let scale_y = (target_h as f64) / (src_h as f64);
+    (scale_x, scale_y)
+}
+
 pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32) -> CropInfo {
     let aspect_w = if aspect_w == 0 { 1080 } else { aspect_w };
     let aspect_h = if aspect_h == 0 { 1080 } else { aspect_h };
 
-    let src_ar = (src_w as f64) / (src_h as f64);
-    let target_ar = (aspect_w as f64) / (aspect_h as f64);
-
-    let (crop_w, crop_h, crop_x, crop_y) = if src_ar > target_ar {
-        let ch = src_h;
-        let mut cw = ((src_h as f64) * target_ar).round() as u32;
-        cw = (cw.min(src_w)) & !1;
-        let cx = (src_w - cw) / 2;
-        (cw, ch, cx, 0)
-    } else {
-        let cw = src_w;
-        let mut ch = ((src_w as f64) / target_ar).round() as u32;
-        ch = (ch.min(src_h)) & !1;
-        let cy = (src_h - ch) / 2;
-        (cw, ch, 0, cy)
-    };
-
-    let (out_w, out_h) = if aspect_w >= aspect_h {
-        let ow = 1080u32;
-        let mut oh = ((1080.0 / target_ar).round() as u32) & !1;
-        if oh == 0 {
-            oh = 2;
-        }
-        (ow, oh)
-    } else {
+    let (out_w, out_h) = if aspect_w >= 100 && aspect_h >= 100 {
+        (aspect_w & !1, aspect_h & !1)
+    } else if aspect_w >= aspect_h {
+        let target_ar = (aspect_w as f64) / (aspect_h as f64);
+        let ow = ((1080.0 * target_ar).round() as u32) & !1;
         let oh = 1080u32;
-        let mut ow = ((1080.0 * target_ar).round() as u32) & !1;
-        if ow == 0 {
-            ow = 2;
-        }
-        (ow, oh)
+        (ow.max(2), oh)
+    } else {
+        let target_ar = (aspect_h as f64) / (aspect_w as f64);
+        let ow = 1080u32;
+        let oh = ((1080.0 * target_ar).round() as u32) & !1;
+        (ow, oh.max(2))
     };
 
+    // Borderless: always stretch full source to target dimensions without any cropping
     CropInfo {
-        x: crop_x,
-        y: crop_y,
-        width: crop_w,
-        height: crop_h,
+        x: 0,
+        y: 0,
+        width: src_w,
+        height: src_h,
         out_w,
         out_h,
     }
@@ -3523,27 +3513,46 @@ mod tests {
     fn test_crop_to_fill_maths() {
         let crop_1_1 = compute_crop_to_fill(1080, 1920, 1080, 1080);
         assert_eq!(crop_1_1.x, 0);
-        assert_eq!(crop_1_1.y, 420);
+        assert_eq!(crop_1_1.y, 0);
         assert_eq!(crop_1_1.width, 1080);
-        assert_eq!(crop_1_1.height, 1080);
+        assert_eq!(crop_1_1.height, 1920);
         assert_eq!(crop_1_1.out_w, 1080);
         assert_eq!(crop_1_1.out_h, 1080);
 
         let crop_16_9 = compute_crop_to_fill(1080, 1920, 16, 9);
         assert_eq!(crop_16_9.x, 0);
-        assert_eq!(crop_16_9.y, 656);
+        assert_eq!(crop_16_9.y, 0);
         assert_eq!(crop_16_9.width, 1080);
-        assert_eq!(crop_16_9.height, 608);
-        assert_eq!(crop_16_9.out_w, 1080);
-        assert_eq!(crop_16_9.out_h, 608);
+        assert_eq!(crop_16_9.height, 1920);
+        assert_eq!(crop_16_9.out_w, 1920);
+        assert_eq!(crop_16_9.out_h, 1080);
 
         let crop_9_16 = compute_crop_to_fill(1080, 1920, 9, 16);
         assert_eq!(crop_9_16.x, 0);
         assert_eq!(crop_9_16.y, 0);
         assert_eq!(crop_9_16.width, 1080);
         assert_eq!(crop_9_16.height, 1920);
-        assert_eq!(crop_9_16.out_w, 608);
-        assert_eq!(crop_9_16.out_h, 1080);
+        assert_eq!(crop_9_16.out_w, 1080);
+        assert_eq!(crop_9_16.out_h, 1920);
+    }
+
+    #[test]
+    fn test_borderless_stretch_scale() {
+        let (sx1, sy1) = compute_borderless_scale(1920, 1080, 1080, 1080);
+        assert_eq!(sx1, 0.5625);
+        assert_eq!(sy1, 1.0);
+
+        let (sx2, sy2) = compute_borderless_scale(1080, 1920, 1080, 1080);
+        assert_eq!(sx2, 1.0);
+        assert_eq!(sy2, 0.5625);
+
+        let crop = compute_crop_to_fill(1080, 1920, 1080, 1080);
+        assert_eq!(crop.x, 0);
+        assert_eq!(crop.y, 0);
+        assert_eq!(crop.width, 1080);
+        assert_eq!(crop.height, 1920);
+        assert_eq!(crop.out_w, 1080);
+        assert_eq!(crop.out_h, 1080);
     }
 
     #[test]
