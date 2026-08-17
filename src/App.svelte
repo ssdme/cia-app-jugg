@@ -55,6 +55,7 @@
   let customArError = $state('');
   let borderless = $state(true); // always true internally
   let echoTrailEnabled = $state(false); // T11 echo/trail, default OFF
+  let fullFxEnabled = $state(true);    // T13 full fx, default ON
 
   const STYLE_OPTIONS = [
     {
@@ -296,6 +297,7 @@
         aspectW,
         aspectH,
         bpm: bpm || 120.0,
+        fullFx: fullFxEnabled,
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -316,6 +318,7 @@
         fps: parsed.fps,
         aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
         motionBlur: parsed.motion_blur,
+        fullFx: parsed.full_fx !== false, // default true for retrocompat
         shakes: true,
         zoom: true,
         reverse: hasReverse,
@@ -828,7 +831,27 @@
                   {/if}
                 </div>
 
-                <!-- 4. T11 Echo/Trail toggle -->
+                <!-- 4. T13 Full FX toggle -->
+                <div class="control-group">
+                  <div class="toggle-row">
+                    <div class="toggle-row-label">
+                      <span class="group-label">FULL FX</span>
+                      <span class="toggle-row-desc">All effects — one-framers, transitions, tint, vignette, scanlines. Default ON.</span>
+                    </div>
+                    <button
+                      id="toggle-full-fx"
+                      class="toggle-btn"
+                      class:active={fullFxEnabled}
+                      onclick={() => fullFxEnabled = !fullFxEnabled}
+                      type="button"
+                      aria-pressed={fullFxEnabled}
+                    >
+                      {fullFxEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 5. T11 Echo/Trail toggle -->
                 <div class="control-group">
                   <div class="toggle-row">
                     <div class="toggle-row-label">
@@ -927,6 +950,10 @@
                     <div class="plan-stat">
                       <span class="stat-label">EFFECTS</span>
                       <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'} · ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} · TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} · AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} · ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
+                    </div>
+                    <div class="plan-stat">
+                      <span class="stat-label">FX MODE</span>
+                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'}</span>
                     </div>
                     {#if planSummary.ambiance}
                     <div class="plan-stat flicker-warning">
@@ -2026,6 +2053,11 @@
     color: #ef4444;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+  }
+
+  .fx-motion-only {
+    color: #f59e0b;
+    font-weight: 700;
   }
 
   /* Footer Actions */
