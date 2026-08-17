@@ -95,6 +95,14 @@ fn default_segment_effects() -> SegmentEffects {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct SegmentTransition {
+    #[serde(rename = "type")]
+    pub transition_type: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct PlanSegment {
     pub t0: f64,
     pub t1: f64,
@@ -103,6 +111,8 @@ pub struct PlanSegment {
     pub curve: String,
     #[serde(default = "default_segment_effects")]
     pub effects: SegmentEffects,
+    #[serde(default)]
+    pub transition: Option<SegmentTransition>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -110,6 +120,17 @@ pub struct OneFramer {
     pub t: f64,
     #[serde(rename = "type")]
     pub framer_type: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct TransitionItem {
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub transition_type: String,
+    pub duration_frames: u32,
+    pub is_wrap: bool,
+    #[serde(default)]
+    pub params: serde_json::Value,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -128,6 +149,8 @@ pub struct ProjectPlan {
     pub motion_blur: bool,
     #[serde(default)]
     pub one_framers: Vec<OneFramer>,
+    #[serde(default)]
+    pub transitions: Vec<TransitionItem>,
     pub segments: Vec<PlanSegment>,
 }
 
@@ -786,6 +809,293 @@ pub fn generate_one_framers(
     deduped
 }
 
+pub fn compute_warp_bubble_env(t: f64, t_cut: f64, fps: f64) -> f64 {
+    let k_frame = (t - t_cut) * fps;
+    if k_frame.abs() <= 2.0 + 1e-4 {
+        0.5 * (1.0 - k_frame.abs() / 2.0).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn apply_warp_bubble(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    env_a: f64,
+    freq: f64,
+) {
+    if env_a <= 1e-6 {
+        frame_out.copy_from_slice(frame_in);
+        return;
+    }
+
+    let rx = (width as f64) / 2.0;
+    let ry = (height as f64) / 2.0;
+    let rx_i = rx as i32;
+    let ry_i = ry as i32;
+
+    let mut lut_scale = [0.0f32; 2048];
+    for r_int in 1..2048 {
+        let r = r_int as f64;
+        let r_norm = r / rx;
+        let disp = env_a * (freq * r_norm * std::f64::consts::PI).sin() * rx;
+        lut_scale[r_int] = (disp / r) as f32;
+    }
+
+    let mut dx_f_table = vec![0.0f32; width];
+    let mut dx_sq_table = vec![0.0f32; width];
+    for x in 0..width {
+        let dx_f = ((x as i32) - rx_i) as f32;
+        dx_f_table[x] = dx_f;
+        dx_sq_table[x] = dx_f * dx_f;
+    }
+
+    let w_i = width as i32;
+    let h_i = height as i32;
+    let row_stride = width * 3;
+
+    for y in 0..height {
+        let dy_i = (y as i32) - ry_i;
+        let dy_f = dy_i as f32;
+        let dy_sq = dy_f * dy_f;
+        let row_out_offset = y * row_stride;
+        let row_out = &mut frame_out[row_out_offset..row_out_offset + row_stride];
+
+        for x in 0..width {
+            let dx_f = dx_f_table[x];
+            let r_f = (dx_sq_table[x] + dy_sq).sqrt();
+            let r_idx = (r_f as usize).min(2047);
+
+            let scale = lut_scale[r_idx];
+
+            let xs = (x as i32) - (dx_f * scale) as i32;
+            let ys = (y as i32) - (dy_f * scale) as i32;
+
+            let out_idx = x * 3;
+            if xs >= 0 && xs < w_i && ys >= 0 && ys < h_i {
+                let in_idx = (ys as usize) * row_stride + (xs as usize) * 3;
+                row_out[out_idx] = frame_in[in_idx];
+                row_out[out_idx + 1] = frame_in[in_idx + 1];
+                row_out[out_idx + 2] = frame_in[in_idx + 2];
+            } else {
+                let px = sample_pixel_mirrored(frame_in, width, height, xs as i64, ys as i64);
+                row_out[out_idx] = px[0];
+                row_out[out_idx + 1] = px[1];
+                row_out[out_idx + 2] = px[2];
+            }
+        }
+    }
+}
+
+pub fn compute_wave_warp_params(t: f64, t_cut: f64, fps: f64, height: usize) -> (f64, f64, f64, f64) {
+    let t_frames = (t - t_cut) * fps;
+    let h = if t_frames >= -1e-4 && t_frames <= 6.0 + 1e-4 {
+        280.0 * (1.0 - t_frames / 6.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let k = 600.0 / (height as f64);
+    let v = 20.0;
+    (h, k, v, t_frames)
+}
+
+pub fn apply_wave_warp(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    h_t: f64,
+    k: f64,
+    v: f64,
+    t_frames: f64,
+) {
+    if h_t.abs() <= 1e-4 {
+        frame_out.copy_from_slice(frame_in);
+        return;
+    }
+
+    let row_stride = width * 3;
+    let mut lut_xs = [0usize; 4096];
+    let w_clamped = width.min(4096);
+
+    for y in 0..height {
+        let y_f = y as f64;
+        let dx = (h_t * (y_f * k + t_frames * v).sin()).round() as i64;
+        let row_in_offset = y * row_stride;
+        let row_in = &frame_in[row_in_offset..row_in_offset + row_stride];
+        let row_out = &mut frame_out[row_in_offset..row_in_offset + row_stride];
+
+        if dx == 0 {
+            row_out.copy_from_slice(row_in);
+            continue;
+        }
+
+        for x in 0..w_clamped {
+            lut_xs[x] = mirror_coordinate((x as i64) - dx, width) * 3;
+        }
+
+        for x in 0..w_clamped {
+            let in_idx = lut_xs[x];
+            let out_idx = x * 3;
+            row_out[out_idx] = row_in[in_idx];
+            row_out[out_idx + 1] = row_in[in_idx + 1];
+            row_out[out_idx + 2] = row_in[in_idx + 2];
+        }
+    }
+}
+
+pub fn compute_slide_shake_shift(t: f64, t_cut: f64, fps: f64) -> f64 {
+    let t_frames = (t - t_cut) * fps;
+    if t_frames >= -3.0 - 1e-4 && t_frames < 0.0 {
+        100.0 * (1.0 + t_frames / 3.0).clamp(0.0, 1.0)
+    } else if t_frames >= 0.0 && t_frames <= 3.0 + 1e-4 {
+        -100.0 * (1.0 - t_frames / 3.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn apply_slide_shake(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    shift_x: f64,
+) {
+    if shift_x.abs() <= 1e-4 {
+        frame_out.copy_from_slice(frame_in);
+        return;
+    }
+
+    let shift_i = shift_x.round() as i64;
+    let row_stride = width * 3;
+    let mut lut_xs = [0usize; 4096];
+    let w_clamped = width.min(4096);
+    for x in 0..w_clamped {
+        lut_xs[x] = mirror_coordinate((x as i64) - shift_i, width) * 3;
+    }
+
+    for y in 0..height {
+        let row_offset = y * row_stride;
+        let row_in = &frame_in[row_offset..row_offset + row_stride];
+        let row_out = &mut frame_out[row_offset..row_offset + row_stride];
+
+        for x in 0..w_clamped {
+            let in_idx = lut_xs[x];
+            let out_idx = x * 3;
+            row_out[out_idx] = row_in[in_idx];
+            row_out[out_idx + 1] = row_in[in_idx + 1];
+            row_out[out_idx + 2] = row_in[in_idx + 2];
+        }
+    }
+}
+
+pub fn generate_transitions(
+    style: &str,
+    segments: &mut [PlanSegment],
+    wrap_indices: &[usize],
+    _fps: u32,
+) -> Vec<TransitionItem> {
+    let mut transitions = Vec::new();
+    let style_upper = style.to_uppercase();
+
+    // 1. Systematically place WARP_BUBBLE on wraps
+    for &wrap_idx in wrap_indices {
+        if wrap_idx < segments.len() {
+            let seg = &mut segments[wrap_idx];
+            let t_cut = seg.t0;
+            seg.transition = Some(SegmentTransition {
+                transition_type: "WARP_BUBBLE".to_string(),
+                params: serde_json::json!({
+                    "amplitude": 0.5,
+                    "frequency": 1.2,
+                    "duration_frames": 4,
+                    "is_wrap": true,
+                }),
+            });
+            transitions.push(TransitionItem {
+                t: t_cut,
+                transition_type: "WARP_BUBBLE".to_string(),
+                duration_frames: 4,
+                is_wrap: true,
+                params: serde_json::json!({
+                    "amplitude": 0.5,
+                    "frequency": 1.2,
+                }),
+            });
+        }
+    }
+
+    // 2. Place on non-wrap cuts (segments with index > 0 that are not wraps)
+    for (idx, seg) in segments.iter_mut().enumerate() {
+        if idx == 0 || wrap_indices.contains(&idx) {
+            continue;
+        }
+        let t_cut = seg.t0;
+        let h = deterministic_hash_pos(t_cut, 999) % 100;
+
+        let trans_type_opt = match style_upper.as_str() {
+            "HARD" => {
+                if h < 30 {
+                    Some("WARP_BUBBLE")
+                } else if h < 50 {
+                    Some("WAVE_WARP")
+                } else if h < 90 {
+                    Some("SLIDE_SHAKE")
+                } else {
+                    None
+                }
+            }
+            "SMOOTH" => {
+                if h < 10 {
+                    Some("SLIDE_SHAKE")
+                } else {
+                    None
+                }
+            }
+            "HYBRID" => {
+                if h < 15 {
+                    Some("WARP_BUBBLE")
+                } else if h < 25 {
+                    Some("WAVE_WARP")
+                } else if h < 50 {
+                    Some("SLIDE_SHAKE")
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(trans_type) = trans_type_opt {
+            let (dur_frames, params) = match trans_type {
+                "WARP_BUBBLE" => (4, serde_json::json!({ "amplitude": 0.5, "frequency": 1.2 })),
+                "WAVE_WARP" => (6, serde_json::json!({ "height": 280.0, "speed": 20.0 })),
+                "SLIDE_SHAKE" => (6, serde_json::json!({ "amplitude": 100.0 })),
+                _ => (4, serde_json::json!({})),
+            };
+
+            seg.transition = Some(SegmentTransition {
+                transition_type: trans_type.to_string(),
+                params: params.clone(),
+            });
+
+            transitions.push(TransitionItem {
+                t: t_cut,
+                transition_type: trans_type.to_string(),
+                duration_frames: dur_frames,
+                is_wrap: false,
+                params,
+            });
+        }
+    }
+
+    transitions.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    transitions
+}
+
 pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32) -> CropInfo {
     let aspect_w = if aspect_w == 0 { 1080 } else { aspect_w };
     let aspect_h = if aspect_h == 0 { 1080 } else { aspect_h };
@@ -1349,6 +1659,7 @@ pub fn create_plan_internal(
 
     // 4. Build segments and handle video loops
     let mut segments = Vec::new();
+    let mut wrap_indices = Vec::new();
     let mut s_cursor = 0.0;
     let mut loops = 0u32;
     let mut downbeat_count = 0usize;
@@ -1426,7 +1737,8 @@ pub fn create_plan_internal(
                 let mut s1 = s_cursor + span;
                 s_cursor += span;
 
-                if (s_cursor - video_duration).abs() < 1e-9 {
+                let is_exact_wrap = (s_cursor - video_duration).abs() < 1e-9;
+                if is_exact_wrap {
                     s_cursor = 0.0;
                     loops += 1;
                 }
@@ -1442,11 +1754,16 @@ pub fn create_plan_internal(
                     s1: (s1 * 10000.0).round() / 10000.0,
                     curve: curve_name.clone(),
                     effects,
+                    transition: None,
                 });
+
+                if is_exact_wrap && seg_t1 < target - 1e-6 {
+                    wrap_indices.push(segments.len());
+                }
+
                 seg_index += 1;
                 break;
             } else {
-                // Loop wrap happens within this segment
                 let t_wrap = seg_t0 + (video_duration - s_cursor) / r;
                 let mut s0 = s_cursor;
                 let mut s1 = video_duration;
@@ -1462,8 +1779,10 @@ pub fn create_plan_internal(
                     s1: (s1 * 10000.0).round() / 10000.0,
                     curve: curve_name.clone(),
                     effects,
+                    transition: None,
                 });
 
+                wrap_indices.push(segments.len());
                 loops += 1;
                 s_cursor = 0.0;
                 seg_t0 = t_wrap;
@@ -1474,6 +1793,7 @@ pub fn create_plan_internal(
 
     let target_dur = (target * 1000.0).round() / 1000.0;
     let one_framers = generate_one_framers(style, &segments, downbeats, fps, target_dur);
+    let transitions = generate_transitions(style, &mut segments, &wrap_indices, fps);
 
     Ok(ProjectPlan {
         schema_version: 2,
@@ -1491,6 +1811,7 @@ pub fn create_plan_internal(
         loops,
         motion_blur: true,
         one_framers,
+        transitions,
         segments,
     })
 }
@@ -1743,6 +2064,7 @@ async fn run_render_pipeline(
 
     let mut sampled_full_frame = vec![0u8; frame_bytes];
     let mut one_framer_buf = vec![0u8; frame_bytes];
+    let mut transition_buf = vec![0u8; frame_bytes];
     let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
     let mut cropped_buf = vec![0u8; cropped_frame_bytes];
     let mut blend_frames_storage = vec![vec![0u8; frame_bytes]; 4];
@@ -1816,10 +2138,82 @@ async fn run_render_pipeline(
             &sampled_full_frame
         };
 
+        // 1.75. Transitions (Warp Bubble, Wave Warp, Slide Shake) if active
+        let mut active_trans: Option<(&TransitionItem, f64)> = None;
+        for trans in &plan.transitions {
+            let t_frames = (t - trans.t) * output_fps;
+            match trans.transition_type.as_str() {
+                "WARP_BUBBLE" => {
+                    if t_frames.abs() <= 2.0 + 1e-4 {
+                        active_trans = Some((trans, t_frames));
+                        break;
+                    }
+                }
+                "WAVE_WARP" => {
+                    if t_frames >= -1e-4 && t_frames <= 6.0 + 1e-4 {
+                        active_trans = Some((trans, t_frames));
+                        break;
+                    }
+                }
+                "SLIDE_SHAKE" => {
+                    if t_frames.abs() <= 3.0 + 1e-4 {
+                        active_trans = Some((trans, t_frames));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let trans_frame_ptr = if let Some((trans, _t_frames)) = active_trans {
+            match trans.transition_type.as_str() {
+                "WARP_BUBBLE" => {
+                    let env_a = compute_warp_bubble_env(t, trans.t, output_fps);
+                    apply_warp_bubble(
+                        full_frame_ptr,
+                        &mut transition_buf,
+                        src_w as usize,
+                        src_h as usize,
+                        env_a,
+                        1.2,
+                    );
+                    &transition_buf
+                }
+                "WAVE_WARP" => {
+                    let (h_t, k, v, t_fr) = compute_wave_warp_params(t, trans.t, output_fps, src_h as usize);
+                    apply_wave_warp(
+                        full_frame_ptr,
+                        &mut transition_buf,
+                        src_w as usize,
+                        src_h as usize,
+                        h_t,
+                        k,
+                        v,
+                        t_fr,
+                    );
+                    &transition_buf
+                }
+                "SLIDE_SHAKE" => {
+                    let shift_x = compute_slide_shake_shift(t, trans.t, output_fps);
+                    apply_slide_shake(
+                        full_frame_ptr,
+                        &mut transition_buf,
+                        src_w as usize,
+                        src_h as usize,
+                        shift_x,
+                    );
+                    &transition_buf
+                }
+                _ => full_frame_ptr,
+            }
+        } else {
+            full_frame_ptr
+        };
+
         // 2 & 3. Transform Stack + Crop
         let transform_params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
         apply_transform_stack_cropped(
-            full_frame_ptr,
+            trans_frame_ptr,
             &mut cropped_buf,
             src_w as usize,
             src_h as usize,
@@ -2097,17 +2491,22 @@ mod tests {
         assert_eq!(parsed_v1.motion_blur, false);
         assert_eq!(parsed_v1.segments[0].effects.reverse, false);
         assert_eq!(parsed_v1.one_framers.len(), 0);
+        assert_eq!(parsed_v1.transitions.len(), 0);
+        assert_eq!(parsed_v1.segments[0].transition, None);
 
         let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0).unwrap();
         assert_eq!(v2_plan.schema_version, 2);
         assert_eq!(v2_plan.motion_blur, true);
         assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
         assert!(v2_plan.one_framers.len() > 0);
+        assert!(v2_plan.transitions.len() > 0);
 
         let v2_serialized = serde_json::to_string(&v2_plan).unwrap();
         assert!(v2_serialized.contains("\"one_framers\":["));
+        assert!(v2_serialized.contains("\"transitions\":["));
         let v2_deserialized: ProjectPlan = serde_json::from_str(&v2_serialized).unwrap();
         assert_eq!(v2_deserialized.one_framers.len(), v2_plan.one_framers.len());
+        assert_eq!(v2_deserialized.transitions.len(), v2_plan.transitions.len());
     }
 
     #[test]
@@ -2377,6 +2776,127 @@ mod tests {
     }
 
     #[test]
+    fn test_transitions_warp_bubble() {
+        let fps = 16.0;
+        let t_cut = 2.0;
+
+        let env_center = compute_warp_bubble_env(t_cut, t_cut, fps);
+        assert!((env_center - 0.5).abs() < 1e-4, "Peak warp bubble envelope should be 0.5");
+
+        let env_edge_left = compute_warp_bubble_env(t_cut - 2.0 / fps, t_cut, fps);
+        assert!((env_edge_left - 0.0).abs() < 1e-4, "Warp bubble env at -2 frames should be 0.0");
+
+        let env_edge_right = compute_warp_bubble_env(t_cut + 2.0 / fps, t_cut, fps);
+        assert!((env_edge_right - 0.0).abs() < 1e-4, "Warp bubble env at +2 frames should be 0.0");
+
+        let width = 64usize;
+        let height = 64usize;
+        let mut frame_in = vec![0u8; width * height * 3];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 3;
+                frame_in[idx] = (x * 4) as u8;
+                frame_in[idx + 1] = (y * 4) as u8;
+                frame_in[idx + 2] = ((x + y) * 2) as u8;
+            }
+        }
+        let mut frame_out = vec![0u8; width * height * 3];
+        apply_warp_bubble(&frame_in, &mut frame_out, width, height, 0.5, 1.2);
+
+        let diff: i64 = frame_in
+            .iter()
+            .zip(frame_out.iter())
+            .map(|(&a, &b)| (a as i64 - b as i64).abs())
+            .sum();
+        assert!(diff > 0, "Active warp bubble must produce pixel displacement");
+    }
+
+    #[test]
+    fn test_transitions_wave_warp() {
+        let fps = 16.0;
+        let t_cut = 1.0;
+        let height = 1080usize;
+
+        let (h0, _, _, t_fr0) = compute_wave_warp_params(t_cut, t_cut, fps, height);
+        assert!((h0 - 280.0).abs() < 1e-4, "Wave warp H at t=0 should be 280.0");
+        assert!((t_fr0 - 0.0).abs() < 1e-4);
+
+        let (h3, _, _, _) = compute_wave_warp_params(t_cut + 3.0 / fps, t_cut, fps, height);
+        assert!((h3 - 140.0).abs() < 1e-4, "Wave warp H at t=3 frames should be 140.0");
+
+        let (h6, _, _, _) = compute_wave_warp_params(t_cut + 6.0 / fps, t_cut, fps, height);
+        assert!((h6 - 0.0).abs() < 1e-4, "Wave warp H at t=6 frames should be 0.0");
+
+        let (h7, _, _, _) = compute_wave_warp_params(t_cut + 7.0 / fps, t_cut, fps, height);
+        assert_eq!(h7, 0.0, "Wave warp H at t=7 frames should be 0.0");
+    }
+
+    #[test]
+    fn test_transitions_slide_shake() {
+        let fps = 16.0;
+        let t_cut = 2.0;
+        let dt = 1.0 / fps;
+
+        let shift_before = compute_slide_shake_shift(t_cut - dt, t_cut, fps);
+        let shift_after = compute_slide_shake_shift(t_cut + dt, t_cut, fps);
+
+        assert!(shift_before > 0.0, "Shift before cut must be positive");
+        assert!(shift_after < 0.0, "Shift after cut must be negative");
+        assert!(
+            (shift_before.abs() - shift_after.abs()).abs() < 1e-4,
+            "Shift magnitude must be continuous across cut (signs inverted)"
+        );
+
+        let shift_bound_left = compute_slide_shake_shift(t_cut - 3.0 * dt, t_cut, fps);
+        assert!((shift_bound_left - 0.0).abs() < 1e-4);
+
+        let shift_bound_right = compute_slide_shake_shift(t_cut + 3.0 * dt, t_cut, fps);
+        assert!((shift_bound_right - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_transitions_auto_placement() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+
+        let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+
+        let wrap_transitions: Vec<_> = plan_hard.transitions.iter().filter(|t| t.is_wrap).collect();
+        assert_eq!(wrap_transitions.len(), 1, "HARD plan should have 1 wrap transition");
+        assert_eq!(wrap_transitions[0].transition_type, "WARP_BUBBLE");
+
+        let cut_warps = plan_hard.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
+        let cut_waves = plan_hard.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
+        let cut_slides = plan_hard.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "SLIDE_SHAKE").count();
+
+        println!(
+            "HARD transitions breakdown: wrap=1, warp_cuts={}, wave_cuts={}, slide_cuts={}",
+            cut_warps, cut_waves, cut_slides
+        );
+
+        // Expect ~6 warp cuts, ~4 wave cuts, ~8 slide cuts (tolerance +/- 2)
+        assert!((cut_warps as i32 - 6).abs() <= 2, "Warp cuts count should be ~6");
+        assert!((cut_waves as i32 - 4).abs() <= 2, "Wave cuts count should be ~4");
+        assert!((cut_slides as i32 - 8).abs() <= 2, "Slide cuts count should be ~8");
+
+        let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        let smooth_warps = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
+        let smooth_waves = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
+        assert_eq!(smooth_warps, 0, "SMOOTH style has 0% warp on cuts");
+        assert_eq!(smooth_waves, 0, "SMOOTH style has 0% wave on cuts");
+
+        let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm).unwrap();
+        assert!(plan_hybrid.transitions.len() > plan_smooth.transitions.len());
+    }
+
+    #[test]
     fn test_benchmark_full_effects_pipeline() {
         let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
         let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
@@ -2420,7 +2940,7 @@ mod tests {
         let src_fps = scene_info.fps;
         let frame_bytes = (src_w * src_h * 3) as usize;
 
-        let temp_dir = std::env::temp_dir().join("cia_app_bench_t9");
+        let temp_dir = std::env::temp_dir().join("cia_app_bench_t10");
         std::fs::create_dir_all(&temp_dir).unwrap();
         let raw_cache = temp_dir.join("test_frames.raw");
 
@@ -2453,63 +2973,11 @@ mod tests {
         let mut raw_file = std::fs::File::open(&raw_cache).unwrap();
         let cropped_frame_bytes = (crop.width * crop.height * 3) as usize;
 
-        // 1. Baseline T8 Effects Pipeline (Shakes 4-axis, Zoom Continuity, Reverse Remap, Mirror Edges)
-        let t_t8_start = std::time::Instant::now();
-        let mut t8_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
-        let mut sampled_full_frame = vec![0u8; frame_bytes];
-        let mut blend_storage = vec![vec![0u8; frame_bytes]; 4];
-        let mut t8_crop = vec![0u8; cropped_frame_bytes];
-
-        for i in 0..total_output_frames {
-            let t = (i as f64) / output_fps;
-            let seg = plan.segments.iter().find(|s| t >= s.t0 && t <= s.t1).or_else(|| plan.segments.last()).unwrap();
-            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
-            let t_rel = (t - seg.t0).max(0.0);
-            let x = (t_rel / seg_dur).clamp(0.0, 1.0);
-            let u = evaluate_curve(&seg.curve, x);
-            let u_prime = evaluate_curve_derivative(&seg.curve, x);
-            let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
-            let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
-
-            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
-            let mut base_src_frame = (src_time * src_fps).round() as i64;
-            if base_src_frame < 0 { base_src_frame = 0; }
-            if base_src_frame >= total_source_frames as i64 { base_src_frame = (total_source_frames - 1) as i64; }
-
-            // Sample Full-Frame
-            if n_blur <= 1 {
-                t8_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
-            } else {
-                let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
-                for k in 0..n_blur {
-                    let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
-                    t8_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
-                }
-                for k in 0..n_blur {
-                    slice_ptrs.push(&blend_storage[k]);
-                }
-                blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
-            }
-
-            // Transform Stack + Crop (Shakes + Zoom + Mirror Edges)
-            let params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
-            apply_transform_stack_cropped(
-                &sampled_full_frame,
-                &mut t8_crop,
-                src_w as usize,
-                src_h as usize,
-                crop.x,
-                crop.y,
-                crop.width,
-                crop.height,
-                params,
-            );
-        }
-        let t_t8 = t_t8_start.elapsed();
-
-        // 2. T9 Full Pipeline (T8 Effects + One-Framers Library)
+        // 1. Baseline T9 Pipeline (Shakes, Zoom, Reverse, One-Framers)
         let t_t9_start = std::time::Instant::now();
         let mut t9_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
+        let mut sampled_full_frame = vec![0u8; frame_bytes];
+        let mut blend_storage = vec![vec![0u8; frame_bytes]; 4];
         let mut one_framer_buf = vec![0u8; frame_bytes];
         let mut t9_crop = vec![0u8; cropped_frame_bytes];
 
@@ -2579,21 +3047,165 @@ mod tests {
         }
         let t_t9 = t_t9_start.elapsed();
 
-        let t_t8_total = t_decode + t_t8;
-        let t_t9_total = t_decode + t_t9;
-        let ratio = (t_t9_total.as_secs_f64() / t_t8_total.as_secs_f64()).max(0.01);
+        // 2. T10 Full Pipeline (T9 Effects + Transitions)
+        let t_t10_start = std::time::Instant::now();
+        let mut t10_reader = CachedFrameReader::new(&mut raw_file, frame_bytes, 16);
+        let mut transition_buf = vec![0u8; frame_bytes];
+        let mut t10_crop = vec![0u8; cropped_frame_bytes];
 
-        println!("=== T9 ONE-FRAMERS BENCHMARK REPORT ===");
+        for i in 0..total_output_frames {
+            let t = (i as f64) / output_fps;
+            let seg = plan.segments.iter().find(|s| t >= s.t0 && t <= s.t1).or_else(|| plan.segments.last()).unwrap();
+            let seg_dur = (seg.t1 - seg.t0).max(1e-6);
+            let t_rel = (t - seg.t0).max(0.0);
+            let x = (t_rel / seg_dur).clamp(0.0, 1.0);
+            let u = evaluate_curve(&seg.curve, x);
+            let u_prime = evaluate_curve_derivative(&seg.curve, x);
+            let speed_v = ((seg.s1 - seg.s0).abs() / seg_dur) * u_prime;
+            let n_blur = compute_motion_blur_frames(speed_v, plan.motion_blur);
+
+            let src_time = seg.s0 + (seg.s1 - seg.s0) * u;
+            let mut base_src_frame = (src_time * src_fps).round() as i64;
+            if base_src_frame < 0 { base_src_frame = 0; }
+            if base_src_frame >= total_source_frames as i64 { base_src_frame = (total_source_frames - 1) as i64; }
+
+            // Sample Full-Frame
+            if n_blur <= 1 {
+                t10_reader.get_frame(base_src_frame as u64, &mut sampled_full_frame).unwrap();
+            } else {
+                let mut slice_ptrs: Vec<&[u8]> = Vec::with_capacity(n_blur);
+                for k in 0..n_blur {
+                    let f_idx = (base_src_frame + (k as i64)).clamp(0, (total_source_frames - 1) as i64) as u64;
+                    t10_reader.get_frame(f_idx, &mut blend_storage[k]).unwrap();
+                }
+                for k in 0..n_blur {
+                    slice_ptrs.push(&blend_storage[k]);
+                }
+                blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+            }
+
+            // One-Framers Library effect
+            let active_framer = plan
+                .one_framers
+                .iter()
+                .find(|f| (t - f.t).abs() < (0.5 / output_fps) + 1e-6);
+
+            let full_frame_ptr = if let Some(framer) = active_framer {
+                apply_one_framer(
+                    &framer.framer_type,
+                    &sampled_full_frame,
+                    &mut one_framer_buf,
+                    src_w as usize,
+                    src_h as usize,
+                );
+                &one_framer_buf
+            } else {
+                &sampled_full_frame
+            };
+
+            // Transitions (Warp Bubble, Wave Warp, Slide Shake)
+            let mut active_trans: Option<(&TransitionItem, f64)> = None;
+            for trans in &plan.transitions {
+                let t_frames = (t - trans.t) * output_fps;
+                match trans.transition_type.as_str() {
+                    "WARP_BUBBLE" => {
+                        if t_frames.abs() <= 2.0 + 1e-4 {
+                            active_trans = Some((trans, t_frames));
+                            break;
+                        }
+                    }
+                    "WAVE_WARP" => {
+                        if t_frames >= -1e-4 && t_frames <= 6.0 + 1e-4 {
+                            active_trans = Some((trans, t_frames));
+                            break;
+                        }
+                    }
+                    "SLIDE_SHAKE" => {
+                        if t_frames.abs() <= 3.0 + 1e-4 {
+                            active_trans = Some((trans, t_frames));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let trans_frame_ptr = if let Some((trans, _t_frames)) = active_trans {
+                match trans.transition_type.as_str() {
+                    "WARP_BUBBLE" => {
+                        let env_a = compute_warp_bubble_env(t, trans.t, output_fps);
+                        apply_warp_bubble(
+                            full_frame_ptr,
+                            &mut transition_buf,
+                            src_w as usize,
+                            src_h as usize,
+                            env_a,
+                            1.2,
+                        );
+                        &transition_buf
+                    }
+                    "WAVE_WARP" => {
+                        let (h_t, k, v, t_fr) = compute_wave_warp_params(t, trans.t, output_fps, src_h as usize);
+                        apply_wave_warp(
+                            full_frame_ptr,
+                            &mut transition_buf,
+                            src_w as usize,
+                            src_h as usize,
+                            h_t,
+                            k,
+                            v,
+                            t_fr,
+                        );
+                        &transition_buf
+                    }
+                    "SLIDE_SHAKE" => {
+                        let shift_x = compute_slide_shake_shift(t, trans.t, output_fps);
+                        apply_slide_shake(
+                            full_frame_ptr,
+                            &mut transition_buf,
+                            src_w as usize,
+                            src_h as usize,
+                            shift_x,
+                        );
+                        &transition_buf
+                    }
+                    _ => full_frame_ptr,
+                }
+            } else {
+                full_frame_ptr
+            };
+
+            // Transform Stack + Crop (Shakes + Zoom + Mirror Edges)
+            let params = compute_transform_params(&seg.effects, t_rel, seg_dur, output_fps);
+            apply_transform_stack_cropped(
+                trans_frame_ptr,
+                &mut t10_crop,
+                src_w as usize,
+                src_h as usize,
+                crop.x,
+                crop.y,
+                crop.width,
+                crop.height,
+                params,
+            );
+        }
+        let t_t10 = t_t10_start.elapsed();
+
+        let t_t9_total = t_decode + t_t9;
+        let t_t10_total = t_decode + t_t10;
+        let ratio = (t_t10_total.as_secs_f64() / t_t9_total.as_secs_f64()).max(0.01);
+
+        println!("=== T10 TRANSITIONS BENCHMARK REPORT ===");
         println!("Total frames rendered: {}", total_output_frames);
         println!("Decode time: {:.3}s", t_decode.as_secs_f64());
-        println!("T8 total render pipeline time: {:.3}s", t_t8_total.as_secs_f64());
-        println!("T9 Full Effects + One-Framers total render pipeline time: {:.3}s", t_t9_total.as_secs_f64());
-        println!("Performance ratio (T9 / T8): {:.3}x", ratio);
+        println!("T9 total render pipeline time: {:.3}s", t_t9_total.as_secs_f64());
+        println!("T10 Full Effects + Transitions total render pipeline time: {:.3}s", t_t10_total.as_secs_f64());
+        println!("Performance ratio (T10 / T9): {:.3}x", ratio);
         println!("========================================");
 
         assert!(
-            ratio < 1.5,
-            "Benchmark check failed: ratio was {:.3}x (expected < 1.5x)",
+            ratio < 1.3,
+            "Benchmark check failed: ratio was {:.3}x (expected < 1.3x)",
             ratio
         );
     }
