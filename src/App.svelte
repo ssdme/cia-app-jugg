@@ -2155,14 +2155,6 @@
     border-radius: 8px;
   }
 
-  .about-kicker {
-    display: block;
-    color: #71717a;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-  }
-
   .about-link-card p {
     color: #a1a1aa;
     font-size: 11px;

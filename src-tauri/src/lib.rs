@@ -1158,9 +1158,9 @@ pub fn apply_ambiance_effects(
                     let v = vignette_lut[row_offset + px] as u32;
                     let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
 
-                    let mut r = ((frame_in[idx]     as i32 + tr as i32).clamp(0, 255)) as u32;
-                    let mut g = ((frame_in[idx + 1] as i32 + tg as i32).clamp(0, 255)) as u32;
-                    let mut b = ((frame_in[idx + 2] as i32 + tb as i32).clamp(0, 255)) as u32;
+                    let r = ((frame_in[idx]     as i32 + tr as i32).clamp(0, 255)) as u32;
+                    let g = ((frame_in[idx + 1] as i32 + tg as i32).clamp(0, 255)) as u32;
+                    let b = ((frame_in[idx + 2] as i32 + tb as i32).clamp(0, 255)) as u32;
 
                     frame_out[idx]     = ((r * combined) >> 8) as u8;
                     frame_out[idx + 1] = ((g * combined) >> 8) as u8;
