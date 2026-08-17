@@ -35,6 +35,36 @@ pub struct BeatResult {
     pub downbeats: Vec<f64>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct AspectRatio {
+    pub w: u32,
+    pub h: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct PlanSegment {
+    pub t0: f64,
+    pub t1: f64,
+    pub s0: f64,
+    pub s1: f64,
+    pub curve: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ProjectPlan {
+    pub schema_version: u32,
+    pub style: String,
+    pub fps: u32,
+    pub aspect: AspectRatio,
+    pub borderless: bool,
+    pub bpm: f64,
+    pub target_duration: f64,
+    pub video_duration: f64,
+    pub audio_duration: f64,
+    pub loops: u32,
+    pub segments: Vec<PlanSegment>,
+}
+
 fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
@@ -176,10 +206,12 @@ fn probe_media(file_path: String) -> Result<MediaInfo, String> {
                     }
                 }
 
-                // If audio info is needed or if pure audio file, extract via symphonia
+                // Complement with symphonia for audio if needed
                 if let Ok(audio_info) = probe_audio_symphonia(&file_path, &ext) {
                     if audio_channels == 0 {
                         audio_channels = audio_info.audio_channels;
+                    }
+                    if audio_sample_rate == 0 {
                         audio_sample_rate = audio_info.audio_sample_rate;
                     }
                     if duration == 0.0 {
@@ -260,7 +292,7 @@ fn probe_audio_symphonia(file_path: &str, ext: &str) -> Result<MediaInfo, String
         }
     }
 
-    // If duration not in headers, calculate by iterating packets
+    // Fallback: iterate packets to calculate duration if not present in header
     if duration == 0.0 {
         let default_track = format.default_track().cloned();
         if let Some(track) = default_track {
@@ -357,6 +389,203 @@ fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatResult,
     Ok(result)
 }
 
+pub fn create_plan_internal(
+    style: &str,
+    fps: u32,
+    beats: &[f64],
+    _downbeats: &[f64],
+    video_duration: f64,
+    audio_duration: f64,
+    aspect_w: u32,
+    aspect_h: u32,
+    bpm: f64,
+) -> Result<ProjectPlan, String> {
+    if fps == 0 {
+        return Err("FPS must be greater than 0".to_string());
+    }
+    if video_duration <= 0.0 {
+        return Err("Video duration must be greater than 0".to_string());
+    }
+    if audio_duration <= 0.0 {
+        return Err("Audio duration must be greater than 0".to_string());
+    }
+
+    let target = audio_duration;
+    let min_seg_dur = 3.0 / (fps as f64);
+
+    // 1. Initial bounds based on style
+    let mut raw_beats: Vec<f64> = beats
+        .iter()
+        .copied()
+        .filter(|&b| b > 0.0 && b < target)
+        .collect();
+    raw_beats.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let subset_beats: Vec<f64> = match style.to_uppercase().as_str() {
+        "SMOOTH" => raw_beats.into_iter().step_by(2).collect(),
+        _ => raw_beats, // HARD, HYBRID
+    };
+
+    let mut initial_bounds = Vec::with_capacity(subset_beats.len() + 2);
+    initial_bounds.push(0.0);
+    initial_bounds.extend(subset_beats);
+    initial_bounds.push(target);
+
+    // 2. Merge any segment shorter than 3/fps with preceding segment
+    let mut filtered_bounds = vec![0.0];
+    for &b in &initial_bounds[1..] {
+        let last = *filtered_bounds.last().unwrap();
+        if b - last < min_seg_dur {
+            if (b - target).abs() < 1e-9 {
+                if filtered_bounds.len() > 1 {
+                    filtered_bounds.pop();
+                    filtered_bounds.push(target);
+                } else {
+                    filtered_bounds.push(target);
+                }
+            }
+        } else {
+            filtered_bounds.push(b);
+        }
+    }
+    if *filtered_bounds.last().unwrap() < target {
+        if target - *filtered_bounds.last().unwrap() < min_seg_dur && filtered_bounds.len() > 1 {
+            filtered_bounds.pop();
+        }
+        filtered_bounds.push(target);
+    }
+
+    // 3. Build segments and handle video loops
+    let mut segments = Vec::new();
+    let mut s_cursor = 0.0;
+    let mut loops = 0u32;
+
+    for (idx, win) in filtered_bounds.windows(2).enumerate() {
+        let t0 = win[0];
+        let t1 = win[1];
+
+        let (curve_name, r) = match style.to_uppercase().as_str() {
+            "SMOOTH" => ("saddle".to_string(), 0.75),
+            "HYBRID" => {
+                if idx % 2 == 0 {
+                    ("snap".to_string(), 1.0)
+                } else {
+                    ("saddle".to_string(), 0.75)
+                }
+            }
+            _ => ("snap".to_string(), 1.0), // HARD default
+        };
+
+        let mut seg_t0 = t0;
+        let seg_t1 = t1;
+
+        while seg_t0 < seg_t1 - 1e-9 {
+            let dt = seg_t1 - seg_t0;
+            let span = r * dt;
+
+            if s_cursor + span <= video_duration + 1e-9 {
+                let s0 = s_cursor;
+                let s1 = s_cursor + span;
+                s_cursor += span;
+
+                if (s_cursor - video_duration).abs() < 1e-9 {
+                    s_cursor = 0.0;
+                    loops += 1;
+                }
+
+                segments.push(PlanSegment {
+                    t0: (seg_t0 * 10000.0).round() / 10000.0,
+                    t1: (seg_t1 * 10000.0).round() / 10000.0,
+                    s0: (s0 * 10000.0).round() / 10000.0,
+                    s1: (s1 * 10000.0).round() / 10000.0,
+                    curve: curve_name.clone(),
+                });
+                break;
+            } else {
+                // Loop wrap happens within this segment
+                let t_wrap = seg_t0 + (video_duration - s_cursor) / r;
+                let s0 = s_cursor;
+                let s1 = video_duration;
+
+                segments.push(PlanSegment {
+                    t0: (seg_t0 * 10000.0).round() / 10000.0,
+                    t1: (t_wrap * 10000.0).round() / 10000.0,
+                    s0: (s0 * 10000.0).round() / 10000.0,
+                    s1: (s1 * 10000.0).round() / 10000.0,
+                    curve: curve_name.clone(),
+                });
+
+                loops += 1;
+                s_cursor = 0.0;
+                seg_t0 = t_wrap;
+            }
+        }
+    }
+
+    Ok(ProjectPlan {
+        schema_version: 1,
+        style: style.to_uppercase(),
+        fps,
+        aspect: AspectRatio {
+            w: aspect_w,
+            h: aspect_h,
+        },
+        borderless: true,
+        bpm: (bpm * 100.0).round() / 100.0,
+        target_duration: (target * 1000.0).round() / 1000.0,
+        video_duration: (video_duration * 1000.0).round() / 1000.0,
+        audio_duration: (audio_duration * 1000.0).round() / 1000.0,
+        loops,
+        segments,
+    })
+}
+
+#[tauri::command]
+fn generate_plan(
+    style: String,
+    fps: u32,
+    beats: Vec<f64>,
+    downbeats: Vec<f64>,
+    video_duration: f64,
+    audio_duration: f64,
+    aspect_w: u32,
+    aspect_h: u32,
+    bpm: f64,
+) -> Result<String, String> {
+    let plan = create_plan_internal(
+        &style,
+        fps,
+        &beats,
+        &downbeats,
+        video_duration,
+        audio_duration,
+        aspect_w,
+        aspect_h,
+        bpm,
+    )?;
+    serde_json::to_string_pretty(&plan).map_err(|e| format!("Failed to serialize plan: {e}"))
+}
+
+#[tauri::command]
+fn save_plan(app: tauri::AppHandle, plan_json: String) -> Result<String, String> {
+    let _: serde_json::Value =
+        serde_json::from_str(&plan_json).map_err(|e| format!("Invalid plan JSON: {e}"))?;
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("Failed to create data dir {}: {e}", data_dir.display()))?;
+
+    let plan_path = data_dir.join("project.json");
+    std::fs::write(&plan_path, plan_json.as_bytes())
+        .map_err(|e| format!("Failed to write plan file {}: {e}", plan_path.display()))?;
+
+    Ok(plan_path.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -385,7 +614,9 @@ pub fn run() {
             open_about_link,
             pick_file,
             probe_media,
-            detect_beats
+            detect_beats,
+            generate_plan,
+            save_plan
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
@@ -428,4 +659,147 @@ mod tests {
             assert_eq!(res.audio_sample_rate, 44100);
         }
     }
+
+    #[test]
+    fn test_generate_plan_fixture_invariants() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+        let min_seg_dur = 3.0 / (fps as f64);
+
+        for style in ["HARD", "SMOOTH", "HYBRID"] {
+            let plan = create_plan_internal(
+                style,
+                fps,
+                &beats,
+                &downbeats,
+                video_duration,
+                audio_duration,
+                1080,
+                1080,
+                bpm,
+            )
+            .expect("Plan generation must succeed");
+
+            println!("--- Tested Style: {} (Segments: {}, Loops: {}) ---", style, plan.segments.len(), plan.loops);
+
+            // Invariant (i): Contiguous coverage [0, target], first t0=0, last t1=target
+            assert_eq!(plan.segments.first().unwrap().t0, 0.0, "First segment must start at t0=0");
+            assert!((plan.segments.last().unwrap().t1 - audio_duration).abs() < 0.01, "Last segment must end at target");
+
+            for win in plan.segments.windows(2) {
+                assert!(
+                    (win[0].t1 - win[1].t0).abs() < 1e-4,
+                    "Coverage must be contiguous between segments: {} vs {}",
+                    win[0].t1,
+                    win[1].t0
+                );
+            }
+
+            // Invariant (ii): 0 <= s0 < s1 <= video_duration for all segments
+            for seg in &plan.segments {
+                assert!(seg.s0 >= 0.0, "s0 must be >= 0 (got {})", seg.s0);
+                assert!(seg.s1 > seg.s0, "s1 must be > s0 (got s0={}, s1={})", seg.s0, seg.s1);
+                assert!(
+                    seg.s1 <= video_duration + 1e-4,
+                    "s1 must be <= video_duration (got {} vs max {})",
+                    seg.s1,
+                    video_duration
+                );
+            }
+
+            // Invariant (iii): No segment < 3/fps
+            for seg in &plan.segments {
+                let dur = seg.t1 - seg.t0;
+                assert!(
+                    dur >= min_seg_dur - 1e-4,
+                    "Segment duration must be >= 3/fps = {} (got {}) for [{}-{}]",
+                    min_seg_dur,
+                    dur,
+                    seg.t0,
+                    seg.t1
+                );
+            }
+
+            // Invariant (iv): loops >= 1 on this fixture for HARD & HYBRID, and each wrap aligned on a segment boundary
+            if style == "HARD" || style == "HYBRID" {
+                assert!(
+                    plan.loops >= 1,
+                    "Fixture video_dur=10.773, audio_dur=14.315 must trigger at least 1 loop in style {} (got {})",
+                    style,
+                    plan.loops
+                );
+            }
+
+            // Verify each wrap aligns on a segment boundary (s1 == video_duration, next s0 == 0.0)
+            let mut found_wraps = 0;
+            for i in 0..plan.segments.len() - 1 {
+                if (plan.segments[i].s1 - video_duration).abs() < 0.01 {
+                    assert_eq!(
+                        plan.segments[i + 1].s0,
+                        0.0,
+                        "Next segment after wrap must start at s0=0.0"
+                    );
+                    assert_eq!(
+                        plan.segments[i].t1,
+                        plan.segments[i + 1].t0,
+                        "Wrap cut must align on segment boundary"
+                    );
+                    found_wraps += 1;
+                }
+            }
+            assert_eq!(found_wraps, plan.loops as usize);
+        }
+    }
+
+    #[test]
+    fn test_save_and_read_project_json() {
+        let video_duration = 10.773;
+        let audio_duration = 14.315;
+        let beats = vec![
+            0.42, 1.14, 1.88, 2.60, 3.32, 4.04, 4.76, 5.50, 6.20, 6.94, 7.64, 8.38, 9.10, 9.82,
+            10.54, 11.26, 11.98, 12.70, 13.42, 14.14,
+        ];
+        let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
+        let fps = 16u32;
+        let bpm = 83.33;
+
+        let plan = create_plan_internal(
+            "HARD",
+            fps,
+            &beats,
+            &downbeats,
+            video_duration,
+            audio_duration,
+            1080,
+            1080,
+            bpm,
+        )
+        .expect("Plan creation must succeed");
+
+        let json_str = serde_json::to_string_pretty(&plan).expect("Serialization must succeed");
+        println!("=== RAW PROJECT.JSON FIXTURE ===");
+        println!("{json_str}");
+        println!("===============================");
+
+        let temp_dir = std::env::temp_dir().join("cia_app_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let plan_file = temp_dir.join("project.json");
+        std::fs::write(&plan_file, json_str.as_bytes()).unwrap();
+
+        let read_back = std::fs::read_to_string(&plan_file).unwrap();
+        let parsed: ProjectPlan = serde_json::from_str(&read_back).unwrap();
+        assert_eq!(parsed.style, "HARD");
+        assert_eq!(parsed.fps, 16);
+        assert_eq!(parsed.loops, 1);
+        assert_eq!(parsed.segments.len(), 21);
+    }
 }
+
+

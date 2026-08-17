@@ -218,6 +218,10 @@
     }
   }
 
+  // Plan Summary State (T5)
+  let planSummary = $state(null);
+  let isGeneratingPlan = $state(false);
+
   function handleCustomWidthInput(e) {
     customWidth = parseInt(e.target.value, 10) || 0;
     validateCustomDimensions();
@@ -228,7 +232,7 @@
     validateCustomDimensions();
   }
 
-  function handleRunProcess() {
+  async function handleRunProcess() {
     if (selectedAspectRatio === 'CUSTOM') {
       validateCustomDimensions();
       if (customArError) {
@@ -236,7 +240,65 @@
         return;
       }
     }
-    showToast('RUN — implemented in task T5', 'info');
+
+    if (!sceneInfo || !drumsInfo || !audioInfo) {
+      showToast('Media metadata missing. Please re-probe sources.', 'error');
+      return;
+    }
+
+    isGeneratingPlan = true;
+    try {
+      let aspectW = 1080;
+      let aspectH = 1080;
+      if (selectedAspectRatio === '16:9') {
+        aspectW = 1920;
+        aspectH = 1080;
+      } else if (selectedAspectRatio === '9:16') {
+        aspectW = 1080;
+        aspectH = 1920;
+      } else if (selectedAspectRatio === '1:1') {
+        aspectW = 1080;
+        aspectH = 1080;
+      } else if (selectedAspectRatio === 'CUSTOM') {
+        aspectW = customWidth;
+        aspectH = customHeight;
+      }
+
+      const planJson = await invoke('generate_plan', {
+        style: selectedStyle,
+        fps: fpsValue,
+        beats: beats || [],
+        downbeats: downbeats || [],
+        videoDuration: sceneInfo.duration,
+        audioDuration: audioInfo.duration,
+        aspectW,
+        aspectH,
+        bpm: bpm || 120.0,
+      });
+
+      console.log('[PLAN] Generated plan:', planJson);
+      const savedPath = await invoke('save_plan', { planJson });
+      console.log('[PLAN] Saved project.json to:', savedPath);
+
+      const parsed = JSON.parse(planJson);
+      planSummary = {
+        segmentsCount: parsed.segments.length,
+        loops: parsed.loops,
+        targetDuration: parsed.target_duration,
+        savedPath,
+        style: parsed.style,
+        fps: parsed.fps,
+        aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
+      };
+
+      showToast('Plan generated and saved', 'success');
+    } catch (err) {
+      console.error('Plan generation failed:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Plan generation failed: ${msg}`, 'error');
+    } finally {
+      isGeneratingPlan = false;
+    }
   }
 
   function showToast(message, type = 'info') {
@@ -679,13 +741,50 @@
                 </div>
               </div>
 
+              <!-- Plan Summary Card (T5) -->
+              {#if planSummary}
+                <div class="plan-summary-card">
+                  <div class="plan-summary-header">
+                    <span class="plan-summary-title">PLAN SUMMARY</span>
+                    <span class="pro-dot active"></span>
+                  </div>
+                  <div class="plan-summary-grid">
+                    <div class="plan-stat">
+                      <span class="stat-label">STYLE / FPS</span>
+                      <span class="stat-value mono">{planSummary.style} · {planSummary.fps} FPS</span>
+                    </div>
+                    <div class="plan-stat">
+                      <span class="stat-label">SEGMENTS</span>
+                      <span class="stat-value mono">{planSummary.segmentsCount} cuts</span>
+                    </div>
+                    <div class="plan-stat">
+                      <span class="stat-label">LOOPS</span>
+                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'}</span>
+                    </div>
+                    <div class="plan-stat">
+                      <span class="stat-label">TARGET DURATION</span>
+                      <span class="stat-value mono">{planSummary.targetDuration.toFixed(2)}s</span>
+                    </div>
+                  </div>
+                  <div class="plan-saved-path">
+                    <span class="stat-label">SAVED:</span>
+                    <span class="saved-path-text mono" title={planSummary.savedPath}>{planSummary.savedPath}</span>
+                  </div>
+                </div>
+              {/if}
+
               <!-- Footer Actions -->
               <div class="settings-actions-footer">
                 <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
                   &lt; BACK TO SOURCES
                 </button>
-                <button class="btn-run-process" onclick={handleRunProcess}>
-                  RUN PROCESS &gt;
+                <button class="btn-run-process" onclick={handleRunProcess} disabled={isGeneratingPlan}>
+                  {#if isGeneratingPlan}
+                    <span class="spinner-inline"></span>
+                    <span>GENERATING PLAN...</span>
+                  {:else}
+                    RUN PROCESS &gt;
+                  {/if}
                 </button>
               </div>
             </div>
@@ -1417,6 +1516,81 @@
     font-size: 8.5px;
     line-height: 1.2;
     margin-top: 1px;
+  }
+
+  /* Plan Summary Card (T5) */
+  .plan-summary-card {
+    background: #09090c;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .plan-summary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .plan-summary-title {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #ffffff;
+  }
+
+  .plan-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
+  }
+
+  .plan-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    padding: 3px 5px;
+  }
+
+  .stat-label {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #71717a;
+  }
+
+  .stat-value {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #4ade80;
+  }
+
+  .plan-saved-path {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    padding: 2px 6px;
+    overflow: hidden;
+  }
+
+  .saved-path-text {
+    font-size: 8.5px;
+    font-weight: 600;
+    color: #e4e4e7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
 
   /* Footer Actions */
