@@ -1,4 +1,4 @@
-﻿<script>
+<script>
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -57,6 +57,11 @@
   let echoTrailEnabled = $state(false); // T11 echo/trail, default OFF
   let fullFxEnabled = $state(true);    // T13 full fx, default ON
   let renderStats = $state(null);      // T16 render logs & stats
+
+  // T19 Export Options State
+  let selectedCodec = $state('H.264'); // 'H.264' | 'H.265' | 'VP9'
+  let bitrateValue = $state(12); // min 5, max 50, step 1, default 12
+  let selectedFormat = $state('MP4'); // 'MP4' | 'MKV' | 'WEBM'
 
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
@@ -160,6 +165,14 @@
   ];
 
   const ASPECT_RATIO_PRESETS = ['16:9', '9:16', '1:1', 'CUSTOM'];
+
+  const CODEC_OPTIONS = [
+    { id: 'H.264', label: 'H.264' },
+    { id: 'H.265', label: 'H.265 (HEVC)' },
+    { id: 'VP9', label: 'VP9' }
+  ];
+
+  const FORMAT_OPTIONS = ['MP4', 'MKV', 'WEBM'];
 
   const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'webm', 'mov', 'avi'];
   const AUDIO_EXTENSIONS = ['mp3', 'wav', 'flac', 'm4a', 'ogg'];
@@ -384,6 +397,11 @@
         fullFx: fullFxEnabled,
         effectOverrides,
         customParams: customParams || null,
+        exportConfig: {
+          codec: selectedCodec,
+          bitrateMbps: bitrateValue,
+          format: selectedFormat,
+        },
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -412,6 +430,11 @@
         transitions: hasTransitions,
         ambiance: hasAmbiance,
         echoTrail: echoTrailEnabled,
+        export: parsed.export || {
+          codec: selectedCodec,
+          bitrateMbps: bitrateValue,
+          format: selectedFormat,
+        },
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
@@ -971,7 +994,7 @@
                   <div class="toggle-row">
                     <div class="toggle-row-label">
                       <span class="group-label">ECHO / TRAIL</span>
-                      <span class="toggle-row-desc">Time Blend â€” blends current frame with 3 previous frames (Î±=0.3). Default OFF.</span>
+                      <span class="toggle-row-desc">Time Blend — blends current frame with 3 previous frames (α=0.3). Default OFF.</span>
                     </div>
                     <button
                       id="toggle-echo-trail"
@@ -983,6 +1006,51 @@
                     >
                       {echoTrailEnabled ? 'ON' : 'OFF'}
                     </button>
+                  </div>
+                </div>
+
+                <!-- 6. T19 Export Options: Codec, Bitrate, Format -->
+                <div class="control-group">
+                  <span class="group-label">VIDEO CODEC</span>
+                  <div class="options-buttons-row">
+                    {#each CODEC_OPTIONS as codec}
+                      <button
+                        class="btn-option"
+                        class:active={selectedCodec === codec.id}
+                        onclick={() => selectedCodec = codec.id}
+                        type="button"
+                      >
+                        {codec.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                <div class="control-group">
+                  <GlowSlider
+                    bind:value={bitrateValue}
+                    min={5}
+                    max={50}
+                    step={1}
+                    label="BITRATE"
+                    unit=" Mbps"
+                    precision={0}
+                  />
+                </div>
+
+                <div class="control-group">
+                  <span class="group-label">CONTAINER FORMAT</span>
+                  <div class="options-buttons-row">
+                    {#each FORMAT_OPTIONS as fmt}
+                      <button
+                        class="btn-option"
+                        class:active={selectedFormat === fmt}
+                        onclick={() => selectedFormat = fmt}
+                        type="button"
+                      >
+                        {fmt}
+                      </button>
+                    {/each}
                   </div>
                 </div>
               </div>
@@ -1089,7 +1157,11 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">FX MODE</span>
-                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} Â· ADV SHAKES ON</span>
+                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} · ADV SHAKES ON</span>
+                    </div>
+                    <div class="plan-stat">
+                      <span class="stat-label">EXPORT</span>
+                      <span class="stat-value mono">{planSummary.export?.codec || selectedCodec} · {planSummary.export?.bitrateMbps || planSummary.export?.bitrate_mbps || bitrateValue} Mbps · {planSummary.export?.format || selectedFormat}</span>
                     </div>
                     {#if planSummary.ambiance}
                     <div class="plan-stat flicker-warning">
@@ -1985,6 +2057,37 @@
   }
 
   .btn-ar.active {
+    background: #121215;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.5);
+  }
+
+  /* T19 Export Option Buttons */
+  .options-buttons-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .btn-option {
+    flex: 1;
+    padding: 5px 8px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 4px;
+    color: #71717a;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-option:hover {
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+
+  .btn-option.active {
     background: #121215;
     color: #ffffff;
     border-color: rgba(255, 255, 255, 0.5);

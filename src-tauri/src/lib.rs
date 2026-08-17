@@ -582,6 +582,33 @@ fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
 
 fn default_true() -> bool { true }
 
+// ─── T19 Export Config ────────────────────────────────────────────────────────
+
+fn default_export_codec() -> String { "H264".to_string() }
+fn default_export_bitrate() -> u32 { 12 }
+fn default_export_format() -> String { "MP4".to_string() }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportConfig {
+    #[serde(default = "default_export_codec")]
+    pub codec: String,         // "H264" | "H265" | "VP9"
+    #[serde(default = "default_export_bitrate")]
+    pub bitrate_mbps: u32,     // 5..=50
+    #[serde(default = "default_export_format")]
+    pub format: String,        // "MP4" | "MKV" | "WEBM"
+}
+
+impl Default for ExportConfig {
+    fn default() -> Self {
+        ExportConfig {
+            codec: default_export_codec(),
+            bitrate_mbps: default_export_bitrate(),
+            format: default_export_format(),
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectPlan {
     pub schema_version: u32,
@@ -607,6 +634,8 @@ pub struct ProjectPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ambiance: Option<AmbianceConfig>,
     pub segments: Vec<PlanSegment>,
+    #[serde(default)]
+    pub export: ExportConfig,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -3352,6 +3381,7 @@ pub fn create_plan_internal(
         transitions,
         ambiance,
         segments,
+        export: ExportConfig::default(), // set by generate_plan from UI params
     })
 }
 
@@ -3369,8 +3399,9 @@ fn generate_plan(
     full_fx: bool,
     effect_overrides: Option<EffectOverrides>,
     custom_params: Option<CustomParams>,
+    export_config: Option<ExportConfig>,
 ) -> Result<String, String> {
-    let plan = create_plan_internal(
+    let mut plan = create_plan_internal(
         &style,
         fps,
         &beats,
@@ -3384,6 +3415,10 @@ fn generate_plan(
         effect_overrides,
         custom_params,
     )?;
+    // Apply export config from UI (override default)
+    if let Some(ec) = export_config {
+        plan.export = ec;
+    }
     serde_json::to_string_pretty(&plan).map_err(|e| format!("Failed to serialize plan: {e}"))
 }
 
@@ -3614,7 +3649,31 @@ async fn run_render_pipeline(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let out_mp4_path = out_dir.join(format!("cia_jugg_{timestamp}.mp4"));
+
+    // T19: resolve codec, bitrate, output format from plan.export
+    let export = &plan.export;
+    let codec_lib = match export.codec.to_uppercase().as_str() {
+        "H265" | "HEVC" | "H.265" => "libx265",
+        "VP9"                     => "libvpx-vp9",
+        _                         => "libx264", // H264 default
+    };
+    let bitrate_str = format!("{}M", export.bitrate_mbps);
+    let file_ext = match export.format.to_uppercase().as_str() {
+        "MKV"  => "mkv",
+        "WEBM" => "webm",
+        _      => "mp4",  // default
+    };
+    // VP9 inside webm requires libopus or libvorbis
+    let is_webm = export.format.to_uppercase() == "WEBM";
+    let audio_codec = if is_webm { "libopus" } else { "aac" };
+
+    // Warn if slow codec (H265 or VP9): log only, no block
+    let slow_codec = matches!(codec_lib, "libx265" | "libvpx-vp9");
+    if slow_codec {
+        println!("[T19] WARN: {} encoding is slower than H264 — render may take 2-3x longer", codec_lib);
+    }
+
+    let out_mp4_path = out_dir.join(format!("cia_jugg_{timestamp}.{file_ext}"));
 
     let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
     encode_cmd.args([
@@ -3627,11 +3686,10 @@ async fn run_render_pipeline(
         "-i", &audio_path,
         "-t", &format!("{:.3}", plan.target_duration),
         "-vf", &format!("scale={}:{}", crop.out_w, crop.out_h),
-        "-c:v", "libx264",
+        "-c:v", codec_lib,
+        "-b:v", &bitrate_str,
         "-pix_fmt", "yuv420p",
-        "-crf", "18",
-        "-preset", "veryfast",
-        "-c:a", "aac",
+        "-c:a", audio_codec,
         "-shortest",
         &out_mp4_path.to_string_lossy(),
     ]);
@@ -5653,6 +5711,228 @@ mod tests {
 
         println!("T18 get_style_defaults — HARD shake_a0={}, SMOOTH={}, HYBRID={}",
             hard.shake_a0, smooth.shake_a0, hybrid.shake_a0);
+    }
+
+    // ─── T19: Export Options Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_export_config_custom_values() {
+        let beats = vec![0.42, 1.14, 1.88, 2.60];
+        let downbeats = vec![2.60];
+        let mut plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None,
+        ).expect("Plan generation must succeed");
+
+        let custom_export = ExportConfig {
+            codec: "H265".to_string(),
+            bitrate_mbps: 30,
+            format: "MKV".to_string(),
+        };
+        plan.export = custom_export.clone();
+
+        let json = serde_json::to_string(&plan).expect("Serialization must succeed");
+        let deserialized: ProjectPlan = serde_json::from_str(&json).expect("Deserialization must succeed");
+
+        assert_eq!(deserialized.export.codec, "H265");
+        assert_eq!(deserialized.export.bitrate_mbps, 30);
+        assert_eq!(deserialized.export.format, "MKV");
+        println!("T19 custom export config: codec={}, bitrate={}M, format={}",
+            deserialized.export.codec, deserialized.export.bitrate_mbps, deserialized.export.format);
+    }
+
+    #[test]
+    fn test_export_config_retrocompat_default() {
+        let beats = vec![0.42, 1.14, 1.88, 2.60];
+        let downbeats = vec![2.60];
+        let plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None,
+        ).expect("Plan generation must succeed");
+
+        let mut val = serde_json::to_value(&plan).expect("To JSON value");
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("export"); // Strip export field to simulate legacy plan v1/v2
+        }
+
+        let legacy_json = serde_json::to_string(&val).expect("Legacy JSON serialization");
+        let parsed: ProjectPlan = serde_json::from_str(&legacy_json).expect("Retrocompatible deserialization");
+
+        assert_eq!(parsed.export.codec, "H264");
+        assert_eq!(parsed.export.bitrate_mbps, 12);
+        assert_eq!(parsed.export.format, "MP4");
+        println!("T19 retrocompat test passed: default export={:?}", parsed.export);
+    }
+
+    #[test]
+    fn test_export_render_h265_fixture() {
+        let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
+        if !std::path::Path::new(video_path).exists() || !std::path::Path::new(audio_path).exists() {
+            println!("Test fixture files not found, skipping H.265 render test.");
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join("cia_t19_h265_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let out_file = temp_dir.join("test_output_h265.mkv");
+
+        let mut encode_cmd = std::process::Command::new("ffmpeg");
+        encode_cmd.args([
+            "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-t", "2.0",
+            "-c:v", "libx265",
+            "-b:v", "12M",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-shortest",
+            &out_file.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            encode_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let status = encode_cmd.status().expect("ffmpeg H.265 encode failed to run");
+        assert!(status.success(), "FFmpeg H.265 encode must succeed");
+        assert!(out_file.exists(), "H.265 output file must exist");
+
+        // Verify codec via ffprobe
+        let mut probe_cmd = std::process::Command::new("ffprobe");
+        probe_cmd.args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            &out_file.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            probe_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let probe_out = probe_cmd.output().expect("ffprobe must run");
+        let codec_name = String::from_utf8_lossy(&probe_out.stdout).trim().to_lowercase();
+        assert!(codec_name == "hevc" || codec_name == "h265", "Codec must be hevc/h265, got: {}", codec_name);
+        println!("T19 H.265 encode verified: codec={}, file={}", codec_name, out_file.display());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_export_render_vp9_fixture() {
+        let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
+        if !std::path::Path::new(video_path).exists() || !std::path::Path::new(audio_path).exists() {
+            println!("Test fixture files not found, skipping VP9 render test.");
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join("cia_t19_vp9_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let out_file = temp_dir.join("test_output_vp9.webm");
+
+        let mut encode_cmd = std::process::Command::new("ffmpeg");
+        encode_cmd.args([
+            "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-t", "2.0",
+            "-c:v", "libvpx-vp9",
+            "-b:v", "12M",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "libopus",
+            "-shortest",
+            &out_file.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            encode_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let status = encode_cmd.status().expect("ffmpeg VP9 encode failed to run");
+        assert!(status.success(), "FFmpeg VP9 encode must succeed");
+        assert!(out_file.exists(), "VP9 output file must exist");
+
+        // Verify codec via ffprobe
+        let mut probe_cmd = std::process::Command::new("ffprobe");
+        probe_cmd.args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            &out_file.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            probe_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let probe_out = probe_cmd.output().expect("ffprobe must run");
+        let codec_name = String::from_utf8_lossy(&probe_out.stdout).trim().to_lowercase();
+        assert_eq!(codec_name, "vp9", "Codec must be vp9, got: {}", codec_name);
+        println!("T19 VP9 encode verified: codec={}, file={}", codec_name, out_file.display());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_export_render_bitrate_comparison() {
+        let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+        let audio_path = r"C:\Users\cia\Downloads\jugg video & audio tester\curiosos.mp3";
+        if !std::path::Path::new(video_path).exists() || !std::path::Path::new(audio_path).exists() {
+            println!("Test fixture files not found, skipping bitrate comparison test.");
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join("cia_t19_bitrate_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let out_12m = temp_dir.join("test_12m.mp4");
+        let out_30m = temp_dir.join("test_30m.mp4");
+
+        // Encode 12 Mbps
+        let mut cmd12 = std::process::Command::new("ffmpeg");
+        cmd12.args([
+            "-y", "-i", video_path, "-i", audio_path, "-t", "3.0",
+            "-c:v", "libx264", "-b:v", "12M", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            &out_12m.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd12.creation_flags(CREATE_NO_WINDOW);
+        }
+        let st12 = cmd12.status().expect("12M encode failed");
+        assert!(st12.success());
+
+        // Encode 30 Mbps
+        let mut cmd30 = std::process::Command::new("ffmpeg");
+        cmd30.args([
+            "-y", "-i", video_path, "-i", audio_path, "-t", "3.0",
+            "-c:v", "libx264", "-b:v", "30M", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            &out_30m.to_string_lossy(),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd30.creation_flags(CREATE_NO_WINDOW);
+        }
+        let st30 = cmd30.status().expect("30M encode failed");
+        assert!(st30.success());
+
+        let size_12m = std::fs::metadata(&out_12m).unwrap().len();
+        let size_30m = std::fs::metadata(&out_30m).unwrap().len();
+
+        println!("T19 bitrate comparison: 12M={} bytes ({:.2} MB), 30M={} bytes ({:.2} MB)",
+            size_12m, (size_12m as f64) / (1024.0 * 1024.0),
+            size_30m, (size_30m as f64) / (1024.0 * 1024.0)
+        );
+
+        assert!(size_30m > size_12m, "30 Mbps file must be larger than 12 Mbps file");
+        let ratio = (size_30m as f64) / (size_12m as f64);
+        assert!(ratio > 1.2, "30 Mbps file must be significantly larger than 12 Mbps file (ratio: {:.2})", ratio);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 
