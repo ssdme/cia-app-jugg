@@ -302,6 +302,7 @@
       console.log('[PLAN] Saved project.json to:', savedPath);
 
       const parsed = JSON.parse(planJson);
+      const hasReverse = parsed.segments.some((s) => s.effects && s.effects.reverse);
       planSummary = {
         segmentsCount: parsed.segments.length,
         loops: parsed.loops,
@@ -311,6 +312,9 @@
         fps: parsed.fps,
         aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
         motionBlur: parsed.motion_blur,
+        shakes: true,
+        zoom: true,
+        reverse: hasReverse,
       };
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
@@ -892,16 +896,16 @@
                       <span class="stat-value mono">{planSummary.style} · {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} · BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
                     </div>
                     <div class="plan-stat">
+                      <span class="stat-label">EFFECTS</span>
+                      <span class="stat-value mono">SHAKES ON · ZOOM ON · REVERSE {planSummary.reverse ? 'ON' : 'OFF'}</span>
+                    </div>
+                    <div class="plan-stat">
                       <span class="stat-label">SEGMENTS</span>
                       <span class="stat-value mono">{planSummary.segmentsCount} cuts</span>
                     </div>
                     <div class="plan-stat">
-                      <span class="stat-label">LOOPS</span>
-                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'}</span>
-                    </div>
-                    <div class="plan-stat">
-                      <span class="stat-label">TARGET DURATION</span>
-                      <span class="stat-value mono">{planSummary.targetDuration.toFixed(2)}s</span>
+                      <span class="stat-label">LOOPS / DURATION</span>
+                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} · {planSummary.targetDuration.toFixed(2)}s</span>
                     </div>
                   </div>
                   <div class="plan-saved-path">

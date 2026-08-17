@@ -24,3 +24,9 @@ tauri-plugin-process = "2"
 
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
+
+[profile.test]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
