@@ -492,6 +492,7 @@ fn test_ambiance_flicker_oscillation() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let amplitude = 0.15;
@@ -554,6 +555,7 @@ fn test_ambiance_echo_trail_blend() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let amb = AmbianceConfig {
@@ -608,6 +610,7 @@ fn test_ambiance_tint_vignette_scanlines() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let tint_r = 10i16;
@@ -1771,4 +1774,754 @@ fn test_resolve_unique_output_path() {
     assert_eq!(p3, temp_dir.join("test_clip-3.mp4"));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+// ─── T23: Dumper Tests ───────────────────────────────────────────────────────
+
+#[test]
+fn test_luminance_mad_exact() {
+    let width = 4usize;
+    let height = 4usize;
+    let n = width * height * 3;
+
+    // Frame 1: Pure Gray 100 -> Y = 100
+    let f1 = vec![100u8; n];
+    // Frame 2: Pure Gray 150 -> Y = 150
+    let f2 = vec![150u8; n];
+
+    let mad = compute_luminance_mad(&f1, &f2, width, height);
+    assert_eq!(mad, 50.0, "MAD between gray 100 and gray 150 must be exactly 50.0");
+
+    // Identical frames -> MAD = 0.0
+    let mad_zero = compute_luminance_mad(&f1, &f1, width, height);
+    assert_eq!(mad_zero, 0.0, "MAD of identical frames must be 0.0");
+}
+
+#[test]
+fn test_lab_stats_gradient() {
+    let width = 64usize;
+    let height = 64usize;
+    let mut frame = vec![0u8; width * height * 3];
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            frame[idx] = (x * 4) as u8;
+            frame[idx + 1] = (y * 4) as u8;
+            frame[idx + 2] = 128u8;
+        }
+    }
+
+    let stats = downsample_and_compute_lab_stats(&frame, width, height);
+
+    assert!(stats.mean[0] > 0.0 && stats.mean[0] < 100.0, "L mean must be in (0, 100), got {}", stats.mean[0]);
+    assert!(stats.std[0] > 0.0, "L std must be > 0 on gradient, got {}", stats.std[0]);
+    assert!(stats.std[1] > 0.0, "a std must be > 0 on gradient, got {}", stats.std[1]);
+    assert!(stats.std[2] > 0.0, "b std must be > 0 on gradient, got {}", stats.std[2]);
+}
+
+#[test]
+fn test_cut_beat_sync_synthetic() {
+    let beats = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+    // 0 cuts -> (0.0, true)
+    let (sync_empty, is_na) = compute_cut_beat_sync(&[], &beats);
+    assert_eq!(sync_empty, 0.0);
+    assert!(is_na);
+
+    // Cuts within +/- 60 ms vs outside +/- 60 ms:
+    // cut 1: 1.03 (delta 30ms <= 60ms) -> synced
+    // cut 2: 2.05 (delta 50ms <= 60ms) -> synced
+    // cut 3: 3.10 (delta 100ms > 60ms) -> NOT synced
+    let cuts = vec![1.03, 2.05, 3.10];
+    let (sync, is_na) = compute_cut_beat_sync(&cuts, &beats);
+    assert!(!is_na);
+    assert_eq!(sync, 0.6667); // 2 out of 3 = 0.6667
+}
+
+#[test]
+fn test_dump_analysis_schema_serde() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/edit.mp4".to_string(),
+        duration: 10.5,
+        fps: 60.0,
+        cuts: vec![2.0, 5.0, 8.0],
+        scenes: vec![
+            SceneItem { start: 0.0, end: 2.0 },
+            SceneItem { start: 2.0, end: 5.0 },
+            SceneItem { start: 5.0, end: 8.0 },
+            SceneItem { start: 8.0, end: 10.5 },
+        ],
+        beats: BeatResult {
+            bpm: 128.0,
+            beats: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+            downbeats: vec![2.0, 6.0, 10.0],
+        },
+        cut_beat_sync: 0.6667,
+        sync_na: false,
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            confidence: 0.90,
+            justifications: vec!["High shake energy".to_string()],
+        },
+        one_framers: vec![1.5, 4.2],
+        segments: vec![
+            DumpSegment {
+                start: 0.0,
+                end: 2.0,
+                lab: LabStats {
+                    mean: [55.2, 12.4, -8.1],
+                    std: [8.5, 4.2, 3.1],
+                },
+                mad_mean: 14.5,
+                mad_peak: 42.1,
+                motion: Some(SegmentMotion {
+                    shake_energy: 0.025,
+                    zoom_presence: true,
+                    mean_divergence: 0.012,
+                    mean_curl: 0.002,
+                }),
+                one_framer_count: 1,
+                speed_hint: "normal".to_string(),
+            },
+        ],
+        motion_warning: None,
+        json_path: Some("C:/test/analysis.json".to_string()),
+        report_path: Some("C:/test/edit_report.md".to_string()),
+        reusable_project_path: Some("C:/test/reusable_project.json".to_string()),
+    };
+
+    let json_str = serde_json::to_string(&analysis).expect("Serialization must succeed");
+    let deserialized: DumpAnalysis = serde_json::from_str(&json_str).expect("Deserialization must succeed");
+
+    assert_eq!(deserialized.schema_version, 1);
+    assert_eq!(deserialized.cuts.len(), 3);
+    assert_eq!(deserialized.scenes.len(), 4);
+    assert_eq!(deserialized.beats.bpm, 128.0);
+    assert_eq!(deserialized.cut_beat_sync, 0.6667);
+    assert!(!deserialized.sync_na);
+    assert_eq!(deserialized.detected_style.style_name, "jugg");
+    assert_eq!(deserialized.one_framers.len(), 2);
+    assert_eq!(deserialized.segments.len(), 1);
+    assert_eq!(deserialized.segments[0].lab.mean[0], 55.2);
+    assert!(deserialized.segments[0].motion.is_some());
+}
+
+#[test]
+fn test_motion_extraction_synthetic() {
+    // Synthetic TRF line with median translation of dx=10, dy=-5 on 1000x500 frame
+    let trf_sample = "VID.STAB 1\nFrame 1 (List 0 [])\nFrame 2 (List 3 [(LM 9 -5 400 200 32 0.5 0.5),(LM 10 -5 500 250 32 0.5 0.5),(LM 11 -4 600 300 32 0.5 0.5)])";
+    let frames = parse_trf_content(trf_sample, 1000.0, 500.0, 30.0);
+    assert_eq!(frames.len(), 2);
+
+    // Frame 1 is empty
+    assert_eq!(frames[0].tx, 0.0);
+    assert_eq!(frames[0].ty, 0.0);
+
+    // Frame 2: median dx=10 -> tx = 10/1000 = 0.01, median dy=-5 -> ty = -5/500 = -0.01
+    assert!((frames[1].tx - 0.01).abs() < 1e-4);
+    assert!((frames[1].ty - (-0.01)).abs() < 1e-4);
+}
+
+#[test]
+fn test_one_framer_detection_synthetic() {
+    // Baseline ~5.0 with an isolated spike to 45.0 at index 5 (t=2.5s)
+    let mad_series = vec![5.0, 5.2, 4.8, 5.1, 5.0, 45.0, 5.2, 5.0, 4.9, 5.1];
+    let timestamps = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5];
+
+    let one_framers = detect_one_framers(&mad_series, &timestamps);
+    assert_eq!(one_framers.len(), 1);
+    assert!((one_framers[0] - 2.5).abs() < 1e-4);
+}
+
+#[test]
+fn test_style_classifier_5_archetypes() {
+    // 1. basic/clean
+    let feat_basic = ClassifierFeatures {
+        cuts_count: 1,
+        cut_density: 0.1,
+        shake_energy: 0.005,
+        one_framer_density: 0.0,
+        sync: 0.0,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_basic).style_name, "basic/clean");
+
+    // 2. jugg
+    let feat_jugg = ClassifierFeatures {
+        cuts_count: 8,
+        cut_density: 0.8,
+        shake_energy: 0.020,
+        one_framer_density: 0.40,
+        sync: 0.65,
+        zoom_presence: true,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_jugg).style_name, "jugg");
+
+    // 3. glitch-leaning
+    let feat_glitch = ClassifierFeatures {
+        cuts_count: 20,
+        cut_density: 2.2,
+        shake_energy: 0.015,
+        one_framer_density: 0.20,
+        sync: 0.30,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_glitch).style_name, "glitch-leaning");
+
+    // 4. velocity/flow
+    let feat_velocity = ClassifierFeatures {
+        cuts_count: 4,
+        cut_density: 0.4,
+        shake_energy: 0.008,
+        one_framer_density: 0.05,
+        sync: 0.70,
+        zoom_presence: false,
+        slowdown_presence: true,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_velocity).style_name, "velocity/flow");
+
+    // 5. hybrid/unclassified
+    let feat_hybrid = ClassifierFeatures {
+        cuts_count: 5,
+        cut_density: 0.5,
+        shake_energy: 0.008,
+        one_framer_density: 0.05,
+        sync: 0.20,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_hybrid).style_name, "hybrid/unclassified");
+}
+
+#[test]
+fn test_markdown_report_mandatory_sections() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/edit.mp4".to_string(),
+        duration: 12.0,
+        fps: 30.0,
+        cuts: vec![2.0, 6.0],
+        scenes: vec![
+            SceneItem { start: 0.0, end: 2.0 },
+            SceneItem { start: 2.0, end: 6.0 },
+            SceneItem { start: 6.0, end: 12.0 },
+        ],
+        beats: BeatResult { bpm: 120.0, beats: vec![1.0, 2.0, 3.0], downbeats: vec![1.0] },
+        cut_beat_sync: 0.50,
+        sync_na: false,
+        detected_style: StyleDecision {
+            style_name: "velocity/flow".to_string(),
+            confidence: 0.85,
+            justifications: vec!["Speed ramping detected".to_string()],
+        },
+        one_framers: vec![1.5],
+        segments: vec![
+            DumpSegment {
+                start: 0.0,
+                end: 2.0,
+                lab: LabStats { mean: [50.0, 0.0, 0.0], std: [10.0, 2.0, 2.0] },
+                mad_mean: 8.0,
+                mad_peak: 20.0,
+                motion: Some(SegmentMotion { shake_energy: 0.010, zoom_presence: false, mean_divergence: 0.0, mean_curl: 0.0 }),
+                one_framer_count: 1,
+                speed_hint: "normal".to_string(),
+            }
+        ],
+        motion_warning: None,
+        json_path: Some("C:/test/analysis.json".to_string()),
+        report_path: Some("C:/test/edit_report.md".to_string()),
+        reusable_project_path: Some("C:/test/reusable_project.json".to_string()),
+    };
+
+    let project = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/edit.mp4".to_string(),
+        beats: analysis.beats.clone(),
+        cuts: analysis.cuts.clone(),
+        segments: vec![],
+        suggested_style: "velocity/flow".to_string(),
+        fps_suggestion: 30.0,
+    };
+
+    let report = generate_markdown_report(&analysis, &project);
+
+    // Verify all mandatory section headers exist in generated report
+    assert!(report.contains("# Dump Report"));
+    assert!(report.contains("## Detected style"));
+    assert!(report.contains("## Cuts & sync"));
+    assert!(report.contains("## Beats"));
+    assert!(report.contains("## Segments (signatures)"));
+    assert!(report.contains("## Color signatures"));
+    assert!(report.contains("## One-framers"));
+    assert!(report.contains("## Motion"));
+    assert!(report.contains("## Reusable vs descriptive"));
+}
+
+#[test]
+fn test_reusable_project_json_schema() {
+    let proj = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/cut.mp4".to_string(),
+        beats: BeatResult { bpm: 115.4, beats: vec![0.5, 1.0], downbeats: vec![0.5] },
+        cuts: vec![0.68, 2.57],
+        segments: vec![
+            ReusableSegment {
+                start: 0.0,
+                end: 0.68,
+                lab_mean: [46.5, -13.2, 9.0],
+                lab_std: [22.2, 19.6, 25.1],
+                speed_hint: "normal".to_string(),
+            }
+        ],
+        suggested_style: "jugg".to_string(),
+        fps_suggestion: 60.0,
+    };
+
+    let json_str = serde_json::to_string(&proj).expect("Serialize ReusableProject");
+    let deserialized: ReusableProject = serde_json::from_str(&json_str).expect("Deserialize ReusableProject");
+
+    assert_eq!(deserialized.schema_version, "dumper_project_v1");
+    assert_eq!(deserialized.suggested_style, "jugg");
+    assert_eq!(deserialized.fps_suggestion, 60.0);
+    assert_eq!(deserialized.segments.len(), 1);
+    assert_eq!(deserialized.segments[0].speed_hint, "normal");
+}
+
+#[test]
+fn test_detect_scenes_snaptik_fixture() {
+    let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+    if std::path::Path::new(video_path).exists() {
+        let exe_path = std::env::current_dir().unwrap_or_default().join("binaries").join("scenedetect.exe");
+        if exe_path.exists() || std::path::Path::new(r"C:\Users\cia\Music\cia-app-jugg\src-tauri\binaries\scenedetect.exe").exists() {
+            let bin = if exe_path.exists() {
+                exe_path
+            } else {
+                std::path::PathBuf::from(r"C:\Users\cia\Music\cia-app-jugg\src-tauri\binaries\scenedetect.exe")
+            };
+
+            let mut cmd = std::process::Command::new(bin);
+            cmd.arg(video_path);
+            let out = cmd.output().expect("scenedetect execution failed");
+            assert!(out.status.success(), "scenedetect must exit with 0");
+            let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("Valid JSON");
+            assert!(parsed.get("cuts").is_some());
+        }
+    }
+}
+
+#[test]
+fn test_benchmark_dumper_analysis() {
+    use std::io::Read;
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    let probe = probe_media_internal(video_path, None).expect("Probe failed");
+    let analysis_fps = probe.fps.min(30.0);
+    let width = 640usize;
+    let height = ((probe.height as f64 * (640.0 / probe.width as f64)).round() as usize) & !1;
+    let frame_bytes = width * height * 3;
+
+    // 1. Measure pure decode time
+    let mut decode_cmd = std::process::Command::new("ffmpeg");
+    decode_cmd.args([
+        "-v", "error",
+        "-i", video_path,
+        "-vf", &format!("fps={},scale={}:{}", analysis_fps, width, height),
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    decode_cmd.creation_flags(CREATE_NO_WINDOW);
+    decode_cmd.stdout(std::process::Stdio::piped());
+
+    let t_dec_start = std::time::Instant::now();
+    let mut decode_child = decode_cmd.spawn().expect("Decode spawn failed");
+    let mut decode_stdout = decode_child.stdout.take().unwrap();
+    let mut buf = vec![0u8; frame_bytes];
+    let mut _decode_frame_count = 0usize;
+    while decode_stdout.read_exact(&mut buf).is_ok() {
+        _decode_frame_count += 1;
+    }
+    let _ = decode_child.wait();
+    let decode_time = t_dec_start.elapsed().as_secs_f64();
+
+    // 2. Measure analysis time (decode + MAD + CIELAB)
+    let mut ana_cmd = std::process::Command::new("ffmpeg");
+    ana_cmd.args([
+        "-v", "error",
+        "-i", video_path,
+        "-vf", &format!("fps={},scale={}:{}", analysis_fps, width, height),
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    ana_cmd.creation_flags(CREATE_NO_WINDOW);
+    ana_cmd.stdout(std::process::Stdio::piped());
+
+    let t_ana_start = std::time::Instant::now();
+    let mut ana_child = ana_cmd.spawn().expect("Ana spawn failed");
+    let mut ana_stdout = ana_child.stdout.take().unwrap();
+    let mut curr_frame = vec![0u8; frame_bytes];
+    let mut prev_frame = vec![0u8; frame_bytes];
+    let mut is_first = true;
+    let mut ana_frame_count = 0usize;
+
+    while ana_stdout.read_exact(&mut curr_frame).is_ok() {
+        let _mad = if is_first {
+            is_first = false;
+            0.0
+        } else {
+            compute_luminance_mad(&curr_frame, &prev_frame, width, height)
+        };
+        let _lab = downsample_and_compute_lab_stats(&curr_frame, width, height);
+        prev_frame.copy_from_slice(&curr_frame);
+        ana_frame_count += 1;
+    }
+    let _ = ana_child.wait();
+    let analysis_time = t_ana_start.elapsed().as_secs_f64();
+
+    let ratio = analysis_time / decode_time.max(0.001);
+    println!(
+        "\n[BENCH] Dumper Profile Pass ({} frames):\n  Pure Decode Time:   {:.3}s\n  Full Analysis Time: {:.3}s\n  Overhead Ratio:     {:.2}x (< 3.0x threshold)\n",
+        ana_frame_count, decode_time, analysis_time, ratio
+    );
+
+    assert!(ratio < 3.0, "Analysis time ({:.3}s) must be < 3x decode time ({:.3}s), ratio was {:.2}x", analysis_time, decode_time, ratio);
+}
+
+#[test]
+fn test_benchmark_motion_pass() {
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let video_path = r"C:\Users\cia\Downloads\cut.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    let temp_trf = std::env::temp_dir().join(format!("bench_motion_{}.trf", std::process::id()));
+    let temp_trf_str = temp_trf.to_string_lossy().replace('\\', "/").replace(':', "\\:");
+
+    let t_start = std::time::Instant::now();
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args([
+        "-v", "error",
+        "-y",
+        "-i", video_path,
+        "-vf", &format!("scale=640:-2,fps=30,vidstabdetect=result='{}':fileformat=ascii:shakiness=5:accuracy=9:stepsize=12", temp_trf_str),
+        "-an",
+        "-f", "null",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let status = cmd.status().expect("FFmpeg motion bench command failed");
+    let motion_time = t_start.elapsed().as_secs_f64();
+
+    if temp_trf.exists() {
+        let _ = std::fs::remove_file(&temp_trf);
+    }
+
+    assert!(status.success(), "Motion command must succeed");
+    println!(
+        "\n[BENCH] Motion Extraction Pass on cut.mp4:\n  Motion Time: {:.3}s (< 2x T23 analysis threshold ~30s)\n",
+        motion_time
+    );
+    assert!(motion_time < 30.0, "Motion extraction time ({:.3}s) must be < 30s", motion_time);
+}
+
+#[test]
+fn test_full_dump_pipeline_fixtures() {
+    let fixtures = [
+        r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4",
+        r"C:\Users\cia\Downloads\cut.mp4",
+    ];
+
+    for video_path in fixtures {
+        if !std::path::Path::new(video_path).exists() {
+            println!("\n[FIXTURE] File not found: {}, skipping test.", video_path);
+            continue;
+        }
+
+        println!("\n=======================================================");
+        println!(">>> RUNNING FULL DUMP PIPELINE ON: {}", video_path);
+        println!("=======================================================");
+
+        let t_start = std::time::Instant::now();
+        let res = run_dump_pipeline_internal(None, video_path);
+        let elapsed = t_start.elapsed().as_secs_f64();
+
+        match res {
+            Ok(analysis) => {
+                println!("[DUMP SUCCESS in {:.2}s]", elapsed);
+                println!("  Source:            {}", analysis.source);
+                println!("  Duration:          {:.2}s", analysis.duration);
+                println!("  FPS:               {:.2}", analysis.fps);
+                println!("  Detected Style:    {} (Confidence: {:.0}%)", analysis.detected_style.style_name, analysis.detected_style.confidence * 100.0);
+                println!("  Justifications:    {:?}", analysis.detected_style.justifications);
+                println!("  Cuts count:        {} -> {:?}", analysis.cuts.len(), analysis.cuts);
+                println!("  Scenes count:      {}", analysis.scenes.len());
+                println!("  BPM:               {:.1}", analysis.beats.bpm);
+                println!("  Beats count:       {}", analysis.beats.beats.len());
+                println!("  Downbeats count:   {}", analysis.beats.downbeats.len());
+                if analysis.sync_na {
+                    println!("  Cut-Beat Sync:     N/A (0 cuts)");
+                } else {
+                    println!("  Cut-Beat Sync:     {:.1}% (±60ms)", analysis.cut_beat_sync * 100.0);
+                }
+                println!("  One-framers count: {}", analysis.one_framers.len());
+                println!("  Segments count:    {}", analysis.segments.len());
+                if let Some(first_seg) = analysis.segments.first() {
+                    println!("  First segment:     [{:.2}s - {:.2}s] LAB mean: {:?}, std: {:?}, MAD mean: {:.2}, peak: {:.2}, hint: {}",
+                        first_seg.start, first_seg.end, first_seg.lab.mean, first_seg.lab.std, first_seg.mad_mean, first_seg.mad_peak, first_seg.speed_hint
+                    );
+                }
+                println!("  JSON saved to:     {:?}", analysis.json_path);
+                println!("  Report saved to:   {:?}", analysis.report_path);
+                println!("  Reusable proj to:  {:?}", analysis.reusable_project_path);
+
+                assert_eq!(analysis.schema_version, 1);
+                assert!(analysis.duration > 0.0);
+                assert!(analysis.json_path.is_some());
+                if let Some(json_p) = analysis.json_path {
+                    assert!(std::path::Path::new(&json_p).exists(), "Saved JSON file must exist");
+                }
+                if let Some(rep_p) = analysis.report_path {
+                    assert!(std::path::Path::new(&rep_p).exists(), "Saved Report file must exist");
+                }
+                if let Some(proj_p) = analysis.reusable_project_path {
+                    assert!(std::path::Path::new(&proj_p).exists(), "Saved Reusable Project file must exist");
+                }
+            }
+            Err(e) => {
+                panic!("Dump pipeline failed for {}: {}", video_path, e);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_convert_dumper_project_style_mapping_5_archetypes() {
+    assert_eq!(map_dumper_style_to_jugg_style("jugg"), "HARD");
+    assert_eq!(map_dumper_style_to_jugg_style("glitch-leaning"), "HARD");
+    assert_eq!(map_dumper_style_to_jugg_style("velocity/flow"), "SMOOTH");
+    assert_eq!(map_dumper_style_to_jugg_style("basic/clean"), "SMOOTH");
+    assert_eq!(map_dumper_style_to_jugg_style("hybrid/unclassified"), "HYBRID");
+    assert_eq!(map_dumper_style_to_jugg_style("unknown-style"), "HYBRID");
+
+    // Full plan conversion style verification
+    let styles = [
+        ("jugg", "HARD"),
+        ("glitch-leaning", "HARD"),
+        ("velocity/flow", "SMOOTH"),
+        ("basic/clean", "SMOOTH"),
+        ("hybrid/unclassified", "HYBRID"),
+    ];
+
+    for (dumper_style, expected_jugg_style) in styles {
+        let proj = ReusableProject {
+            schema_version: "dumper_project_v1".to_string(),
+            source: "C:/test/edit.mp4".to_string(),
+            beats: BeatResult { bpm: 120.0, beats: vec![1.0, 2.0], downbeats: vec![1.0] },
+            cuts: vec![2.0],
+            segments: vec![
+                ReusableSegment {
+                    start: 0.0,
+                    end: 2.0,
+                    lab_mean: [50.0, 0.0, 0.0],
+                    lab_std: [10.0, 5.0, 5.0],
+                    speed_hint: "normal".to_string(),
+                },
+                ReusableSegment {
+                    start: 2.0,
+                    end: 4.0,
+                    lab_mean: [60.0, 2.0, -1.0],
+                    lab_std: [8.0, 4.0, 4.0],
+                    speed_hint: "fast".to_string(),
+                },
+            ],
+            suggested_style: dumper_style.to_string(),
+            fps_suggestion: 30.0,
+        };
+
+        let plan = convert_dumper_project_to_plan(&proj).expect("Conversion must succeed");
+        assert_eq!(plan.schema_version, 2);
+        assert_eq!(plan.style, expected_jugg_style, "Style mismatch for {}", dumper_style);
+    }
+}
+
+#[test]
+fn test_convert_dumper_project_fps_clamp_bounds() {
+    // 1. Lower bound (< 12 -> 12)
+    assert_eq!(clamp_dumper_fps(5.0), 12);
+    assert_eq!(clamp_dumper_fps(11.4), 12);
+    assert_eq!(clamp_dumper_fps(12.0), 12);
+
+    // 2. Upper bound (> 60 -> 60)
+    assert_eq!(clamp_dumper_fps(60.0), 60);
+    assert_eq!(clamp_dumper_fps(120.0), 60);
+    assert_eq!(clamp_dumper_fps(240.0), 60);
+
+    // 3. Normal values rounded
+    assert_eq!(clamp_dumper_fps(29.97), 30);
+    assert_eq!(clamp_dumper_fps(24.0), 24);
+}
+
+#[test]
+fn test_convert_dumper_project_contiguity_and_color_hints() {
+    let proj = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/edit.mp4".to_string(),
+        beats: BeatResult {
+            bpm: 128.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+            downbeats: vec![0.5, 2.5],
+        },
+        cuts: vec![0.85, 2.10, 3.45],
+        segments: vec![
+            ReusableSegment {
+                start: 0.0,
+                end: 0.85,
+                lab_mean: [42.1, 10.5, -5.2],
+                lab_std: [15.2, 8.1, 7.3],
+                speed_hint: "normal".to_string(),
+            },
+            ReusableSegment {
+                start: 0.85,
+                end: 2.10,
+                lab_mean: [55.3, -8.4, 12.1],
+                lab_std: [18.4, 9.2, 11.0],
+                speed_hint: "snap".to_string(),
+            },
+            ReusableSegment {
+                start: 2.10,
+                end: 3.45,
+                lab_mean: [30.2, 4.1, 2.0],
+                lab_std: [12.0, 4.5, 3.8],
+                speed_hint: "slow".to_string(),
+            },
+            ReusableSegment {
+                start: 3.45,
+                end: 5.00,
+                lab_mean: [65.0, 1.0, -1.0],
+                lab_std: [20.0, 6.0, 5.0],
+                speed_hint: "fast".to_string(),
+            },
+        ],
+        suggested_style: "jugg".to_string(),
+        fps_suggestion: 120.0, // Should clamp to 60
+    };
+
+    let plan = convert_dumper_project_to_plan(&proj).expect("Conversion must succeed");
+
+    // 1. Schema version and parameters
+    assert_eq!(plan.schema_version, 2);
+    assert_eq!(plan.style, "HARD");
+    assert_eq!(plan.fps, 60);
+    assert_eq!(plan.bpm, 128.0);
+    assert_eq!(plan.target_duration, 5.00);
+
+    // 2. Strict contiguity from 0.0 to target_duration
+    assert_eq!(plan.segments.len(), 4);
+    assert_eq!(plan.segments[0].t0, 0.0);
+    assert_eq!(plan.segments.last().unwrap().t1, 5.00);
+
+    for win in plan.segments.windows(2) {
+        let seg_n = &win[0];
+        let seg_n1 = &win[1];
+        assert_eq!(
+            seg_n.t1, seg_n1.t0,
+            "Segment boundary contiguity broken between [{:.3}-{:.3}] and [{:.3}-{:.3}]",
+            seg_n.t0, seg_n.t1, seg_n1.t0, seg_n1.t1
+        );
+    }
+
+    // 3. Color hints present on every segment
+    for (idx, seg) in plan.segments.iter().enumerate() {
+        assert!(seg.color_hints.is_some(), "Segment {} must have color_hints", idx);
+        let ch = seg.color_hints.as_ref().unwrap();
+        assert_eq!(ch.lab_mean, proj.segments[idx].lab_mean);
+        assert_eq!(ch.lab_std, proj.segments[idx].lab_std);
+    }
+}
+
+#[test]
+fn test_apply_dumper_project_on_cut_fixture_flow() {
+    let video_path = r"C:\Users\cia\Downloads\cut.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    println!("\n=======================================================");
+    println!(">>> FULL FLOW: DUMP cut.mp4 -> APPLY AS PROJECT -> JUGG PLAN");
+    println!("=======================================================");
+
+    let t_start = std::time::Instant::now();
+    let analysis = run_dump_pipeline_internal(None, video_path).expect("Dump pipeline failed");
+    let dump_elapsed = t_start.elapsed().as_secs_f64();
+
+    println!("[1. DUMP COMPLETED in {:.2}s]", dump_elapsed);
+    println!("  Source:            {}", analysis.source);
+    println!("  Raw Detected Style: {} ({:.0}%)", analysis.detected_style.style_name, analysis.detected_style.confidence * 100.0);
+    println!("  Raw Source FPS:    {:.2}", analysis.fps);
+    println!("  Cuts:              {} cuts", analysis.cuts.len());
+    println!("  Reusable Path:     {:?}", analysis.reusable_project_path);
+
+    let reusable_path = analysis.reusable_project_path.expect("Reusable project path must exist");
+    assert!(std::path::Path::new(&reusable_path).exists());
+
+    // 2. Apply as project (conversion)
+    let plan = apply_dumper_project(Some(reusable_path.clone()), None).expect("Apply dumper project failed");
+
+    println!("\n[2. APPLIED AS JUGG PROJECT PLAN]");
+    println!("  Plan Schema:       v{}", plan.schema_version);
+    println!("  Mapped Jugg Style: {}", plan.style);
+    println!("  Clamped Target FPS:{}", plan.fps);
+    println!("  Target Duration:   {:.3}s", plan.target_duration);
+    println!("  Segments Count:    {}", plan.segments.len());
+    println!("  One-Framers Count: {}", plan.one_framers.len());
+    println!("  Transitions Count: {}", plan.transitions.len());
+    println!("  Ambiance Config:   {}", if plan.ambiance.is_some() { "Present" } else { "None" });
+    if let Some(first_seg) = plan.segments.first() {
+        println!("  First Segment:     [{:.3}s - {:.3}s] Curve: {}, ColorHints: {:?}",
+            first_seg.t0, first_seg.t1, first_seg.curve, first_seg.color_hints
+        );
+    }
+
+    // Invariant assertions
+    assert_eq!(plan.schema_version, 2);
+    assert_eq!(plan.style, "HARD"); // glitch-leaning -> HARD
+    assert_eq!(plan.fps, 60);       // 120 clamped to 60
+    assert!(plan.target_duration > 0.0);
+    assert!(!plan.segments.is_empty());
+    assert_eq!(plan.segments[0].t0, 0.0);
+    assert!((plan.segments.last().unwrap().t1 - plan.target_duration).abs() < 1e-3);
+
+    for win in plan.segments.windows(2) {
+        let seg_n = &win[0];
+        let seg_n1 = &win[1];
+        assert_eq!(
+            seg_n.t1, seg_n1.t0,
+            "Contiguity broken between segments [{:.3}-{:.3}] and [{:.3}-{:.3}]",
+            seg_n.t0, seg_n.t1, seg_n1.t0, seg_n1.t1
+        );
+    }
 }

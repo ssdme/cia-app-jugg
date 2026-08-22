@@ -25,6 +25,11 @@ Your media stays entirely local. cia app performs media analysis, onset/beat tra
   - Target Bitrate: 5 to 50 Mbps via interactive slider.
   - Container Format: **MP4**, **MKV**, **WEBM**.
 - **Render Analytics**: Post-render statistics reporting total render time, file size, target FPS, and total effect count.
+- **DUMPER (Edit Reverse Engineering & Extraction)**:
+  - Automated analysis of existing edits extracting cuts, audio beats, and cut-beat sync accuracy (±60ms).
+  - Multi-pass signature extraction: colorimetric LAB statistics, luminance MAD velocity/flash profiles, and high-frequency motion tracking.
+  - 5-archetype style classifier generating structured Markdown reports (`report.md`) and reusable project definitions (`reusable_project.json`).
+  - One-click **APPLY AS PROJECT** to instantly convert dumped edits into active JUGG remap plans.
 
 ## Getting started
 

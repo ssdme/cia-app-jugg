@@ -339,6 +339,13 @@ impl Default for ExportConfig {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorHints {
+    pub lab_mean: [f64; 3],
+    pub lab_std: [f64; 3],
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct PlanSegment {
     pub t0: f64,
     pub t1: f64,
@@ -349,6 +356,8 @@ pub struct PlanSegment {
     pub effects: SegmentEffects,
     #[serde(default)]
     pub transition: Option<SegmentTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_hints: Option<ColorHints>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -910,6 +919,7 @@ pub fn create_plan_internal(
                     curve: curve_name.clone(),
                     effects,
                     transition: None,
+                    color_hints: None,
                 });
                 seg_index += 1;
                 seg_t0 = seg_t1;
@@ -931,6 +941,7 @@ pub fn create_plan_internal(
                         curve: curve_name.clone(),
                         effects: effects.clone(),
                         transition: None,
+                        color_hints: None,
                     });
                     seg_index += 1;
                     seg_t0 += dt_sub;

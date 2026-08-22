@@ -3,7 +3,7 @@ use tauri::Manager;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BeatResult {
     pub bpm: f64,
@@ -11,7 +11,7 @@ pub struct BeatResult {
     pub downbeats: Vec<f64>,
 }
 
-pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
+pub fn get_binary_path_opt(app: Option<&tauri::AppHandle>, name: &str) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let direct = exe_dir.join(name);
@@ -33,23 +33,31 @@ pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf
     if binaries_cwd.exists() {
         return binaries_cwd;
     }
-    if let Ok(res_dir) = app.path().resource_dir() {
-        let in_res = res_dir.join("binaries").join(name);
-        if in_res.exists() {
-            return in_res;
+    if let Some(app) = app {
+        if let Ok(res_dir) = app.path().resource_dir() {
+            let in_res = res_dir.join("binaries").join(name);
+            if in_res.exists() {
+                return in_res;
+            }
         }
     }
     cwd.join("src-tauri").join("binaries").join(name)
 }
 
-#[tauri::command]
-pub fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatResult, String> {
-    let audio_file = std::path::Path::new(&audio_path);
+pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf {
+    get_binary_path_opt(Some(app), name)
+}
+
+pub fn detect_beats_internal(
+    app: Option<&tauri::AppHandle>,
+    audio_path: &str,
+) -> Result<BeatResult, String> {
+    let audio_file = std::path::Path::new(audio_path);
     if !audio_file.exists() {
         return Err(format!("Audio file not found: {audio_path}"));
     }
 
-    let bin_path = get_binary_path(&app, "beat_this.exe");
+    let bin_path = get_binary_path_opt(app, "beat_this.exe");
     if !bin_path.exists() {
         return Err(format!(
             "beat_this binary not found at {}",
@@ -57,7 +65,7 @@ pub fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatRes
         ));
     }
 
-    let onnx_path = get_binary_path(&app, "beat_this.onnx");
+    let onnx_path = get_binary_path_opt(app, "beat_this.onnx");
     if !onnx_path.exists() {
         return Err(format!(
             "beat_this.onnx model not found at {}",
@@ -106,4 +114,9 @@ pub fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatRes
     })?;
 
     Ok(result)
+}
+
+#[tauri::command]
+pub fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatResult, String> {
+    detect_beats_internal(Some(&app), &audio_path)
 }
