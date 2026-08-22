@@ -1,25 +1,36 @@
 # cia app
 
-cia app is a local Windows desktop app for two video operations:
+cia app is a fast, local Windows desktop application for creating beat-synced jugg edits directly on your machine.
 
-- **RENDER** - smoothie-rs frame blending and render finishing.
-- **INTERPOLATION** - optional RIFE frame multiplication.
-
-Your media stays on the computer. cia app does not upload source videos or
-silently fetch render engines.
+Your media stays entirely local. cia app performs media analysis, onset/beat tracking, geometric remapping, transform stacking, and encoding locally without cloud dependencies.
 
 ![cia app preview](docs/preview.png)
 
+## Features
+
+- **3-Source Input**: Drag-and-drop or select **Scene Video**, **Drums Audio**, and **Target Audio** with automated media probing.
+- **Beat & Downbeat Detection**: High-precision musical alignment powered by local onset detection and tempo tracking.
+- **Remap Styles**:
+  - **HARD**: Fast snaps, dynamic reverse cuts on downbeats, one-framers, and aggressive shakes.
+  - **SMOOTH**: Gentle continuous curves, soft zoom transitions, and zero reverse remaps.
+  - **HYBRID**: Balanced alternating snap and saddle curves with medium shake intensity.
+- **DETAILS Modal with Live Preview & Custom Parameters**:
+  - Hover over any effect to preview the algorithm's visual output on a generated 256x256 test pattern.
+  - Toggle individual effects on or off.
+  - Fine-tune 28 custom parameters across **SHAKES** (harmonic amplitude/decay, bouncy, dissolve, skew, squish, optics, stretch), **ZOOM**, **AMBIANCE** (flicker, exposure flash, echo/trail, RGB tint, vignette, scanlines), and **TRANSITIONS** (warp bubble, wave warp, slide shake).
+  - One-click **RESET TO STYLE DEFAULTS**.
+- **FULL FX Toggle**: Instantly toggle between full visual effects and lightweight motion-only mode.
+- **Flexible Export Options**:
+  - Video Codec: **H.264**, **H.265 (HEVC)**, **VP9**.
+  - Target Bitrate: 5 to 50 Mbps via interactive slider.
+  - Container Format: **MP4**, **MKV**, **WEBM**.
+- **Render Analytics**: Post-render statistics reporting total render time, file size, target FPS, and total effect count.
+
 ## Getting started
 
-Download the latest Windows installer from the
-[releases page](https://github.com/cia213/cia-app/releases). Installing and
-launching the app is enough to start using **RENDER** - no setup wizard, no
-extra downloads.
+Download the latest Windows installer from the [releases page](https://github.com/ssdme/cia-app-jugg/releases). Launching the application provides immediate access to beat analysis and rendering — no cloud login or setup wizard required.
 
-**INTERPOLATION** is optional and downloads a separate RIFE environment on
-first use. It requires a CUDA-capable NVIDIA GPU. See
-[Install and first launch](docs/INSTALL.md) for details.
+See [Install and usage](docs/INSTALL.md) for details.
 
 ## Build from source
 
@@ -36,12 +47,6 @@ Create an NSIS installer:
 npm run tauri build
 ```
 
-The release build also needs the ignored release payload described in
-[runtime release notes](docs/RUNTIME-RELEASE-NOTES.md) before it can be
-redistributed.
-
 ## Licence and notices
 
-cia app source code is MIT licensed. Third-party software keeps its own
-licence; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Nothing in this
-repository grants redistribution rights for an external runtime or model.
+cia app source code is MIT licensed. Third-party software keeps its own licence; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

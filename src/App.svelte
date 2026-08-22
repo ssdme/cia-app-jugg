@@ -189,7 +189,7 @@
     { name: 'IBM Plex', detail: 'Interface typography', mark: 'plex', url: 'https://github.com/IBM/plex' },
     { name: 'Flowframes', detail: 'Workflow reference', mark: 'flowframes', url: 'https://github.com/n00mkrad/flowframes' }
   ];
-  const PROJECT_REPOSITORY_URL = 'https://github.com/cia213/cia-app';
+  const PROJECT_REPOSITORY_URL = 'https://github.com/ssdme/cia-app-jugg';
 
   function getFileExtension(path) {
     if (!path) return '';

@@ -1,22 +1,17 @@
 # Third-party notices
 
-cia app bundles the render payload described below. The optional RIFE
-environment is downloaded only after the user selects **INSTALL ENVIRONMENT**.
-Every public release must preserve the notices that ship alongside its staged
-runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
+cia app bundles and integrates the software components described below.
 
-| Component | Role | Licence / notice status in V1 |
+| Component | Role | Licence / notice status |
 | --- | --- | --- |
-| Practical-RIFE | Optional local frame interpolation runtime | MIT licence in the upstream source (hzwer, 2021). Source and RIFE 4.26 weights are fetched after explicit user action; model-weight distribution is not implied by the installer. |
-| smoothie-rs | Bundled local render runtime | Bundled from a staged upstream portable runtime. Preserve its included `LICENSE.txt` and all plugin notices; record exact provenance for each release. |
-| VapourSynth | Supplied within the bundled Smoothie runtime | Its own LGPL terms and notices are preserved in the staged runtime payload. |
-| FFmpeg | Bundled media probing and encoding tools | Current staged build identifies itself as GPLv3. Public distribution requires the corresponding GPL notice and source-availability obligations for that exact build. |
-| Python 3.11.9 | Optional RIFE bootstrap | Official Windows installer bundled under the Python Software Foundation License; SHA-256 recorded in runtime release notes. |
 | Tauri | Desktop application framework | Apache-2.0 OR MIT according to installed dependency metadata. |
 | Svelte and Vite | Frontend framework and build tooling | MIT according to installed dependency metadata. |
-| IBM Plex Sans and Mono | Bundled frontend typography | SIL Open Font License 1.1 according to installed Fontsource metadata. |
-| Flowframes | Workflow reference | Referenced in ABOUT only; no Flowframes code or binary is distributed. |
+| Symphonia | Pure Rust audio decoding and media probing | MPL-2.0 according to crate metadata. |
+| mp4 | Pure Rust MP4 container parsing | MIT OR Apache-2.0 according to crate metadata. |
+| rfd | Native desktop file dialogs | MIT according to crate metadata. |
+| beat_this_cpp / ONNX Runtime | Beat and downbeat tracking engine | MIT according to upstream source and ONNX Runtime distribution. |
+| FFmpeg | Bundled media decoding, frame extraction, and video encoding tools | GPLv3 according to supplied build metadata. |
+| IBM Plex Sans and Mono | Bundled interface typography | SIL Open Font License 1.1 according to Fontsource package metadata. |
+| Flowframes | Workflow reference | Referenced in interface credits only; no Flowframes code or binary is distributed. |
 
-Project names and marks remain the property of their respective owners. CIA
-RENDER's local ABOUT marks are compact interface identifiers, not a claim of
-endorsement.
+Project names and marks remain the property of their respective owners. Local interface marks are compact visual identifiers, not a claim of endorsement.

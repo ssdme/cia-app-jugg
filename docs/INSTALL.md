@@ -1,40 +1,29 @@
 # Install and first launch
 
-The Windows installer contains the cia app application, its local UI,
-fonts, smoothie-rs, its required plugins, and FFmpeg/FFprobe. A fresh
-installation therefore opens directly into **RENDER** with no runtime-path
-wizard and no dependency on a machine-wide `PATH`.
+cia app is a standalone Windows desktop application for beat-synced video editing.
 
-**INTERPOLATION** is intentionally optional: selecting **INSTALL ENVIRONMENT**
-downloads an isolated Python 3.11 / CUDA PyTorch / Practical-RIFE 4.26
-environment into cia app's per-user app-data folder. This is a large
-download, requires a CUDA-capable NVIDIA GPU, and is never downloaded by the
-installer or by merely launching the app.
+## Prerequisites
 
-The **RUNTIME** control is an advanced repair panel only. It can point cia app
-to an existing RIFE installation if the optional installer is not the
-right fit. It is not part of the normal first-run flow.
+- Windows 10 / 11 (64-bit).
+- Built-in or system-available FFmpeg/FFprobe binaries (bundled in release installer).
+- Standard audio/video media files:
+  - Video: `mp4`, `mkv`, `webm`, `mov`, `avi`
+  - Audio: `mp3`, `wav`, `flac`, `m4a`, `ogg`
 
-The bundled render tools are resolved from the installed application, and the
-RIFE installer saves only its per-user app-data paths. cia app never guesses
-a runtime path during an active render.
+## Launch and usage
 
-Configuration is stored per user in the cia app app-data directory as
-`config.json`. It contains local paths and UI preferences; it is not part of a
-Git checkout, installer, or release asset.
+1. Launch **cia app**.
+2. Drag and drop (or browse for) three sources:
+   - **Scene Video**: The footage to be geometrically remapped and transformed.
+   - **Drums Audio**: The percussive or beat track used for beat and downbeat tracking.
+   - **Target Audio**: The soundtrack to accompany the rendered output.
+3. Choose your **Remap Style** (`HARD`, `SMOOTH`, or `HYBRID`), target framerate, aspect ratio, FX mode, and export options.
+4. Click **RUN PROCESS** to generate the plan and render the finished video.
 
-## Output names
+## Output naming and preservation
 
-The Rust backend owns output paths and validates each file after a successful
-process. The UI never reconstructs a filename.
+Rendered outputs are saved to the application's output directory (`output/`).
 
-| Operation | Example |
-| --- | --- |
-| RIFE at 360 FPS | `clip-360fps.mp4` |
-| Smoothie at 30 FPS | `clip_render30fps.mp4` |
-| Auto-chain RIFE 360 to Smoothie 30 | `clip-360fps_render30fps.mp4` |
-
-Existing destinations are never overwritten silently.
-When an output already exists, cia app preserves it and selects the first
-available numbered variant instead: `clip_render30fps (1).mp4`, then `(2)`,
-and so on. The output name is reserved by Rust before the render starts.
+Existing files are never overwritten:
+- Initial render: `cia_jugg_<timestamp>.<ext>`
+- If a file with the same name already exists: `cia_jugg_<timestamp>-1.<ext>`, `cia_jugg_<timestamp>-2.<ext>`, and so on.

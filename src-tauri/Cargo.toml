@@ -3,7 +3,7 @@ name = "cia-render"
 version = "1.0.2"
 edition = "2021"
 description = "Desktop shell and about info."
-repository = "https://github.com/cia213/cia-app"
+repository = "https://github.com/ssdme/cia-app-jugg"
 license = "MIT"
 
 [lib]

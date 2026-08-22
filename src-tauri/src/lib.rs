@@ -2,7 +2,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
-const PROJECT_REPOSITORY_URL: &str = "https://github.com/cia213/cia-app";
+const PROJECT_REPOSITORY_URL: &str = "https://github.com/ssdme/cia-app-jugg";
 const ABOUT_URLS: [&str; 9] = [
     PROJECT_REPOSITORY_URL,
     "https://github.com/hzwer/Practical-RIFE",
@@ -2021,6 +2021,21 @@ pub fn compute_render_stats(
     }
 }
 
+pub fn resolve_unique_output_path(base_dir: &std::path::Path, base_name: &str, ext: &str) -> std::path::PathBuf {
+    let initial = base_dir.join(format!("{base_name}.{ext}"));
+    if !initial.exists() {
+        return initial;
+    }
+    let mut counter = 1u32;
+    loop {
+        let candidate = base_dir.join(format!("{base_name}-{counter}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
 // ─── T17 Generic Effect Preview Engine ──────────────────────────────────────
 
 pub fn generate_generic_preview_frame(width: usize, height: usize) -> Vec<u8> {
@@ -3673,7 +3688,7 @@ async fn run_render_pipeline(
         println!("[T19] WARN: {} encoding is slower than H264 — render may take 2-3x longer", codec_lib);
     }
 
-    let out_mp4_path = out_dir.join(format!("cia_jugg_{timestamp}.{file_ext}"));
+    let out_mp4_path = resolve_unique_output_path(&out_dir, &format!("cia_jugg_{timestamp}"), file_ext);
 
     let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
     encode_cmd.args([
@@ -5931,6 +5946,36 @@ mod tests {
         assert!(size_30m > size_12m, "30 Mbps file must be larger than 12 Mbps file");
         let ratio = (size_30m as f64) / (size_12m as f64);
         assert!(ratio > 1.2, "30 Mbps file must be significantly larger than 12 Mbps file (ratio: {:.2})", ratio);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_resolve_unique_output_path() {
+        let temp_dir = std::env::temp_dir().join("cia_test_unique_path");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let base_name = "test_clip";
+        let ext = "mp4";
+
+        // Initial path when no file exists
+        let p0 = resolve_unique_output_path(&temp_dir, base_name, ext);
+        assert_eq!(p0, temp_dir.join("test_clip.mp4"));
+        std::fs::write(&p0, b"data0").unwrap();
+
+        // Second path when test_clip.mp4 exists -> test_clip-1.mp4
+        let p1 = resolve_unique_output_path(&temp_dir, base_name, ext);
+        assert_eq!(p1, temp_dir.join("test_clip-1.mp4"));
+        std::fs::write(&p1, b"data1").unwrap();
+
+        // Third path when test_clip-1.mp4 exists -> test_clip-2.mp4
+        let p2 = resolve_unique_output_path(&temp_dir, base_name, ext);
+        assert_eq!(p2, temp_dir.join("test_clip-2.mp4"));
+        std::fs::write(&p2, b"data2").unwrap();
+
+        let p3 = resolve_unique_output_path(&temp_dir, base_name, ext);
+        assert_eq!(p3, temp_dir.join("test_clip-3.mp4"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
