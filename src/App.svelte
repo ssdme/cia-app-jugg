@@ -78,6 +78,51 @@
   let isSegmenting = $state(false);
   let compResult = $state(null);
   let compGpuError = $state('');
+  let isRenderingComposition = $state(false);
+  let compRenderProgress = $state(null);
+  let compRenderResult = $state(null);
+  let compOps = $state([
+    {
+      id: 'drop_shadow',
+      name: 'Drop Shadow',
+      op_type: 'drop_shadow',
+      blend_mode: 'Multiply',
+      opacity: 0.60,
+      mask_by_alpha: false,
+      enabled: true,
+      params: { offsetX: 12.0, offsetY: 16.0, blurRadius: 14.0 }
+    },
+    {
+      id: 'light_wrap',
+      name: 'Light Wrap',
+      op_type: 'light_wrap',
+      blend_mode: 'Screen',
+      opacity: 0.55,
+      mask_by_alpha: true,
+      enabled: true,
+      params: { blurRadius: 20.0, edgeWidth: 10.0 }
+    },
+    {
+      id: 'tint_raccord',
+      name: 'Tint de Raccord',
+      op_type: 'tint',
+      blend_mode: 'Multiply',
+      opacity: 0.07,
+      mask_by_alpha: true,
+      enabled: true,
+      params: {}
+    },
+    {
+      id: 'rim_light',
+      name: 'Rim Light',
+      op_type: 'rim_light',
+      blend_mode: 'Add',
+      opacity: 0.65,
+      mask_by_alpha: true,
+      enabled: true,
+      params: { color: [220.0, 240.0, 255.0] }
+    }
+  ]);
 
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
@@ -700,6 +745,37 @@
     }
   }
 
+  async function runCompositionRender() {
+    if (!compCharacterPath || !compBackgroundPath || isRenderingComposition) return;
+    isRenderingComposition = true;
+    compGpuError = '';
+    compRenderResult = null;
+    compRenderProgress = { phase: 'INIT', percent: 0, current_frame: 0, total_frames: 1, message: 'Initializing layered compositor...' };
+    try {
+      const outputPath = await invoke('render_composition', {
+        characterPath: compCharacterPath,
+        backgroundPath: compBackgroundPath,
+        ops: compOps
+      });
+      const ext = getFileExtension(outputPath);
+      const isVideo = ['mp4', 'mkv', 'webm', 'mov', 'avi'].includes(ext);
+      compRenderResult = {
+        outputPath,
+        isVideo,
+        fileName: getFileName(outputPath),
+        timestamp: new Date().toLocaleTimeString()
+      };
+      showToast('Composition rendered successfully!', 'success');
+    } catch (err) {
+      console.error('Composition render error:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      compGpuError = msg;
+      showToast(`Composition render failed: ${msg}`, 'error');
+    } finally {
+      isRenderingComposition = false;
+    }
+  }
+
   async function handleOpenCompFolder(path) {
     if (!path) return;
     try {
@@ -890,6 +966,17 @@
       console.error('Failed to listen to dump-progress:', e);
     }
 
+    let unlistenComp = null;
+    try {
+      unlistenComp = await listen('comp-progress', (event) => {
+        if (event.payload) {
+          compRenderProgress = event.payload;
+        }
+      });
+    } catch (e) {
+      console.error('Failed to listen to comp-progress:', e);
+    }
+
     checkForAppUpdates(false);
 
     if (typeof window !== 'undefined' && window.location.hash === '#composition') {
@@ -897,6 +984,12 @@
       compCharacterPath = 'C:\\Users\\cia\\Downloads\\spider-man-11530958085nzzlmiz6hg-732305370.png';
       compBackgroundPath = 'C:\\Users\\cia\\Downloads\\jugg video & audio tester\\snaptik_7674387013243538721_v3.mp4';
       if (!window.__TAURI_INTERNALS__) {
+        compRenderResult = {
+          outputPath: 'C:\\Users\\cia\\AppData\\Local\\Temp\\cia_composition\\composition_1787436866339.mp4',
+          isVideo: true,
+          fileName: 'composition_1787436866339.mp4',
+          timestamp: '00:15:10'
+        };
         compResult = {
           status: 'success',
           characterPath: compCharacterPath,
@@ -920,6 +1013,7 @@
     return () => {
       if (unlistenProgress) unlistenProgress();
       if (unlistenDump) unlistenDump();
+      if (unlistenComp) unlistenComp();
     };
   });
 </script>
@@ -1836,36 +1930,145 @@
                 </div>
               </div>
 
-              <!-- ACTION / RUN PANEL -->
+              <!-- COMPOSITION OPS STACK & ACTION PANEL -->
               <div class="composition-actions-panel">
-                <button
-                  class="btn-render dumper-run-btn"
-                  disabled={!compCharacterPath || isSegmenting}
-                  onclick={runCompositionSegmentation}
-                  type="button"
-                >
-                  {#if isSegmenting}
-                    <span>SEGMENTING LAYERS (SEE-THROUGH)...</span>
-                  {:else}
-                    <span>⚡ SEGMENT CHARACTER (SEE-THROUGH)</span>
-                  {/if}
-                </button>
+                <!-- 1. COMPOSITION OPS STACK (Manga Recipes) -->
+                <div class="dumper-section-box comp-ops-box">
+                  <div class="section-box-header">
+                    <span class="section-box-title">LAYERED COMPOSITOR OPS (MANGA RECIPES)</span>
+                    <span class="pro-dot active"></span>
+                  </div>
+                  <div class="comp-ops-grid mono">
+                    {#each compOps as op}
+                      <div class="comp-op-item" class:disabled={!op.enabled}>
+                        <div class="op-top-row">
+                          <label class="op-label-toggle">
+                            <input
+                              type="checkbox"
+                              bind:checked={op.enabled}
+                              class="op-checkbox"
+                            />
+                            <span class="op-title">{op.name.toUpperCase()}</span>
+                          </label>
+                          <span class="op-blend-badge">{op.blend_mode.toUpperCase()}</span>
+                        </div>
+                        <div class="op-control-row">
+                          <span class="op-pct-label">OPACITY: {Math.round(op.opacity * 100)}%</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            bind:value={op.opacity}
+                            class="op-range-slider"
+                            disabled={!op.enabled}
+                          />
+                        </div>
+                        <div class="op-desc-row">
+                          {#if op.id === 'drop_shadow'}
+                            <span class="op-desc">Cast multiply shadow onto background</span>
+                          {:else if op.id === 'light_wrap'}
+                            <span class="op-desc">Bleed background ambient light onto character edge</span>
+                          {:else if op.id === 'tint_raccord'}
+                            <span class="op-desc">Color match character to background ambient hue</span>
+                          {:else if op.id === 'rim_light'}
+                            <span class="op-desc">Additive light contour on character silhouette</span>
+                          {/if}
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
 
-                <!-- GPU OR SIDECAR ERROR CARD -->
-                {#if compGpuError}
-                  <div class="comp-error-card">
-                    <div class="comp-error-header">
-                      <span class="zone-tag" style="color: #ef4444; border-color: rgba(239,68,68,0.4);">SIDECAR / GPU NOTICE</span>
+                <!-- 2. RENDER ACTION BUTTONS -->
+                <div class="comp-actions-row">
+                  <button
+                    class="btn-render dumper-run-btn"
+                    disabled={!compCharacterPath || !compBackgroundPath || isRenderingComposition}
+                    onclick={runCompositionRender}
+                    type="button"
+                  >
+                    {#if isRenderingComposition}
+                      <span>COMPOSITING LAYERS ({compRenderProgress ? `${compRenderProgress.percent}%` : 'RUNNING'})...</span>
+                    {:else}
+                      <span>⚡ RENDER COMPOSITION</span>
+                    {/if}
+                  </button>
+
+                  <button
+                    class="btn-pro-secondary mono comp-sidecar-btn"
+                    disabled={!compCharacterPath || isSegmenting || isRenderingComposition}
+                    onclick={runCompositionSegmentation}
+                    type="button"
+                  >
+                    {#if isSegmenting}
+                      <span>SEGMENTING (SEE-THROUGH)...</span>
+                    {:else}
+                      <span>🧩 SEGMENT CHARACTER (SEE-THROUGH)</span>
+                    {/if}
+                  </button>
+                </div>
+
+                <!-- 3. RENDER PROGRESS BAR -->
+                {#if isRenderingComposition && compRenderProgress}
+                  <div class="dumper-progress-card">
+                    <div class="dumper-progress-header">
+                      <span class="progress-phase mono">{compRenderProgress.phase || 'COMPOSITING'}</span>
+                      <span class="progress-pct mono">{compRenderProgress.percent}%</span>
                     </div>
-                    <p class="comp-error-msg mono">{compGpuError}</p>
-                    <div class="comp-error-help mono">
-                      <p>To configure the See-through sidecar environment on an NVIDIA GPU:</p>
-                      <code class="code-box">python vendor/see_through/bootstrap_see_through.py</code>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" style={`width: ${compRenderProgress.percent}%`}></div>
+                    </div>
+                    <p class="progress-msg mono">{compRenderProgress.message || 'Processing frames...'}</p>
+                  </div>
+                {/if}
+
+                <!-- 4. RENDER RESULT CARD -->
+                {#if compRenderResult}
+                  <div class="dumper-result-card comp-render-card">
+                    <div class="result-header">
+                      <div class="result-title-row">
+                        <span class="zone-tag">COMPOSITION RESULT</span>
+                        <span class="style-badge mono">{compRenderResult.isVideo ? 'VIDEO (MP4)' : 'IMAGE (PNG)'}</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <span class="result-timestamp mono">{compRenderResult.timestamp}</span>
+                    </div>
+
+                    <div class="done-path-box" style="margin: 12px 0;">
+                      <span class="stat-label">OUTPUT FILE:</span>
+                      <span class="saved-path-text mono" title={compRenderResult.outputPath}>{compRenderResult.outputPath}</span>
+                    </div>
+
+                    <div class="result-footer-actions">
+                      <button
+                        class="btn-apply-project mono"
+                        onclick={() => handleOpenCompFolder(compRenderResult.outputPath)}
+                        title="Open folder in Windows Explorer"
+                      >
+                        📂 OPEN FOLDER
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => { compRenderResult = null; compRenderProgress = null; }}
+                      >
+                        RENDER AGAIN
+                      </button>
                     </div>
                   </div>
                 {/if}
 
-                <!-- POST-SEGMENTATION LAYER STACK VIEW -->
+                <!-- 5. ERROR CARD -->
+                {#if compGpuError}
+                  <div class="comp-error-card">
+                    <div class="comp-error-header">
+                      <span class="zone-tag" style="color: #ef4444; border-color: rgba(239,68,68,0.4);">NOTICE</span>
+                    </div>
+                    <p class="comp-error-msg mono">{compGpuError}</p>
+                  </div>
+                {/if}
+
+                <!-- 6. POST-SEGMENTATION LAYER STACK VIEW (IF SEGMENTED) -->
                 {#if compResult}
                   <div class="dumper-result-card comp-stack-card">
                     <div class="result-header">
@@ -4658,6 +4861,130 @@
     background: rgba(74, 222, 128, 0.12);
     color: #4ade80;
     border: 1px solid rgba(74, 222, 128, 0.3);
+  }
+
+  /* ─── LAYERED COMPOSITOR OPS & CONTROLS ─────────────────────────────────── */
+  .comp-ops-box {
+    margin-top: 2px;
+  }
+
+  .comp-ops-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .comp-op-item {
+    background: #0d0d12;
+    border: 1px solid #1c1c24;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: all 120ms ease;
+  }
+  .comp-op-item.disabled {
+    opacity: 0.45;
+    background: #08080a;
+    border-color: #141418;
+  }
+
+  .op-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .op-label-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+
+  .op-checkbox {
+    accent-color: #3b82f6;
+    cursor: pointer;
+  }
+
+  .op-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: 0.04em;
+  }
+
+  .op-blend-badge {
+    background: #181824;
+    border: 1px solid #272738;
+    color: #93c5fd;
+    font-size: 8px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .op-control-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .op-pct-label {
+    font-size: 8.5px;
+    color: #a1a1aa;
+    white-space: nowrap;
+    min-width: 80px;
+  }
+
+  .op-range-slider {
+    flex: 1;
+    accent-color: #3b82f6;
+    height: 4px;
+    cursor: pointer;
+  }
+
+  .op-desc-row {
+    font-size: 8px;
+    color: #71717a;
+    line-height: 1.3;
+  }
+
+  .comp-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .comp-actions-row .btn-render {
+    flex: 2;
+  }
+
+  .comp-sidecar-btn {
+    flex: 1;
+    padding: 10px 12px;
+    font-size: 9.5px;
+    font-weight: 700;
+    border-radius: 6px;
+    background: #121218;
+    border: 1px solid #272738;
+    color: #a1a1aa;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .comp-sidecar-btn:hover:not(:disabled) {
+    background: #181822;
+    color: #ffffff;
+    border-color: #3b82f6;
+  }
+  .comp-sidecar-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .comp-render-card {
+    margin-top: 4px;
   }
 </style>
 

@@ -2692,3 +2692,278 @@ fn test_save_composition_project() {
     assert!(content.contains("spiderman.png"));
 }
 
+#[test]
+fn test_alpha_over_exact() {
+    // Semi-transparent red (200, 0, 0, 128) over solid blue (0, 0, 200, 255)
+    let bg = [0u8, 0, 200, 255];
+    let fg = [200u8, 0, 0, 128]; // a ~ 0.50196
+
+    let blended = alpha_over_pixel(bg, fg);
+    // Expected: R ≈ 200 * 0.50196 ≈ 100, B ≈ 200 * (1 - 0.50196) ≈ 100
+    assert_eq!(blended[3], 255);
+    assert!((blended[0] as i32 - 100).abs() <= 2);
+    assert_eq!(blended[1], 0);
+    assert!((blended[2] as i32 - 100).abs() <= 2);
+
+    // Fully transparent FG over solid BG
+    let transparent_fg = [255u8, 255, 255, 0];
+    let b1 = alpha_over_pixel(bg, transparent_fg);
+    assert_eq!(b1, bg);
+
+    // Fully opaque FG over BG
+    let opaque_fg = [50u8, 150, 250, 255];
+    let b2 = alpha_over_pixel(bg, opaque_fg);
+    assert_eq!(b2, opaque_fg);
+}
+
+#[test]
+fn test_drop_shadow_in_alpha_only() {
+    let w = 50usize;
+    let h = 50usize;
+
+    // Create a 50x50 white background
+    let mut bg = vec![255u8; w * h * 4];
+
+    // Create a character with a 10x10 square in center [20..30, 20..30]
+    let mut char_data = vec![0u8; w * h * 4];
+    for y in 20..30 {
+        for x in 20..30 {
+            let idx = (y * w + x) * 4;
+            char_data[idx] = 200;
+            char_data[idx + 1] = 50;
+            char_data[idx + 2] = 50;
+            char_data[idx + 3] = 255;
+        }
+    }
+    let char_img = RawImage {
+        width: w,
+        height: h,
+        data: char_data,
+    };
+
+    let ops = vec![
+        CompositionOp {
+            id: "drop_shadow".to_string(),
+            name: "Drop Shadow".to_string(),
+            op_type: "drop_shadow".to_string(),
+            blend_mode: BlendMode::Multiply,
+            opacity: 0.60,
+            mask_by_alpha: false,
+            enabled: true,
+            params: serde_json::json!({
+                "offsetX": 5.0,
+                "offsetY": 5.0,
+                "blurRadius": 4.0
+            }),
+        }
+    ];
+
+    composite_frame_with_ops(&mut bg, &char_img, &ops, w, h);
+
+    // 1. Unaffected corner (x=2, y=2) should still be pure white (255, 255, 255)
+    let idx_corner = (2 * w + 2) * 4;
+    assert_eq!(bg[idx_corner], 255);
+    assert_eq!(bg[idx_corner + 1], 255);
+    assert_eq!(bg[idx_corner + 2], 255);
+
+    // 2. Center of character (x=25, y=25) should have character color
+    let idx_center = (25 * w + 25) * 4;
+    assert_eq!(bg[idx_center], 200);
+    assert_eq!(bg[idx_center + 1], 50);
+    assert_eq!(bg[idx_center + 2], 50);
+
+    // 3. Shadow area at offset (x=33, y=33) should be darker than 255 (shadowed background)
+    let idx_shadow = (33 * w + 33) * 4;
+    assert!(bg[idx_shadow] < 255, "Shadow must darken background");
+}
+
+#[test]
+fn test_light_wrap_mord_uniquement_sur_bords() {
+    let w = 60usize;
+    let h = 60usize;
+
+    let mut bg = vec![100u8; w * h * 4];
+
+    // Character: solid square in [15..45, 15..45]
+    let mut char_data = vec![0u8; w * h * 4];
+    for y in 15..45 {
+        for x in 15..45 {
+            let idx = (y * w + x) * 4;
+            char_data[idx] = 50;
+            char_data[idx + 1] = 50;
+            char_data[idx + 2] = 50;
+            char_data[idx + 3] = 255;
+        }
+    }
+    let char_img = RawImage {
+        width: w,
+        height: h,
+        data: char_data,
+    };
+
+    let alpha_channel: Vec<f32> = (0..(w * h)).map(|i| char_img.data[i * 4 + 3] as f32 / 255.0).collect();
+    let edge_mask = extract_inner_edge_mask(&alpha_channel, w, h, 6.0);
+
+    // Far outside (5, 5) -> edge mask must be exactly 0
+    assert_eq!(edge_mask[5 * w + 5], 0.0);
+
+    // Deep interior (30, 30) -> edge mask must be near zero
+    assert!(edge_mask[30 * w + 30] < 0.05, "Interior must be near zero");
+
+    // At edge boundary (16, 30) -> edge mask must be high
+    assert!(edge_mask[16 * w + 30] > 0.40, "Inner edge must be high");
+
+    let ops = vec![
+        CompositionOp {
+            id: "light_wrap".to_string(),
+            name: "Light Wrap".to_string(),
+            op_type: "light_wrap".to_string(),
+            blend_mode: BlendMode::Screen,
+            opacity: 0.8,
+            mask_by_alpha: true,
+            enabled: true,
+            params: serde_json::json!({
+                "blurRadius": 10.0,
+                "edgeWidth": 6.0
+            }),
+        }
+    ];
+
+    composite_frame_with_ops(&mut bg, &char_img, &ops, w, h);
+
+    // Interior (30, 30) unaffected by light wrap -> retains character base color [50, 50, 50]
+    let idx_inner = (30 * w + 30) * 4;
+    assert!((bg[idx_inner] as i32 - 50).abs() <= 1);
+
+    // Edge (16, 30) affected by light wrap -> brighter due to background bleed
+    let idx_edge = (16 * w + 30) * 4;
+    assert!(bg[idx_edge] > 50, "Edge must receive light wrap bleed");
+}
+
+#[test]
+fn test_mask_by_alpha_isoles_op() {
+    let w = 40usize;
+    let h = 40usize;
+
+    // Background is green [0, 200, 0, 255]
+    let mut bg = vec![0u8; w * h * 4];
+    for i in 0..(w * h) {
+        bg[i * 4 + 1] = 200;
+        bg[i * 4 + 3] = 255;
+    }
+
+    // Character in right half only [20..40, 0..40]
+    let mut char_data = vec![0u8; w * h * 4];
+    for y in 0..40 {
+        for x in 20..40 {
+            let idx = (y * w + x) * 4;
+            char_data[idx] = 180;
+            char_data[idx + 1] = 180;
+            char_data[idx + 2] = 180;
+            char_data[idx + 3] = 255;
+        }
+    }
+    let char_img = RawImage {
+        width: w,
+        height: h,
+        data: char_data,
+    };
+
+    let default_ops = get_default_composition_ops();
+    composite_frame_with_ops(&mut bg, &char_img, &default_ops, w, h);
+
+    // Left half (x=5, y=20) where alpha=0:
+    // Drop shadow might reach nearby pixels, but far pixel (x=2, y=2) has alpha=0 and no ops modifying it
+    let idx_bg_left = (2 * w + 2) * 4;
+    assert_eq!(bg[idx_bg_left], 0);
+    assert_eq!(bg[idx_bg_left + 1], 200); // Green channel preserved
+    assert_eq!(bg[idx_bg_left + 2], 0);
+}
+
+#[test]
+fn test_png_without_alpha_returns_clean_error() {
+    let temp_solid = std::env::temp_dir().join("solid_no_alpha.png");
+    let solid_raw = RawImage {
+        width: 50,
+        height: 50,
+        data: vec![255u8; 50 * 50 * 4], // all A=255
+    };
+    save_image_rgba(&solid_raw, &temp_solid, None).unwrap();
+
+    let res = validate_and_load_character_png(&temp_solid, None);
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert_eq!(err, "PNG sans canal alpha — détourage requis");
+
+    // Also check spider-man fixture if it has baked solid background
+    let spiderman_p = std::path::Path::new(r"C:\Users\cia\Downloads\spider-man-11530958085nzzlmiz6hg-732305370.png");
+    if spiderman_p.exists() {
+        let res_sp = validate_and_load_character_png(spiderman_p, None);
+        assert!(res_sp.is_err());
+        assert_eq!(res_sp.err().unwrap(), "PNG sans canal alpha — détourage requis");
+    }
+}
+
+#[test]
+fn test_render_composition_image_and_video_pipeline() {
+    let bg_vid_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+
+    // Create a real transparent character fixture PNG (200x200 with transparent background and red character in center)
+    let temp_char = std::env::temp_dir().join("test_char_alpha.png");
+    let mut char_data = vec![0u8; 200 * 200 * 4];
+    for y in 50..150 {
+        for x in 50..150 {
+            let idx = (y * 200 + x) * 4;
+            char_data[idx] = 220;
+            char_data[idx + 1] = 40;
+            char_data[idx + 2] = 40;
+            char_data[idx + 3] = 255;
+        }
+    }
+    let char_raw = RawImage {
+        width: 200,
+        height: 200,
+        data: char_data,
+    };
+    save_image_rgba(&char_raw, &temp_char, None).unwrap();
+
+    // 1. Test Static Image Background Composite
+    let temp_bg_img = std::env::temp_dir().join("test_bg_solid.png");
+    let bg_solid = RawImage {
+        width: 200,
+        height: 200,
+        data: vec![100u8; 200 * 200 * 4],
+    };
+    save_image_rgba(&bg_solid, &temp_bg_img, None).unwrap();
+
+    let out_dir = std::env::temp_dir().join("cia_t27_test_render_comp");
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    let res_img = render_composition_internal(
+        None,
+        temp_char.to_str().unwrap(),
+        temp_bg_img.to_str().unwrap(),
+        None,
+        Some(out_dir.to_str().unwrap()),
+    ).expect("Image composition render must succeed");
+
+    assert!(std::path::Path::new(&res_img).exists());
+    assert!(res_img.ends_with(".png"));
+
+    // 2. Test Video Background Composite if fixture exists
+    if std::path::Path::new(bg_vid_path).exists() {
+        let res_vid = render_composition_internal(
+            None,
+            temp_char.to_str().unwrap(),
+            bg_vid_path,
+            None,
+            Some(out_dir.to_str().unwrap()),
+        ).expect("Video composition render must succeed");
+
+        assert!(std::path::Path::new(&res_vid).exists());
+        assert!(res_vid.ends_with(".mp4"));
+        println!("Rendered composition video: {}", res_vid);
+    }
+}
+
+
