@@ -5,6 +5,14 @@ use tauri::{Emitter, Manager};
 use std::os::windows::process::CommandExt;
 
 use crate::beat::{detect_beats_internal, get_binary_path_opt, BeatResult};
+use crate::effects::{
+    default_ambiance, AspectRatio, BouncyShake, BuildupChain, DissolveShake, OpticsBounce,
+    SegmentEffects, ShakeEffect, SkewShake, SquishPop, WarpStretch, ZoomEffect,
+};
+use crate::plan::{
+    generate_one_framers, generate_transitions, get_style_defaults, ColorHints, ExportConfig,
+    PlanSegment, ProjectPlan,
+};
 use crate::probe::probe_media_internal;
 
 #[cfg(target_os = "windows")]
@@ -988,6 +996,9 @@ pub fn run_dump_pipeline_internal(
     let temp_trf_path = cache_dir.join(format!("dump_motion_{}.trf", std::process::id()));
     let temp_trf_str = temp_trf_path.to_string_lossy().replace('\\', "/").replace(':', "\\:");
 
+    // vidstabdetect writes multi-block motion vectors directly to ASCII format on disk at >100 fps.
+    // mestimate only stores motion vectors in internal AVFrame side-data, which metadata=print
+    // does not serialize to stdout/dictionary, making vidstabdetect far more robust and efficient.
     let mut motion_cmd = std::process::Command::new(ffmpeg_bin);
     motion_cmd.args([
         "-y",
@@ -1391,6 +1402,242 @@ pub fn run_dump_pipeline_internal(
     Ok(analysis)
 }
 
+// --- Style & FPS Mapping ---
+
+pub fn map_dumper_style_to_jugg_style(suggested_style: &str) -> &'static str {
+    match suggested_style.to_lowercase().as_str() {
+        "jugg" => "HARD",
+        "glitch-leaning" => "HARD",
+        "velocity/flow" => "SMOOTH",
+        "basic/clean" => "SMOOTH",
+        "hybrid/unclassified" => "HYBRID",
+        _ => "HYBRID",
+    }
+}
+
+pub fn clamp_dumper_fps(fps_suggestion: f64) -> u32 {
+    fps_suggestion.round().clamp(12.0, 60.0) as u32
+}
+
+pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<ProjectPlan, String> {
+    let mapped_style = map_dumper_style_to_jugg_style(&project.suggested_style);
+    let fps = clamp_dumper_fps(project.fps_suggestion);
+    let bpm = project.beats.bpm;
+    let beats = &project.beats.beats;
+    let downbeats = &project.beats.downbeats;
+
+    // Determine target duration
+    let target_duration = if let Some(last_seg) = project.segments.last() {
+        last_seg.end
+    } else if let Some(&last_cut) = project.cuts.last() {
+        last_cut
+    } else if let Some(&last_beat) = beats.last() {
+        last_beat
+    } else {
+        10.0
+    };
+
+    if target_duration <= 0.0 {
+        return Err("Target duration must be greater than 0".to_string());
+    }
+
+    let min_seg_dur = 3.0 / (fps as f64);
+    let (default_a0, default_omega, default_k, default_zoom_max) = match mapped_style {
+        "SMOOTH" => (3.0, 8.0, 2.0, 1.05),
+        "HYBRID" => (5.0, 12.0, 2.5, 1.10),
+        _ => (8.0, 15.0, 3.0, 1.15), // HARD default
+    };
+
+    let mut plan_segments = Vec::new();
+
+    if !project.segments.is_empty() {
+        let mut curr_t0 = 0.0;
+        for (idx, seg) in project.segments.iter().enumerate() {
+            let mut t1 = seg.end;
+            if idx == project.segments.len() - 1 {
+                t1 = target_duration;
+            }
+            if t1 <= curr_t0 {
+                t1 = curr_t0 + min_seg_dur;
+            }
+
+            let curve_name = match mapped_style {
+                "SMOOTH" => "saddle".to_string(),
+                "HYBRID" => {
+                    if idx % 2 == 0 {
+                        "snap".to_string()
+                    } else {
+                        "saddle".to_string()
+                    }
+                }
+                _ => "snap".to_string(),
+            };
+
+            let (scale_start, scale_end) = if idx % 2 == 0 {
+                (1.0, default_zoom_max)
+            } else {
+                (default_zoom_max, 1.0)
+            };
+
+            let seed = ((idx as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
+            let s1 = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s2 = s1.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s3 = s2.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s4 = s3.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s5 = s4.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s6 = s5.wrapping_mul(1664525).wrapping_add(1013904223);
+            let s7 = s6.wrapping_mul(1664525).wrapping_add(1013904223);
+
+            let pct = |sn: u32| -> u32 { sn % 100 };
+            let is_hard = mapped_style == "HARD";
+            let is_hybrid = mapped_style == "HYBRID";
+
+            let bouncy_shake = if (is_hard || is_hybrid) && pct(s1) < 30 {
+                Some(BouncyShake { axis: (s1 % 2) as u8, amplitude: if is_hard { 40.0 } else { 25.0 } })
+            } else {
+                None
+            };
+
+            let dissolve_shake = if (is_hard || is_hybrid) && pct(s2) < 25 {
+                Some(DissolveShake { pct: if is_hard { 30.0 } else { 15.0 } })
+            } else {
+                None
+            };
+
+            let skew_shake = if (is_hard || is_hybrid) && pct(s3) < 20 {
+                Some(SkewShake { s0_deg: if is_hard { 10.0 } else { 7.0 } })
+            } else {
+                None
+            };
+
+            let squish_pop = if (is_hard || is_hybrid) && pct(s4) < 40 {
+                Some(SquishPop { _pad: 0 })
+            } else {
+                None
+            };
+
+            let optics_bounce = if (is_hard || is_hybrid) && pct(s5) < 25 {
+                Some(OpticsBounce { k0: if is_hard { 0.08 } else { 0.06 } })
+            } else {
+                None
+            };
+
+            let buildup_chain = if pct(s6) < 30 {
+                Some(BuildupChain { chain_next: true, chain_from_prev: false })
+            } else {
+                None
+            };
+
+            let warp_stretch = if (is_hard || is_hybrid) && pct(s7) < 20 {
+                Some(WarpStretch { axis: (s7 % 2) as u8, scale_start: if is_hard { 1.40 } else { 1.30 } })
+            } else {
+                None
+            };
+
+            let s_dur = t1 - curr_t0;
+
+            let effects = SegmentEffects {
+                shake: ShakeEffect {
+                    a0: if bouncy_shake.is_some() { 0.0 } else { default_a0 },
+                    omega: default_omega,
+                    k: default_k,
+                    seed,
+                },
+                zoom: ZoomEffect {
+                    scale_start,
+                    scale_end,
+                },
+                reverse: false,
+                bouncy_shake,
+                dissolve_shake,
+                skew_shake,
+                squish_pop,
+                optics_bounce,
+                buildup_chain,
+                warp_stretch,
+                zoom_beat_offset: if mapped_style == "SMOOTH" { 0 } else { 1 },
+            };
+
+            plan_segments.push(PlanSegment {
+                t0: curr_t0,
+                t1,
+                s0: 0.0,
+                s1: s_dur,
+                curve: curve_name,
+                effects,
+                transition: None,
+                color_hints: Some(ColorHints {
+                    lab_mean: seg.lab_mean,
+                    lab_std: seg.lab_std,
+                }),
+            });
+
+            curr_t0 = t1;
+        }
+    } else {
+        let mut bounds = vec![0.0];
+        for &c in &project.cuts {
+            if c > 0.0 && c < target_duration && c > *bounds.last().unwrap() + min_seg_dur {
+                bounds.push(c);
+            }
+        }
+        bounds.push(target_duration);
+
+        for (idx, win) in bounds.windows(2).enumerate() {
+            let t0 = win[0];
+            let t1 = win[1];
+            let s_dur = t1 - t0;
+            let (scale_start, scale_end) = if idx % 2 == 0 {
+                (1.0, default_zoom_max)
+            } else {
+                (default_zoom_max, 1.0)
+            };
+            let seed = ((idx as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
+
+            plan_segments.push(PlanSegment {
+                t0,
+                t1,
+                s0: 0.0,
+                s1: s_dur,
+                curve: if mapped_style == "SMOOTH" { "saddle".to_string() } else { "snap".to_string() },
+                effects: SegmentEffects {
+                    shake: ShakeEffect { a0: default_a0, omega: default_omega, k: default_k, seed },
+                    zoom: ZoomEffect { scale_start, scale_end },
+                    reverse: false,
+                    ..crate::default_segment_effects()
+                },
+                transition: None,
+                color_hints: None,
+            });
+        }
+    }
+
+    let one_framers = generate_one_framers(mapped_style, &plan_segments, downbeats, fps, target_duration);
+    let transitions = generate_transitions(mapped_style, &mut plan_segments, &[], fps, None);
+    let ambiance = Some(default_ambiance(mapped_style, downbeats));
+
+    Ok(ProjectPlan {
+        schema_version: 2,
+        style: mapped_style.to_string(),
+        fps,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm,
+        target_duration,
+        video_duration: target_duration,
+        audio_duration: target_duration,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: Some(get_style_defaults(mapped_style)),
+        one_framers,
+        transitions,
+        ambiance,
+        segments: plan_segments,
+        export: ExportConfig::default(),
+    })
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -1404,4 +1651,22 @@ pub async fn run_dump_pipeline(
     video_path: String,
 ) -> Result<DumpAnalysis, String> {
     run_dump_pipeline_internal(Some(&app), &video_path)
+}
+
+#[tauri::command]
+pub fn apply_dumper_project(
+    project_path: Option<String>,
+    project: Option<ReusableProject>,
+) -> Result<ProjectPlan, String> {
+    if let Some(proj) = project {
+        convert_dumper_project_to_plan(&proj)
+    } else if let Some(path) = project_path {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read reusable project at {path}: {e}"))?;
+        let proj: ReusableProject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse reusable project JSON: {e}"))?;
+        convert_dumper_project_to_plan(&proj)
+    } else {
+        Err("Either project or project_path must be provided".to_string())
+    }
 }

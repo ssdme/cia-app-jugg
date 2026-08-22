@@ -95,7 +95,8 @@ pub fn run() {
             preview::get_effect_previews,
             plan::cmd_get_style_defaults,
             dumper::detect_scenes,
-            dumper::run_dump_pipeline
+            dumper::run_dump_pipeline,
+            dumper::apply_dumper_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

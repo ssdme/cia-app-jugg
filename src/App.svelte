@@ -530,6 +530,95 @@
     }
   }
 
+  async function handleApplyAsProject() {
+    if (!dumperResult || !dumperResult.reusableProjectPath) return;
+    try {
+      const plan = await invoke('apply_dumper_project', {
+        projectPath: dumperResult.reusableProjectPath,
+        project: null,
+      });
+      console.log('[DUMPER] Applied as project plan:', plan);
+
+      // Save plan to project.json in app_data
+      const planJson = JSON.stringify(plan);
+      const savedPath = await invoke('save_plan', { planJson });
+      console.log('[DUMPER] Saved applied plan to:', savedPath);
+
+      // Set JUGG inputs and options
+      selectedStyle = plan.style;
+      fpsValue = plan.fps;
+      bpm = plan.bpm;
+      if (plan.aspect) {
+        if (plan.aspect.w === 1920 && plan.aspect.h === 1080) {
+          selectedAspectRatio = '16:9';
+        } else if (plan.aspect.w === 1080 && plan.aspect.h === 1920) {
+          selectedAspectRatio = '9:16';
+        } else if (plan.aspect.w === 1080 && plan.aspect.h === 1080) {
+          selectedAspectRatio = '1:1';
+        } else {
+          selectedAspectRatio = 'CUSTOM';
+          customWidth = plan.aspect.w;
+          customHeight = plan.aspect.h;
+        }
+      }
+
+      // Populate file drop zones with the dumped video
+      if (dumperResult.source) {
+        scenePath = dumperResult.source;
+        drumsPath = dumperResult.source;
+        audioPath = dumperResult.source;
+        sceneInfo = {
+          duration: plan.video_duration,
+          fps: plan.fps,
+          width: plan.aspect ? plan.aspect.w : 1080,
+          height: plan.aspect ? plan.aspect.h : 1080,
+        };
+        audioInfo = {
+          duration: plan.audio_duration,
+          sample_rate: 48000,
+          channels: 2,
+        };
+      }
+
+      const hasReverse = plan.segments.some((s) => s.effects && s.effects.reverse);
+      const hasOneFramers = plan.one_framers && plan.one_framers.length > 0;
+      const hasTransitions = (plan.transitions && plan.transitions.length > 0) || plan.segments.some((s) => s.transition);
+      const hasAmbiance = !!plan.ambiance;
+
+      planSummary = {
+        segmentsCount: plan.segments.length,
+        loops: plan.loops || 1,
+        targetDuration: plan.target_duration,
+        savedPath,
+        style: plan.style,
+        fps: plan.fps,
+        aspect: `${plan.aspect.w}x${plan.aspect.h}`,
+        motionBlur: plan.motion_blur,
+        fullFx: plan.full_fx !== false,
+        shakes: true,
+        zoom: true,
+        reverse: hasReverse,
+        oneFramers: hasOneFramers,
+        transitions: hasTransitions,
+        ambiance: hasAmbiance,
+        echoTrail: echoTrailEnabled,
+        export: plan.export || {
+          codec: selectedCodec,
+          bitrateMbps: bitrateValue,
+          format: selectedFormat,
+        },
+      };
+
+      // Navigate to TIME REMAP / JUGG page
+      activePage = 'remap';
+      showToast(`Dumper project applied: style ${plan.style}, ${plan.fps} FPS, ${plan.segments.length} segments`, 'success');
+    } catch (err) {
+      console.error('Failed to apply dumper project:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Failed to apply project: ${msg}`, 'error');
+    }
+  }
+
   async function handleOpenTargetFolder() {
     if (!renderOutputMp4) return;
     try {
@@ -1345,62 +1434,197 @@
                   </div>
                 {/if}
 
-                <!-- RESULT CARD -->
+                <!-- STRUCTURED REPORT VIEW -->
                 {#if dumperResult}
                   <div class="dumper-result-card">
+                    <!-- 1. HEADER & STYLE ARCHETYPE -->
                     <div class="result-header">
                       <div class="result-title-row">
-                        <span class="zone-tag">ANALYSIS RESULT</span>
+                        <span class="zone-tag">DUMP REPORT</span>
                         {#if dumperResult.detectedStyle}
                           <span class="style-badge mono">{dumperResult.detectedStyle.styleName.toUpperCase()} ({(dumperResult.detectedStyle.confidence * 100).toFixed(0)}%)</span>
                         {/if}
                         <span class="pro-dot active"></span>
                       </div>
-                      <span class="result-timestamp mono">SCHEMA V{dumperResult.schemaVersion}</span>
+                      <span class="result-timestamp mono">{getFileName(dumperResult.source)}</span>
                     </div>
 
+                    <!-- 2. HIGH-LEVEL METRICS SUMMARY GRID -->
                     <div class="dumper-stats-grid">
                       <div class="stat-box">
-                        <span class="stat-label">DURATION</span>
-                        <span class="stat-val mono">{dumperResult.duration}s</span>
+                        <span class="stat-label">DURATION & FPS</span>
+                        <span class="stat-val mono">{dumperResult.duration}s ({dumperResult.fps} FPS)</span>
                       </div>
                       <div class="stat-box">
-                        <span class="stat-label">CUTS / SCENES</span>
-                        <span class="stat-val mono">{dumperResult.cuts.length} cuts ({dumperResult.scenes.length} scenes)</span>
+                        <span class="stat-label">CUTS & DENSITY</span>
+                        <span class="stat-val mono">{dumperResult.cuts.length} cuts ({(dumperResult.cuts.length / (dumperResult.duration || 1)).toFixed(2)}/s)</span>
                       </div>
                       <div class="stat-box">
                         <span class="stat-label">DETECTED BPM</span>
-                        <span class="stat-val mono">{dumperResult.beats.bpm > 0 ? dumperResult.beats.bpm.toFixed(1) : 'N/A'}</span>
+                        <span class="stat-val mono">{dumperResult.beats.bpm > 0 ? dumperResult.beats.bpm.toFixed(1) : 'N/A'} ({dumperResult.beats.beats.length} beats)</span>
                       </div>
                       <div class="stat-box">
                         <span class="stat-label">CUT-BEAT SYNC (±60ms)</span>
-                        <span class="stat-val mono highlight-sync">{dumperResult.syncNa ? 'N/A' : `${(dumperResult.cutBeatSync * 100).toFixed(1)}%`}</span>
+                        <span class="stat-val mono highlight-sync">{dumperResult.syncNa ? 'N/A (0 cuts)' : `${(dumperResult.cutBeatSync * 100).toFixed(1)}%`}</span>
                       </div>
-                      {#if dumperResult.oneFramers}
-                        <div class="stat-box">
-                          <span class="stat-label">ONE-FRAMERS</span>
-                          <span class="stat-val mono">{dumperResult.oneFramers.length} detected</span>
-                        </div>
-                      {/if}
-                      {#if dumperResult.detectedStyle}
-                        <div class="stat-box">
-                          <span class="stat-label">STYLE REASONS</span>
-                          <span class="stat-val mono text-xs">{dumperResult.detectedStyle.justifications.slice(0, 2).join(' · ')}</span>
-                        </div>
-                      {/if}
                     </div>
 
-                    <div class="result-footer-row">
-                      <div class="result-path-box mono" title={dumperResult.jsonPath}>
-                        <span class="result-path-label">DUMP:</span>
-                        <span class="result-path-text">{dumperResult.jsonPath || 'Saved in app_data/dump/'}</span>
+                    <!-- 3. DETECTED STYLE & JUSTIFICATIONS -->
+                    {#if dumperResult.detectedStyle}
+                      <div class="dumper-section-box">
+                        <div class="section-box-header">
+                          <span class="section-box-title">DETECTED STYLE & JUSTIFICATIONS</span>
+                          <span class="badge-accent mono">{dumperResult.detectedStyle.styleName.toUpperCase()}</span>
+                        </div>
+                        <ul class="justification-list mono">
+                          {#each dumperResult.detectedStyle.justifications as just}
+                            <li><span class="bullet-dot">·</span> {just}</li>
+                          {/each}
+                        </ul>
                       </div>
-                      <div class="result-actions">
-                        {#if dumperResult.jsonPath}
-                          <button class="btn-zone-action" onclick={() => handleOpenDumperFolder(dumperResult.jsonPath)}>SHOW IN EXPLORER</button>
+                    {/if}
+
+                    <!-- 4. SEGMENTS (SIGNATURES) TABLE -->
+                    {#if dumperResult.segments && dumperResult.segments.length > 0}
+                      <div class="dumper-section-box">
+                        <div class="section-box-header">
+                          <span class="section-box-title">SEGMENTS ({dumperResult.segments.length} SIGNATURES)</span>
+                        </div>
+                        <div class="table-container">
+                          <table class="dumper-data-table mono">
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                <th>RANGE</th>
+                                <th>LAB MEAN [L, a, b]</th>
+                                <th>LAB STD</th>
+                                <th>MAD MEAN</th>
+                                <th>MAD PEAK</th>
+                                <th>SHAKE ENERGY</th>
+                                <th>1-FRAMERS</th>
+                                <th>SPEED HINT</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {#each dumperResult.segments as seg, idx}
+                                <tr>
+                                  <td class="col-idx">{idx + 1}</td>
+                                  <td>{seg.start.toFixed(2)}s - {seg.end.toFixed(2)}s</td>
+                                  <td>[{seg.lab.mean[0].toFixed(1)}, {seg.lab.mean[1].toFixed(1)}, {seg.lab.mean[2].toFixed(1)}]</td>
+                                  <td>[{seg.lab.std[0].toFixed(1)}, {seg.lab.std[1].toFixed(1)}, {seg.lab.std[2].toFixed(1)}]</td>
+                                  <td>{seg.madMean.toFixed(1)}</td>
+                                  <td>{seg.madPeak.toFixed(1)}</td>
+                                  <td>{seg.motion ? seg.motion.shakeEnergy.toFixed(3) : 'N/A'}</td>
+                                  <td>{seg.oneFramerCount}</td>
+                                  <td><span class="badge-hint {seg.speedHint}">{seg.speedHint}</span></td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    {/if}
+
+                    <!-- 5. ONE-FRAMERS & MOTION -->
+                    <div class="dumper-two-col-grid">
+                      <!-- One-framers -->
+                      <div class="dumper-section-box">
+                        <div class="section-box-header">
+                          <span class="section-box-title">ONE-FRAMERS ({dumperResult.oneFramers ? dumperResult.oneFramers.length : 0})</span>
+                        </div>
+                        {#if dumperResult.oneFramers && dumperResult.oneFramers.length > 0}
+                          <div class="pills-scroll-container">
+                            {#each dumperResult.oneFramers as of_t}
+                              <span class="framer-pill mono">{of_t.toFixed(3)}s</span>
+                            {/each}
+                          </div>
+                        {:else}
+                          <p class="section-empty-hint mono">No isolated 1-frame flashes detected.</p>
                         {/if}
-                        <button class="btn-zone-action" onclick={() => { dumperResult = null; dumperProgress = null; }}>NEW ANALYSIS</button>
                       </div>
+
+                      <!-- Motion Dynamics -->
+                      <div class="dumper-section-box">
+                        <div class="section-box-header">
+                          <span class="section-box-title">MOTION & REVERSE STATUS</span>
+                        </div>
+                        <div class="motion-summary-content mono">
+                          <div class="motion-row">
+                            <span class="motion-label">Shake High-Freq:</span>
+                            <span class="motion-val">{dumperResult.segments && dumperResult.segments.length > 0 && dumperResult.segments[0].motion ? (dumperResult.segments.reduce((acc, s) => acc + (s.motion ? s.motion.shakeEnergy : 0), 0) / dumperResult.segments.length).toFixed(4) : 'N/A'}</span>
+                          </div>
+                          <div class="motion-row">
+                            <span class="motion-label">Zoom Present:</span>
+                            <span class="motion-val">{dumperResult.segments ? dumperResult.segments.filter(s => s.motion && s.motion.zoomPresence).length : 0} / {dumperResult.segments ? dumperResult.segments.length : 0} segments</span>
+                          </div>
+                          <div class="motion-note">
+                            <span class="note-tag">REVERSE REMAP:</span> Non mesurable depuis la sortie seule (non deviné, laissé aux métadonnées originales).
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 6. REUSABLE VS DESCRIPTIVE -->
+                    <div class="dumper-section-box reusable-vs-descriptive">
+                      <div class="section-box-header">
+                        <span class="section-box-title">REUSABLE VS DESCRIPTIVE</span>
+                      </div>
+                      <div class="reusable-grid mono">
+                        <div class="reusable-column">
+                          <div class="column-title success">MEASURABLE & REUSABLE (PROJECT SCHEMA)</div>
+                          <ul class="feature-checklist">
+                            <li>✓ Audio BPM ({dumperResult.beats.bpm.toFixed(1)}), beat grid & downbeats</li>
+                            <li>✓ Scene cut timestamps & segment boundaries</li>
+                            <li>✓ Color palettes (LAB mean & std per segment)</li>
+                            <li>✓ Suggested style preset & target FPS ({dumperResult.fps})</li>
+                          </ul>
+                        </div>
+                        <div class="reusable-column">
+                          <div class="column-title muted">DESCRIPTIVE ONLY (NOT RECONSTRUCTIBLE)</div>
+                          <ul class="feature-checklist muted">
+                            <li>✗ Reverse clip speed remap</li>
+                            <li>✗ Pre-FX raw footage layers & compositions</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 7. OUTPUT FILES & ACTION BUTTONS -->
+                    <div class="dumper-files-container">
+                      <div class="file-path-row mono" title={dumperResult.jsonPath}>
+                        <span class="file-badge">ANALYSIS JSON</span>
+                        <span class="file-path-text">{dumperResult.jsonPath || 'analysis.json'}</span>
+                      </div>
+                      <div class="file-path-row mono" title={dumperResult.reportPath}>
+                        <span class="file-badge">MARKDOWN REPORT</span>
+                        <span class="file-path-text">{dumperResult.reportPath || 'report.md'}</span>
+                      </div>
+                      <div class="file-path-row mono" title={dumperResult.reusableProjectPath}>
+                        <span class="file-badge">REUSABLE PROJECT</span>
+                        <span class="file-path-text">{dumperResult.reusableProjectPath || 'reusable_project.json'}</span>
+                      </div>
+                    </div>
+
+                    <div class="result-footer-actions">
+                      <button
+                        class="btn-apply-project mono"
+                        onclick={handleApplyAsProject}
+                        title="Convert into ProjectPlan and load into JUGG page"
+                      >
+                        ⚡ APPLY AS PROJECT
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => handleOpenDumperFolder(dumperResult.jsonPath || dumperResult.reusableProjectPath)}
+                      >
+                        OPEN FOLDER
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => { dumperResult = null; dumperProgress = null; }}
+                      >
+                        NEW ANALYSIS
+                      </button>
                     </div>
                   </div>
                 {/if}
@@ -3661,39 +3885,300 @@
     color: #4ade80;
   }
 
-  .result-footer-row {
+  /* ─── DUMPER SECTION BOXES ─────────────────────────────────────────────── */
+  .dumper-section-box {
+    background: #0b0b10;
+    border: 1px solid #1c1c24;
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .section-box-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
-    padding-top: 8px;
-    border-top: 1px solid #18181e;
   }
 
-  .result-path-box {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    overflow: hidden;
+  .section-box-title {
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 9.5px;
+    font-weight: 700;
     color: #a1a1aa;
-    flex: 1;
+    letter-spacing: 0.06em;
   }
 
-  .result-path-label {
-    color: #52525b;
+  .badge-accent {
+    font-size: 8.5px;
+    font-weight: 700;
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .justification-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 10px;
+    color: #e4e4e7;
+  }
+
+  .bullet-dot {
+    color: #4ade80;
     font-weight: 700;
   }
 
-  .result-path-text {
+  /* ─── SEGMENTS DATA TABLE ───────────────────────────────────────────────── */
+  .table-container {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #18181e;
+    border-radius: 4px;
+  }
+
+  .dumper-data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9px;
+    text-align: left;
+  }
+
+  .dumper-data-table th {
+    background: #121218;
+    color: #71717a;
+    padding: 6px 8px;
+    font-weight: 700;
+    border-bottom: 1px solid #27272a;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    white-space: nowrap;
+  }
+
+  .dumper-data-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid #14141a;
+    color: #d4d4d8;
+    white-space: nowrap;
+  }
+
+  .dumper-data-table tr:hover td {
+    background: #14141c;
+  }
+
+  .dumper-data-table .col-idx {
+    color: #71717a;
+    font-weight: 700;
+  }
+
+  .badge-hint {
+    font-size: 8px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+  .badge-hint.snap {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+  .badge-hint.fast {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+  .badge-hint.slow {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+  }
+  .badge-hint.normal {
+    background: rgba(161, 161, 170, 0.12);
+    color: #d4d4d8;
+    border: 1px solid rgba(161, 161, 170, 0.25);
+  }
+
+  /* ─── TWO-COLUMN GRID ───────────────────────────────────────────────────── */
+  .dumper-two-col-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .pills-scroll-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 80px;
+    overflow-y: auto;
+    padding: 2px 0;
+  }
+
+  .framer-pill {
+    font-size: 8.5px;
+    background: #14141c;
+    border: 1px solid #27272a;
+    color: #e4e4e7;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+
+  .section-empty-hint {
+    font-size: 9px;
+    color: #52525b;
+    margin: 0;
+  }
+
+  .motion-summary-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 9.5px;
+  }
+
+  .motion-row {
+    display: flex;
+    justify-content: space-between;
+    color: #d4d4d8;
+  }
+
+  .motion-label {
+    color: #71717a;
+  }
+
+  .motion-val {
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .motion-note {
+    font-size: 8.5px;
+    color: #71717a;
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px dashed #1c1c24;
+    line-height: 1.3;
+  }
+
+  .note-tag {
+    font-weight: 700;
+    color: #a1a1aa;
+  }
+
+  /* ─── REUSABLE VS DESCRIPTIVE ───────────────────────────────────────────── */
+  .reusable-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    font-size: 9.5px;
+  }
+
+  .reusable-column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .column-title {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .column-title.success {
+    color: #4ade80;
+  }
+  .column-title.muted {
+    color: #71717a;
+  }
+
+  .feature-checklist {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: #d4d4d8;
+  }
+  .feature-checklist.muted {
+    color: #71717a;
+  }
+
+  /* ─── FILE OUTPUTS ──────────────────────────────────────────────────────── */
+  .dumper-files-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #0d0d12;
+    border: 1px solid #18181e;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+
+  .file-path-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 9px;
+    overflow: hidden;
+  }
+
+  .file-badge {
+    background: #181822;
+    border: 1px solid #272738;
+    color: #a1a1aa;
+    font-size: 8px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
+  .file-path-text {
+    color: #71717a;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .result-actions {
+  /* ─── FOOTER ACTIONS ────────────────────────────────────────────────────── */
+  .result-footer-actions {
     display: flex;
-    gap: 8px;
+    align-items: center;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #18181e;
+  }
+
+  .btn-apply-project {
+    background: #15803d;
+    color: #ffffff;
+    border: 1px solid #22c55e;
+    padding: 8px 16px;
+    font-size: 10.5px;
+    font-weight: 700;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 120ms ease;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.2);
+  }
+  .btn-apply-project:hover {
+    background: #16a34a;
+    box-shadow: 0 0 14px rgba(34, 197, 94, 0.4);
+    transform: translateY(-1px);
+  }
+  .btn-apply-project:active {
+    transform: translateY(0);
   }
 </style>
 

@@ -492,6 +492,7 @@ fn test_ambiance_flicker_oscillation() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let amplitude = 0.15;
@@ -554,6 +555,7 @@ fn test_ambiance_echo_trail_blend() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let amb = AmbianceConfig {
@@ -608,6 +610,7 @@ fn test_ambiance_tint_vignette_scanlines() {
             ..crate::default_segment_effects()
         },
         transition: None,
+        color_hints: None,
     };
 
     let tint_r = 10i16;
@@ -2312,5 +2315,213 @@ fn test_full_dump_pipeline_fixtures() {
                 panic!("Dump pipeline failed for {}: {}", video_path, e);
             }
         }
+    }
+}
+
+#[test]
+fn test_convert_dumper_project_style_mapping_5_archetypes() {
+    assert_eq!(map_dumper_style_to_jugg_style("jugg"), "HARD");
+    assert_eq!(map_dumper_style_to_jugg_style("glitch-leaning"), "HARD");
+    assert_eq!(map_dumper_style_to_jugg_style("velocity/flow"), "SMOOTH");
+    assert_eq!(map_dumper_style_to_jugg_style("basic/clean"), "SMOOTH");
+    assert_eq!(map_dumper_style_to_jugg_style("hybrid/unclassified"), "HYBRID");
+    assert_eq!(map_dumper_style_to_jugg_style("unknown-style"), "HYBRID");
+
+    // Full plan conversion style verification
+    let styles = [
+        ("jugg", "HARD"),
+        ("glitch-leaning", "HARD"),
+        ("velocity/flow", "SMOOTH"),
+        ("basic/clean", "SMOOTH"),
+        ("hybrid/unclassified", "HYBRID"),
+    ];
+
+    for (dumper_style, expected_jugg_style) in styles {
+        let proj = ReusableProject {
+            schema_version: "dumper_project_v1".to_string(),
+            source: "C:/test/edit.mp4".to_string(),
+            beats: BeatResult { bpm: 120.0, beats: vec![1.0, 2.0], downbeats: vec![1.0] },
+            cuts: vec![2.0],
+            segments: vec![
+                ReusableSegment {
+                    start: 0.0,
+                    end: 2.0,
+                    lab_mean: [50.0, 0.0, 0.0],
+                    lab_std: [10.0, 5.0, 5.0],
+                    speed_hint: "normal".to_string(),
+                },
+                ReusableSegment {
+                    start: 2.0,
+                    end: 4.0,
+                    lab_mean: [60.0, 2.0, -1.0],
+                    lab_std: [8.0, 4.0, 4.0],
+                    speed_hint: "fast".to_string(),
+                },
+            ],
+            suggested_style: dumper_style.to_string(),
+            fps_suggestion: 30.0,
+        };
+
+        let plan = convert_dumper_project_to_plan(&proj).expect("Conversion must succeed");
+        assert_eq!(plan.schema_version, 2);
+        assert_eq!(plan.style, expected_jugg_style, "Style mismatch for {}", dumper_style);
+    }
+}
+
+#[test]
+fn test_convert_dumper_project_fps_clamp_bounds() {
+    // 1. Lower bound (< 12 -> 12)
+    assert_eq!(clamp_dumper_fps(5.0), 12);
+    assert_eq!(clamp_dumper_fps(11.4), 12);
+    assert_eq!(clamp_dumper_fps(12.0), 12);
+
+    // 2. Upper bound (> 60 -> 60)
+    assert_eq!(clamp_dumper_fps(60.0), 60);
+    assert_eq!(clamp_dumper_fps(120.0), 60);
+    assert_eq!(clamp_dumper_fps(240.0), 60);
+
+    // 3. Normal values rounded
+    assert_eq!(clamp_dumper_fps(29.97), 30);
+    assert_eq!(clamp_dumper_fps(24.0), 24);
+}
+
+#[test]
+fn test_convert_dumper_project_contiguity_and_color_hints() {
+    let proj = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/edit.mp4".to_string(),
+        beats: BeatResult {
+            bpm: 128.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+            downbeats: vec![0.5, 2.5],
+        },
+        cuts: vec![0.85, 2.10, 3.45],
+        segments: vec![
+            ReusableSegment {
+                start: 0.0,
+                end: 0.85,
+                lab_mean: [42.1, 10.5, -5.2],
+                lab_std: [15.2, 8.1, 7.3],
+                speed_hint: "normal".to_string(),
+            },
+            ReusableSegment {
+                start: 0.85,
+                end: 2.10,
+                lab_mean: [55.3, -8.4, 12.1],
+                lab_std: [18.4, 9.2, 11.0],
+                speed_hint: "snap".to_string(),
+            },
+            ReusableSegment {
+                start: 2.10,
+                end: 3.45,
+                lab_mean: [30.2, 4.1, 2.0],
+                lab_std: [12.0, 4.5, 3.8],
+                speed_hint: "slow".to_string(),
+            },
+            ReusableSegment {
+                start: 3.45,
+                end: 5.00,
+                lab_mean: [65.0, 1.0, -1.0],
+                lab_std: [20.0, 6.0, 5.0],
+                speed_hint: "fast".to_string(),
+            },
+        ],
+        suggested_style: "jugg".to_string(),
+        fps_suggestion: 120.0, // Should clamp to 60
+    };
+
+    let plan = convert_dumper_project_to_plan(&proj).expect("Conversion must succeed");
+
+    // 1. Schema version and parameters
+    assert_eq!(plan.schema_version, 2);
+    assert_eq!(plan.style, "HARD");
+    assert_eq!(plan.fps, 60);
+    assert_eq!(plan.bpm, 128.0);
+    assert_eq!(plan.target_duration, 5.00);
+
+    // 2. Strict contiguity from 0.0 to target_duration
+    assert_eq!(plan.segments.len(), 4);
+    assert_eq!(plan.segments[0].t0, 0.0);
+    assert_eq!(plan.segments.last().unwrap().t1, 5.00);
+
+    for win in plan.segments.windows(2) {
+        let seg_n = &win[0];
+        let seg_n1 = &win[1];
+        assert_eq!(
+            seg_n.t1, seg_n1.t0,
+            "Segment boundary contiguity broken between [{:.3}-{:.3}] and [{:.3}-{:.3}]",
+            seg_n.t0, seg_n.t1, seg_n1.t0, seg_n1.t1
+        );
+    }
+
+    // 3. Color hints present on every segment
+    for (idx, seg) in plan.segments.iter().enumerate() {
+        assert!(seg.color_hints.is_some(), "Segment {} must have color_hints", idx);
+        let ch = seg.color_hints.as_ref().unwrap();
+        assert_eq!(ch.lab_mean, proj.segments[idx].lab_mean);
+        assert_eq!(ch.lab_std, proj.segments[idx].lab_std);
+    }
+}
+
+#[test]
+fn test_apply_dumper_project_on_cut_fixture_flow() {
+    let video_path = r"C:\Users\cia\Downloads\cut.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    println!("\n=======================================================");
+    println!(">>> FULL FLOW: DUMP cut.mp4 -> APPLY AS PROJECT -> JUGG PLAN");
+    println!("=======================================================");
+
+    let t_start = std::time::Instant::now();
+    let analysis = run_dump_pipeline_internal(None, video_path).expect("Dump pipeline failed");
+    let dump_elapsed = t_start.elapsed().as_secs_f64();
+
+    println!("[1. DUMP COMPLETED in {:.2}s]", dump_elapsed);
+    println!("  Source:            {}", analysis.source);
+    println!("  Raw Detected Style: {} ({:.0}%)", analysis.detected_style.style_name, analysis.detected_style.confidence * 100.0);
+    println!("  Raw Source FPS:    {:.2}", analysis.fps);
+    println!("  Cuts:              {} cuts", analysis.cuts.len());
+    println!("  Reusable Path:     {:?}", analysis.reusable_project_path);
+
+    let reusable_path = analysis.reusable_project_path.expect("Reusable project path must exist");
+    assert!(std::path::Path::new(&reusable_path).exists());
+
+    // 2. Apply as project (conversion)
+    let plan = apply_dumper_project(Some(reusable_path.clone()), None).expect("Apply dumper project failed");
+
+    println!("\n[2. APPLIED AS JUGG PROJECT PLAN]");
+    println!("  Plan Schema:       v{}", plan.schema_version);
+    println!("  Mapped Jugg Style: {}", plan.style);
+    println!("  Clamped Target FPS:{}", plan.fps);
+    println!("  Target Duration:   {:.3}s", plan.target_duration);
+    println!("  Segments Count:    {}", plan.segments.len());
+    println!("  One-Framers Count: {}", plan.one_framers.len());
+    println!("  Transitions Count: {}", plan.transitions.len());
+    println!("  Ambiance Config:   {}", if plan.ambiance.is_some() { "Present" } else { "None" });
+    if let Some(first_seg) = plan.segments.first() {
+        println!("  First Segment:     [{:.3}s - {:.3}s] Curve: {}, ColorHints: {:?}",
+            first_seg.t0, first_seg.t1, first_seg.curve, first_seg.color_hints
+        );
+    }
+
+    // Invariant assertions
+    assert_eq!(plan.schema_version, 2);
+    assert_eq!(plan.style, "HARD"); // glitch-leaning -> HARD
+    assert_eq!(plan.fps, 60);       // 120 clamped to 60
+    assert!(plan.target_duration > 0.0);
+    assert!(!plan.segments.is_empty());
+    assert_eq!(plan.segments[0].t0, 0.0);
+    assert!((plan.segments.last().unwrap().t1 - plan.target_duration).abs() < 1e-3);
+
+    for win in plan.segments.windows(2) {
+        let seg_n = &win[0];
+        let seg_n1 = &win[1];
+        assert_eq!(
+            seg_n.t1, seg_n1.t0,
+            "Contiguity broken between segments [{:.3}-{:.3}] and [{:.3}-{:.3}]",
+            seg_n.t0, seg_n.t1, seg_n1.t0, seg_n1.t1
+        );
     }
 }
