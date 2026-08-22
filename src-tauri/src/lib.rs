@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 pub mod beat;
+pub mod dumper;
 pub mod effects;
 pub mod plan;
 pub mod preview;
@@ -8,6 +9,7 @@ pub mod probe;
 pub mod render;
 
 pub use beat::*;
+pub use dumper::*;
 pub use effects::*;
 pub use plan::*;
 pub use preview::*;
@@ -17,7 +19,7 @@ pub use render::*;
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/ssdme/cia-app-jugg";
 const ABOUT_URLS: [&str; 9] = [
     PROJECT_REPOSITORY_URL,
-    "https://github.com/CP-JKU/beat_this",
+    "https://github.com/CPJKU/beat_this",
     "https://github.com/microsoft/onnxruntime",
     "https://github.com/pdeljanov/Symphonia",
     "https://github.com/alfg/mp4-rust",
@@ -91,7 +93,9 @@ pub fn run() {
             render::open_target_folder,
             render::run_render_pipeline,
             preview::get_effect_previews,
-            plan::cmd_get_style_defaults
+            plan::cmd_get_style_defaults,
+            dumper::detect_scenes,
+            dumper::run_dump_pipeline
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

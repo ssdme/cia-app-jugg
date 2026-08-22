@@ -1772,3 +1772,279 @@ fn test_resolve_unique_output_path() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+// ─── T23: Dumper Tests ───────────────────────────────────────────────────────
+
+#[test]
+fn test_luminance_mad_exact() {
+    let width = 4usize;
+    let height = 4usize;
+    let n = width * height * 3;
+
+    // Frame 1: Pure Gray 100 -> Y = 100
+    let f1 = vec![100u8; n];
+    // Frame 2: Pure Gray 150 -> Y = 150
+    let f2 = vec![150u8; n];
+
+    let mad = compute_luminance_mad(&f1, &f2, width, height);
+    assert_eq!(mad, 50.0, "MAD between gray 100 and gray 150 must be exactly 50.0");
+
+    // Identical frames -> MAD = 0.0
+    let mad_zero = compute_luminance_mad(&f1, &f1, width, height);
+    assert_eq!(mad_zero, 0.0, "MAD of identical frames must be 0.0");
+}
+
+#[test]
+fn test_lab_stats_gradient() {
+    let width = 64usize;
+    let height = 64usize;
+    let mut frame = vec![0u8; width * height * 3];
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            frame[idx] = (x * 4) as u8;
+            frame[idx + 1] = (y * 4) as u8;
+            frame[idx + 2] = 128u8;
+        }
+    }
+
+    let stats = downsample_and_compute_lab_stats(&frame, width, height);
+
+    assert!(stats.mean[0] > 0.0 && stats.mean[0] < 100.0, "L mean must be in (0, 100), got {}", stats.mean[0]);
+    assert!(stats.std[0] > 0.0, "L std must be > 0 on gradient, got {}", stats.std[0]);
+    assert!(stats.std[1] > 0.0, "a std must be > 0 on gradient, got {}", stats.std[1]);
+    assert!(stats.std[2] > 0.0, "b std must be > 0 on gradient, got {}", stats.std[2]);
+}
+
+#[test]
+fn test_cut_beat_sync_synthetic() {
+    let fps = 30.0;
+    let beats = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+    // Perfect alignment (within 0.5 frame = ~0.0166s)
+    let cuts_perfect = vec![1.005, 2.008, 4.002];
+    let sync_perfect = compute_cut_beat_sync(&cuts_perfect, &beats, fps);
+    assert_eq!(sync_perfect, 1.0, "All cuts within 0.5 frame must yield 1.0 sync");
+
+    // No alignment (all cuts far from beats)
+    let cuts_off = vec![1.5, 2.5, 3.5];
+    let sync_off = compute_cut_beat_sync(&cuts_off, &beats, fps);
+    assert_eq!(sync_off, 0.0, "All cuts > 0.5 frame from beats must yield 0.0 sync");
+
+    // Partial alignment (2 out of 4 synced = 0.5)
+    let cuts_half = vec![1.005, 1.5, 3.002, 4.5];
+    let sync_half = compute_cut_beat_sync(&cuts_half, &beats, fps);
+    assert_eq!(sync_half, 0.5, "2/4 cuts synced must yield 0.5 sync");
+}
+
+#[test]
+fn test_dump_analysis_schema_serde() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/edit.mp4".to_string(),
+        duration: 10.5,
+        fps: 30.0,
+        cuts: vec![2.0, 5.0, 8.0],
+        scenes: vec![
+            SceneItem { start: 0.0, end: 2.0 },
+            SceneItem { start: 2.0, end: 5.0 },
+            SceneItem { start: 5.0, end: 8.0 },
+            SceneItem { start: 8.0, end: 10.5 },
+        ],
+        beats: BeatResult {
+            bpm: 128.0,
+            beats: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+            downbeats: vec![2.0, 6.0, 10.0],
+        },
+        cut_beat_sync: 66.67,
+        segments: vec![
+            DumpSegment {
+                start: 0.0,
+                end: 2.0,
+                lab: LabStats {
+                    mean: [55.2, 12.4, -8.1],
+                    std: [8.5, 4.2, 3.1],
+                },
+                mad_mean: 14.5,
+                mad_peak: 42.1,
+            },
+        ],
+        json_path: Some("C:/test/analysis.json".to_string()),
+    };
+
+    let json_str = serde_json::to_string(&analysis).expect("Serialization must succeed");
+    let deserialized: DumpAnalysis = serde_json::from_str(&json_str).expect("Deserialization must succeed");
+
+    assert_eq!(deserialized.schema_version, 1);
+    assert_eq!(deserialized.cuts.len(), 3);
+    assert_eq!(deserialized.scenes.len(), 4);
+    assert_eq!(deserialized.beats.bpm, 128.0);
+    assert_eq!(deserialized.cut_beat_sync, 66.67);
+    assert_eq!(deserialized.segments.len(), 1);
+    assert_eq!(deserialized.segments[0].lab.mean[0], 55.2);
+}
+
+#[test]
+fn test_detect_scenes_snaptik_fixture() {
+    let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+    if std::path::Path::new(video_path).exists() {
+        let exe_path = std::env::current_dir().unwrap_or_default().join("binaries").join("scenedetect.exe");
+        if exe_path.exists() || std::path::Path::new(r"C:\Users\cia\Music\cia-app-jugg\src-tauri\binaries\scenedetect.exe").exists() {
+            let bin = if exe_path.exists() {
+                exe_path
+            } else {
+                std::path::PathBuf::from(r"C:\Users\cia\Music\cia-app-jugg\src-tauri\binaries\scenedetect.exe")
+            };
+
+            let mut cmd = std::process::Command::new(bin);
+            cmd.arg(video_path);
+            let out = cmd.output().expect("scenedetect execution failed");
+            assert!(out.status.success(), "scenedetect must exit with 0");
+            let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("Valid JSON");
+            assert!(parsed.get("cuts").is_some());
+        }
+    }
+}
+
+#[test]
+fn test_benchmark_dumper_analysis() {
+    use std::io::Read;
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let video_path = r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    let probe = probe_media_internal(video_path, None).expect("Probe failed");
+    let analysis_fps = probe.fps.min(30.0);
+    let width = 640usize;
+    let height = ((probe.height as f64 * (640.0 / probe.width as f64)).round() as usize) & !1;
+    let frame_bytes = width * height * 3;
+
+    // 1. Measure pure decode time
+    let mut decode_cmd = std::process::Command::new("ffmpeg");
+    decode_cmd.args([
+        "-v", "error",
+        "-i", video_path,
+        "-vf", &format!("fps={},scale={}:{}", analysis_fps, width, height),
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    decode_cmd.creation_flags(CREATE_NO_WINDOW);
+    decode_cmd.stdout(std::process::Stdio::piped());
+
+    let t_dec_start = std::time::Instant::now();
+    let mut decode_child = decode_cmd.spawn().expect("Decode spawn failed");
+    let mut decode_stdout = decode_child.stdout.take().unwrap();
+    let mut buf = vec![0u8; frame_bytes];
+    let mut _decode_frame_count = 0usize;
+    while decode_stdout.read_exact(&mut buf).is_ok() {
+        _decode_frame_count += 1;
+    }
+    let _ = decode_child.wait();
+    let decode_time = t_dec_start.elapsed().as_secs_f64();
+
+    // 2. Measure analysis time (decode + MAD + CIELAB)
+    let mut ana_cmd = std::process::Command::new("ffmpeg");
+    ana_cmd.args([
+        "-v", "error",
+        "-i", video_path,
+        "-vf", &format!("fps={},scale={}:{}", analysis_fps, width, height),
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    ana_cmd.creation_flags(CREATE_NO_WINDOW);
+    ana_cmd.stdout(std::process::Stdio::piped());
+
+    let t_ana_start = std::time::Instant::now();
+    let mut ana_child = ana_cmd.spawn().expect("Ana spawn failed");
+    let mut ana_stdout = ana_child.stdout.take().unwrap();
+    let mut curr_frame = vec![0u8; frame_bytes];
+    let mut prev_frame = vec![0u8; frame_bytes];
+    let mut is_first = true;
+    let mut ana_frame_count = 0usize;
+
+    while ana_stdout.read_exact(&mut curr_frame).is_ok() {
+        let _mad = if is_first {
+            is_first = false;
+            0.0
+        } else {
+            compute_luminance_mad(&curr_frame, &prev_frame, width, height)
+        };
+        let _lab = downsample_and_compute_lab_stats(&curr_frame, width, height);
+        prev_frame.copy_from_slice(&curr_frame);
+        ana_frame_count += 1;
+    }
+    let _ = ana_child.wait();
+    let analysis_time = t_ana_start.elapsed().as_secs_f64();
+
+    let ratio = analysis_time / decode_time.max(0.001);
+    println!(
+        "\n[BENCH] Dumper Profile Pass ({} frames):\n  Pure Decode Time:   {:.3}s\n  Full Analysis Time: {:.3}s\n  Overhead Ratio:     {:.2}x (< 3.0x threshold)\n",
+        ana_frame_count, decode_time, analysis_time, ratio
+    );
+
+    assert!(ratio < 3.0, "Analysis time ({:.3}s) must be < 3x decode time ({:.3}s), ratio was {:.2}x", analysis_time, decode_time, ratio);
+}
+
+#[test]
+fn test_full_dump_pipeline_fixtures() {
+    let fixtures = [
+        r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4",
+        r"C:\Users\cia\Downloads\cut.mp4",
+    ];
+
+    for video_path in fixtures {
+        if !std::path::Path::new(video_path).exists() {
+            println!("\n[FIXTURE] File not found: {}, skipping test.", video_path);
+            continue;
+        }
+
+        println!("\n=======================================================");
+        println!(">>> RUNNING FULL DUMP PIPELINE ON: {}", video_path);
+        println!("=======================================================");
+
+        let t_start = std::time::Instant::now();
+        let res = run_dump_pipeline_internal(None, video_path);
+        let elapsed = t_start.elapsed().as_secs_f64();
+
+        match res {
+            Ok(analysis) => {
+                println!("[DUMP SUCCESS in {:.2}s]", elapsed);
+                println!("  Source:          {}", analysis.source);
+                println!("  Duration:        {:.2}s", analysis.duration);
+                println!("  FPS:             {:.2}", analysis.fps);
+                println!("  Cuts count:      {} -> {:?}", analysis.cuts.len(), analysis.cuts);
+                println!("  Scenes count:    {}", analysis.scenes.len());
+                println!("  BPM:             {:.1}", analysis.beats.bpm);
+                println!("  Beats count:     {}", analysis.beats.beats.len());
+                println!("  Downbeats count: {}", analysis.beats.downbeats.len());
+                println!("  Cut-Beat Sync:   {:.1}%", analysis.cut_beat_sync * 100.0);
+                println!("  Segments count:  {}", analysis.segments.len());
+                if let Some(first_seg) = analysis.segments.first() {
+                    println!("  First segment:   [{:.2}s - {:.2}s] LAB mean: {:?}, std: {:?}, MAD mean: {:.2}, peak: {:.2}",
+                        first_seg.start, first_seg.end, first_seg.lab.mean, first_seg.lab.std, first_seg.mad_mean, first_seg.mad_peak
+                    );
+                }
+                println!("  JSON saved to:   {:?}", analysis.json_path);
+
+                assert_eq!(analysis.schema_version, 1);
+                assert!(analysis.duration > 0.0);
+                assert!(analysis.json_path.is_some());
+                if let Some(json_p) = analysis.json_path {
+                    assert!(std::path::Path::new(&json_p).exists(), "Saved JSON file must exist");
+                }
+            }
+            Err(e) => {
+                panic!("Dump pipeline failed for {}: {}", video_path, e);
+            }
+        }
+    }
+}

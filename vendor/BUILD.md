@@ -1,8 +1,10 @@
-# Rebuilding `beat_this` Sidecar
+# Rebuilding Sidecar Binaries
 
-This guide documents the complete reproduction steps to build `beat_this.exe`, `beat_this_api.dll`, and retrieve `beat_this.onnx` from upstream source.
+This guide documents the complete reproduction steps to build `beat_this` and `scenedetect` sidecars from upstream source.
 
 ---
+
+# Part A: `beat_this` Sidecar
 
 ## 1. Upstream Source Repository & Commit
 
@@ -74,3 +76,36 @@ The compilation produces the following binaries in `build/Release`:
 - `onnx/beat_this.onnx` $\rightarrow$ Copied as `src-tauri/binaries/beat_this.onnx`
 
 All 4 files must reside together in `src-tauri/binaries/` for runtime execution.
+
+---
+
+# Part B: `scenedetect` Sidecar
+
+## 1. Upstream Dependencies & Script
+
+- **Library**: `scenedetect` (v0.7.1+) with `opencv-python`
+- **Source CLI Script**: `vendor/scenedetect_cli.py`
+
+## 2. Environment Setup
+
+Prerequisites: Python 3.10+ (64-bit).
+
+```powershell
+# Install PySceneDetect, OpenCV, and PyInstaller
+pip install "scenedetect" opencv-python pyinstaller
+```
+
+## 3. PyInstaller Standalone Compilation
+
+```powershell
+# From the cia-app-jugg repository root:
+pyinstaller --onefile --clean --name scenedetect vendor/scenedetect_cli.py
+```
+
+## 4. Artifact Deployment
+
+The compilation produces `dist/scenedetect.exe`:
+
+- `dist/scenedetect.exe` $\rightarrow$ Copied as `src-tauri/binaries/scenedetect.exe`
+
+Temporary directories `build/`, `dist/`, and `scenedetect.spec` may then be deleted.

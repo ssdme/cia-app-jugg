@@ -63,6 +63,13 @@
   let bitrateValue = $state(12); // min 5, max 50, step 1, default 12
   let selectedFormat = $state('MP4'); // 'MP4' | 'MKV' | 'WEBM'
 
+  // DUMPER Page State
+  let dumperVideoPath = $state('');
+  let dumperVideoError = $state('');
+  let dumperProgress = $state(null); // { phase: 'SCENES' | 'BEATS' | 'PROFILES', percent: 0..100, message: '' }
+  let isDumping = $state(false);
+  let dumperResult = $state(null);
+
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
   let availableEffects = $state([]);
@@ -180,7 +187,7 @@
   let allZonesFilled = $derived(Boolean(scenePath && drumsPath && audioPath));
 
   const ABOUT_LINKS = [
-    { name: 'beat_this (CP-JKU)', detail: 'Beat/downbeat tracking', mark: 'beat', url: 'https://github.com/CP-JKU/beat_this' },
+    { name: 'beat_this (CP-JKU)', detail: 'Beat/downbeat tracking', mark: 'beat', url: 'https://github.com/CPJKU/beat_this' },
     { name: 'ONNX Runtime', detail: 'Neural inference engine', mark: 'onnx', url: 'https://github.com/microsoft/onnxruntime' },
     { name: 'Symphonia', detail: 'Pure-Rust audio decoding', mark: 'symphonia', url: 'https://github.com/pdeljanov/Symphonia' },
     { name: 'mp4', detail: 'Pure-Rust media probing', mark: 'mp4', url: 'https://github.com/alfg/mp4-rust' },
@@ -211,7 +218,7 @@
         sceneError = '';
         sceneInfo = null;
       } else {
-        sceneError = 'Expected: video â€” mp4/mkv/webm/mov/avi';
+        sceneError = 'Expected: video — mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -222,7 +229,7 @@
         downbeats = null;
         bpm = null;
       } else {
-        drumsError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
+        drumsError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
       }
     } else if (zone === 'audio') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -230,7 +237,16 @@
         audioError = '';
         audioInfo = null;
       } else {
-        audioError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
+        audioError = 'Expected: audio — mp3/wav/flac/m4a/ogg';
+      }
+    } else if (zone === 'dumper') {
+      if (VIDEO_EXTENSIONS.includes(ext)) {
+        dumperVideoPath = path;
+        dumperVideoError = '';
+        dumperResult = null;
+        dumperProgress = null;
+      } else {
+        dumperVideoError = 'Expected: video — mp4/mkv/webm/mov/avi';
       }
     }
   }
@@ -252,13 +268,18 @@
       audioPath = '';
       audioError = '';
       audioInfo = null;
+    } else if (zone === 'dumper') {
+      dumperVideoPath = '';
+      dumperVideoError = '';
+      dumperResult = null;
+      dumperProgress = null;
     }
   }
 
   async function handlePickFile(zone, event) {
     if (event) event.stopPropagation();
     try {
-      const kind = zone === 'scene' ? 'video' : 'audio';
+      const kind = (zone === 'scene' || zone === 'dumper') ? 'video' : 'audio';
       const picked = await invoke('pick_file', { kind });
       if (picked) {
         validateAndSetFile(zone, picked);
@@ -480,6 +501,35 @@
     }
   }
 
+  async function runDumperPipeline() {
+    if (!dumperVideoPath || isDumping) return;
+    isDumping = true;
+    dumperProgress = { phase: 'SCENES', percent: 5, message: 'Starting analysis pipeline...' };
+    dumperResult = null;
+    try {
+      const res = await invoke('run_dump_pipeline', { videoPath: dumperVideoPath });
+      dumperResult = res;
+      showToast('Analysis completed successfully', 'success');
+    } catch (err) {
+      console.error('Dumper error:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Analysis failed: ${msg}`, 'error');
+    } finally {
+      isDumping = false;
+    }
+  }
+
+  async function handleOpenDumperFolder(path) {
+    if (!path) return;
+    try {
+      await invoke('open_target_folder', { path });
+      showToast('Opening dump folder in Explorer', 'info');
+    } catch (e) {
+      console.error('Failed to open folder:', e);
+      showToast(`Unable to open folder: ${e}`, 'error');
+    }
+  }
+
   async function handleOpenTargetFolder() {
     if (!renderOutputMp4) return;
     try {
@@ -648,10 +698,22 @@
       console.error('Failed to listen to render-progress:', e);
     }
 
+    let unlistenDump = null;
+    try {
+      unlistenDump = await listen('dump-progress', (event) => {
+        if (event.payload) {
+          dumperProgress = event.payload;
+        }
+      });
+    } catch (e) {
+      console.error('Failed to listen to dump-progress:', e);
+    }
+
     checkForAppUpdates(false);
 
     return () => {
       if (unlistenProgress) unlistenProgress();
+      if (unlistenDump) unlistenDump();
     };
   });
 </script>
@@ -675,6 +737,7 @@
 
   <nav class="tab-bar">
     <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
+    <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>DUMPER</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -1195,6 +1258,134 @@
                   </button>
                 </div>
               {/if}
+            </div>
+          </section>
+
+        {:else if activePage === 'dumper'}
+          <section class="dumper-page" aria-label="Dumper analysis page">
+            <div class="dumper-container">
+              <!-- DROP ZONE FOR EDIT VIDEO -->
+              <div
+                class="remap-drop-zone dumper-drop-zone"
+                class:filled={Boolean(dumperVideoPath)}
+                class:has-error={Boolean(dumperVideoError)}
+                class:hovering={hoveredZone === 'dumper'}
+                data-zone="dumper"
+                ondragenter={(e) => { e.preventDefault(); hoveredZone = 'dumper'; }}
+                ondragover={(e) => { e.preventDefault(); hoveredZone = 'dumper'; }}
+                ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'dumper') hoveredZone = null; }}
+                ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                onclick={() => !dumperVideoPath && handlePickFile('dumper')}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !dumperVideoPath && handlePickFile('dumper')}
+                role="button"
+                tabindex="0"
+              >
+                {#if dumperVideoPath}
+                  <div class="zone-filled-content">
+                    <div class="zone-header">
+                      <span class="zone-tag">EDIT VIDEO</span>
+                      <span class="pro-dot active"></span>
+                    </div>
+                    <div class="zone-title">TARGET EDIT</div>
+                    <div class="zone-filename mono" title={dumperVideoPath}>{getFileName(dumperVideoPath)}</div>
+                    <div class="zone-actions">
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('dumper', e)} disabled={isDumping}>REPLACE</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('dumper', e)} disabled={isDumping}>REMOVE</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="zone-empty-content">
+                    <p class="zone-prompt">DRAG EDIT VIDEO</p>
+                    <span class="zone-sublabel">FINISHED EDIT (MP4, MKV, WEBM, MOV, AVI)</span>
+                    {#if dumperVideoError}
+                      <span class="zone-error-msg">{dumperVideoError}</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- ACTION & PROGRESS & RESULTS -->
+              <div class="dumper-actions-panel">
+                {#if !isDumping && !dumperResult}
+                  <button
+                    class="btn-run-process dumper-run-btn"
+                    disabled={!dumperVideoPath}
+                    onclick={runDumperPipeline}
+                  >
+                    RUN ANALYSIS &gt;
+                  </button>
+                {/if}
+
+                <!-- PROGRESS CARD -->
+                {#if isDumping && dumperProgress}
+                  <div class="render-progress-card dumper-progress-card">
+                    <div class="render-progress-header">
+                      <div class="phase-badge-row">
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'SCENES'}>1. SCENES</span>
+                        <span class="render-phase-arrow">&gt;</span>
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'BEATS'}>2. BEATS</span>
+                        <span class="render-phase-arrow">&gt;</span>
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'PROFILES'}>3. PROFILES</span>
+                      </div>
+                      <span class="render-percent mono">{dumperProgress.percent}%</span>
+                    </div>
+
+                    <div class="progress-bar-container">
+                      <div class="progress-bar-fill" style={`width: ${dumperProgress.percent}%`}></div>
+                    </div>
+
+                    <div class="render-status-msg mono">
+                      <span class="spinner-inline"></span>
+                      {dumperProgress.message}
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- RESULT CARD -->
+                {#if dumperResult}
+                  <div class="dumper-result-card">
+                    <div class="result-header">
+                      <div class="result-title-row">
+                        <span class="zone-tag">ANALYSIS RESULT</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <span class="result-timestamp mono">SCHEMA V{dumperResult.schemaVersion}</span>
+                    </div>
+
+                    <div class="dumper-stats-grid">
+                      <div class="stat-box">
+                        <span class="stat-label">DURATION</span>
+                        <span class="stat-val mono">{dumperResult.duration}s</span>
+                      </div>
+                      <div class="stat-box">
+                        <span class="stat-label">CUTS / SCENES</span>
+                        <span class="stat-val mono">{dumperResult.cuts.length} cuts ({dumperResult.scenes.length} scenes)</span>
+                      </div>
+                      <div class="stat-box">
+                        <span class="stat-label">DETECTED BPM</span>
+                        <span class="stat-val mono">{dumperResult.beats.bpm > 0 ? dumperResult.beats.bpm.toFixed(1) : 'N/A'}</span>
+                      </div>
+                      <div class="stat-box">
+                        <span class="stat-label">CUT-BEAT SYNC</span>
+                        <span class="stat-val mono highlight-sync">{(dumperResult.cutBeatSync * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+
+                    <div class="result-footer-row">
+                      <div class="result-path-box mono" title={dumperResult.jsonPath}>
+                        <span class="result-path-label">JSON:</span>
+                        <span class="result-path-text">{dumperResult.jsonPath || 'Saved in app_data/dump/'}</span>
+                      </div>
+                      <div class="result-actions">
+                        {#if dumperResult.jsonPath}
+                          <button class="btn-zone-action" onclick={() => handleOpenDumperFolder(dumperResult.jsonPath)}>SHOW IN EXPLORER</button>
+                        {/if}
+                        <button class="btn-zone-action" onclick={() => { dumperResult = null; dumperProgress = null; }}>NEW ANALYSIS</button>
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              </div>
             </div>
           </section>
 
@@ -3342,6 +3533,148 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 8px 20px;
+  }
+
+  /* ─── DUMPER PAGE ───────────────────────────────────────────────────────── */
+  .dumper-page {
+    width: min(100%, 780px);
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 100%;
+    justify-content: center;
+  }
+
+  .dumper-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+  }
+
+  .dumper-drop-zone {
+    min-height: 160px;
+    max-height: 200px;
+    width: 100%;
+  }
+
+  .dumper-actions-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .dumper-run-btn {
+    width: 100%;
+    padding: 12px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  .dumper-progress-card {
+    padding: 12px 16px;
+    gap: 10px;
+  }
+
+  .dumper-result-card {
+    background: #09090d;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #1c1c22;
+    padding-bottom: 8px;
+  }
+
+  .result-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .result-timestamp {
+    font-size: 9px;
+    color: #71717a;
+    letter-spacing: 0.05em;
+  }
+
+  .dumper-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+
+  .stat-box {
+    background: #0d0d12;
+    border: 1px solid #1c1c24;
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stat-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8.5px;
+    font-weight: 700;
+    color: #71717a;
+    letter-spacing: 0.05em;
+  }
+
+  .stat-val {
+    font-size: 12px;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
+  .highlight-sync {
+    color: #4ade80;
+  }
+
+  .result-footer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid #18181e;
+  }
+
+  .result-path-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    font-size: 9.5px;
+    color: #a1a1aa;
+    flex: 1;
+  }
+
+  .result-path-label {
+    color: #52525b;
+    font-weight: 700;
+  }
+
+  .result-path-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .result-actions {
+    display: flex;
+    gap: 8px;
   }
 </style>
 
