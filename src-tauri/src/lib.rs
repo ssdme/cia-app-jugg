@@ -5,14 +5,14 @@ use tauri::{Emitter, Manager};
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/ssdme/cia-app-jugg";
 const ABOUT_URLS: [&str; 9] = [
     PROJECT_REPOSITORY_URL,
-    "https://github.com/hzwer/Practical-RIFE",
-    "https://github.com/couleur-tweak-tips/smoothie-rs",
-    "https://github.com/vapoursynth/vapoursynth",
+    "https://github.com/CP-JKU/beat_this",
+    "https://github.com/microsoft/onnxruntime",
+    "https://github.com/pdeljanov/Symphonia",
+    "https://github.com/alfg/mp4-rust",
     "https://github.com/FFmpeg/FFmpeg",
     "https://github.com/tauri-apps/tauri",
     "https://github.com/sveltejs/svelte",
     "https://github.com/IBM/plex",
-    "https://github.com/n00mkrad/flowframes",
 ];
 
 #[cfg(target_os = "windows")]

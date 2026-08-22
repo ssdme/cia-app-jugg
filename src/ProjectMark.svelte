@@ -3,14 +3,19 @@
 </script>
 
 <svg class="project-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
-  {#if kind === 'rife'}
-    <rect x="7" y="12" width="18" height="18" rx="3" />
-    <rect x="23" y="18" width="18" height="18" rx="3" />
-    <path d="M15 21h18M24 12v24" />
-  {:else if kind === 'smoothie'}
-    <path d="M8 15c8-8 24-8 32 0M8 24c8 8 24 8 32 0M8 33c8-8 24-8 32 0" />
-  {:else if kind === 'vapoursynth'}
-    <path d="m8 10 16 28L40 10M16 10l8 14 8-14" />
+  {#if kind === 'beat'}
+    <path d="M8 24h6l4-12 6 24 6-18 4 12 4-6h6" />
+  {:else if kind === 'onnx'}
+    <circle cx="14" cy="14" r="4" />
+    <circle cx="34" cy="14" r="4" />
+    <circle cx="24" cy="34" r="4" />
+    <path d="M17 16l4 15M31 16l-4 15M18 14h12" />
+  {:else if kind === 'symphonia'}
+    <path d="M16 35a4 4 0 1 0 0-8 4 4 0 0 0-4 4v-16l18-4v16a4 4 0 1 0 0-8 4 4 0 0 0-4 4" />
+    <path d="M12 15l18-4" />
+  {:else if kind === 'mp4'}
+    <rect x="8" y="10" width="32" height="28" rx="4" />
+    <path d="m20 18 12 6-12 6z" fill="currentColor" stroke="none" />
   {:else if kind === 'ffmpeg'}
     <path d="M8 15h32M8 24h32M8 33h21" />
     <path d="m31 27 9-3-9-3z" fill="currentColor" stroke="none" />
@@ -24,10 +29,6 @@
   {:else if kind === 'plex'}
     <path d="M12 39V9h13c7 0 11 4 11 10s-4 10-11 10H12" />
     <path d="M25 29 38 39" />
-  {:else if kind === 'flowframes'}
-    <rect x="8" y="10" width="22" height="22" rx="3" />
-    <rect x="18" y="18" width="22" height="22" rx="3" />
-    <path d="m24 24 7 5-7 5z" fill="currentColor" stroke="none" />
   {/if}
 </svg>
 

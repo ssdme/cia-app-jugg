@@ -180,14 +180,14 @@
   let allZonesFilled = $derived(Boolean(scenePath && drumsPath && audioPath));
 
   const ABOUT_LINKS = [
-    { name: 'Practical-RIFE', detail: 'Frame interpolation', mark: 'rife', url: 'https://github.com/hzwer/Practical-RIFE' },
-    { name: 'smoothie-rs', detail: 'Frame blending', mark: 'smoothie', url: 'https://github.com/couleur-tweak-tips/smoothie-rs' },
-    { name: 'VapourSynth', detail: 'Video processing', mark: 'vapoursynth', url: 'https://github.com/vapoursynth/vapoursynth' },
+    { name: 'beat_this (CP-JKU)', detail: 'Beat/downbeat tracking', mark: 'beat', url: 'https://github.com/CP-JKU/beat_this' },
+    { name: 'ONNX Runtime', detail: 'Neural inference engine', mark: 'onnx', url: 'https://github.com/microsoft/onnxruntime' },
+    { name: 'Symphonia', detail: 'Pure-Rust audio decoding', mark: 'symphonia', url: 'https://github.com/pdeljanov/Symphonia' },
+    { name: 'mp4', detail: 'Pure-Rust media probing', mark: 'mp4', url: 'https://github.com/alfg/mp4-rust' },
     { name: 'FFmpeg', detail: 'Media tooling', mark: 'ffmpeg', url: 'https://github.com/FFmpeg/FFmpeg' },
     { name: 'Tauri', detail: 'Desktop runtime', mark: 'tauri', url: 'https://github.com/tauri-apps/tauri' },
     { name: 'Svelte', detail: 'Interface framework', mark: 'svelte', url: 'https://github.com/sveltejs/svelte' },
-    { name: 'IBM Plex', detail: 'Interface typography', mark: 'plex', url: 'https://github.com/IBM/plex' },
-    { name: 'Flowframes', detail: 'Workflow reference', mark: 'flowframes', url: 'https://github.com/n00mkrad/flowframes' }
+    { name: 'IBM Plex', detail: 'Interface typography', mark: 'plex', url: 'https://github.com/IBM/plex' }
   ];
   const PROJECT_REPOSITORY_URL = 'https://github.com/ssdme/cia-app-jugg';
 
