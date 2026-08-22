@@ -1325,7 +1325,11 @@
                         <span class="render-phase-arrow">&gt;</span>
                         <span class="render-phase-badge" class:active={dumperProgress.phase === 'BEATS'}>2. BEATS</span>
                         <span class="render-phase-arrow">&gt;</span>
-                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'PROFILES'}>3. PROFILES</span>
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'MOTION'}>3. MOTION</span>
+                        <span class="render-phase-arrow">&gt;</span>
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'PROFILES'}>4. PROFILES</span>
+                        <span class="render-phase-arrow">&gt;</span>
+                        <span class="render-phase-badge" class:active={dumperProgress.phase === 'REPORT'}>5. REPORT</span>
                       </div>
                       <span class="render-percent mono">{dumperProgress.percent}%</span>
                     </div>
@@ -1347,6 +1351,9 @@
                     <div class="result-header">
                       <div class="result-title-row">
                         <span class="zone-tag">ANALYSIS RESULT</span>
+                        {#if dumperResult.detectedStyle}
+                          <span class="style-badge mono">{dumperResult.detectedStyle.styleName.toUpperCase()} ({(dumperResult.detectedStyle.confidence * 100).toFixed(0)}%)</span>
+                        {/if}
                         <span class="pro-dot active"></span>
                       </div>
                       <span class="result-timestamp mono">SCHEMA V{dumperResult.schemaVersion}</span>
@@ -1366,14 +1373,26 @@
                         <span class="stat-val mono">{dumperResult.beats.bpm > 0 ? dumperResult.beats.bpm.toFixed(1) : 'N/A'}</span>
                       </div>
                       <div class="stat-box">
-                        <span class="stat-label">CUT-BEAT SYNC</span>
-                        <span class="stat-val mono highlight-sync">{(dumperResult.cutBeatSync * 100).toFixed(0)}%</span>
+                        <span class="stat-label">CUT-BEAT SYNC (±60ms)</span>
+                        <span class="stat-val mono highlight-sync">{dumperResult.syncNa ? 'N/A' : `${(dumperResult.cutBeatSync * 100).toFixed(1)}%`}</span>
                       </div>
+                      {#if dumperResult.oneFramers}
+                        <div class="stat-box">
+                          <span class="stat-label">ONE-FRAMERS</span>
+                          <span class="stat-val mono">{dumperResult.oneFramers.length} detected</span>
+                        </div>
+                      {/if}
+                      {#if dumperResult.detectedStyle}
+                        <div class="stat-box">
+                          <span class="stat-label">STYLE REASONS</span>
+                          <span class="stat-val mono text-xs">{dumperResult.detectedStyle.justifications.slice(0, 2).join(' · ')}</span>
+                        </div>
+                      {/if}
                     </div>
 
                     <div class="result-footer-row">
                       <div class="result-path-box mono" title={dumperResult.jsonPath}>
-                        <span class="result-path-label">JSON:</span>
+                        <span class="result-path-label">DUMP:</span>
                         <span class="result-path-text">{dumperResult.jsonPath || 'Saved in app_data/dump/'}</span>
                       </div>
                       <div class="result-actions">

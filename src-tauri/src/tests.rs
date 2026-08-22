@@ -1819,23 +1819,21 @@ fn test_lab_stats_gradient() {
 
 #[test]
 fn test_cut_beat_sync_synthetic() {
-    let fps = 30.0;
     let beats = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
-    // Perfect alignment (within 0.5 frame = ~0.0166s)
-    let cuts_perfect = vec![1.005, 2.008, 4.002];
-    let sync_perfect = compute_cut_beat_sync(&cuts_perfect, &beats, fps);
-    assert_eq!(sync_perfect, 1.0, "All cuts within 0.5 frame must yield 1.0 sync");
+    // 0 cuts -> (0.0, true)
+    let (sync_empty, is_na) = compute_cut_beat_sync(&[], &beats);
+    assert_eq!(sync_empty, 0.0);
+    assert!(is_na);
 
-    // No alignment (all cuts far from beats)
-    let cuts_off = vec![1.5, 2.5, 3.5];
-    let sync_off = compute_cut_beat_sync(&cuts_off, &beats, fps);
-    assert_eq!(sync_off, 0.0, "All cuts > 0.5 frame from beats must yield 0.0 sync");
-
-    // Partial alignment (2 out of 4 synced = 0.5)
-    let cuts_half = vec![1.005, 1.5, 3.002, 4.5];
-    let sync_half = compute_cut_beat_sync(&cuts_half, &beats, fps);
-    assert_eq!(sync_half, 0.5, "2/4 cuts synced must yield 0.5 sync");
+    // Cuts within +/- 60 ms vs outside +/- 60 ms:
+    // cut 1: 1.03 (delta 30ms <= 60ms) -> synced
+    // cut 2: 2.05 (delta 50ms <= 60ms) -> synced
+    // cut 3: 3.10 (delta 100ms > 60ms) -> NOT synced
+    let cuts = vec![1.03, 2.05, 3.10];
+    let (sync, is_na) = compute_cut_beat_sync(&cuts, &beats);
+    assert!(!is_na);
+    assert_eq!(sync, 0.6667); // 2 out of 3 = 0.6667
 }
 
 #[test]
@@ -1844,7 +1842,7 @@ fn test_dump_analysis_schema_serde() {
         schema_version: 1,
         source: "C:/test/edit.mp4".to_string(),
         duration: 10.5,
-        fps: 30.0,
+        fps: 60.0,
         cuts: vec![2.0, 5.0, 8.0],
         scenes: vec![
             SceneItem { start: 0.0, end: 2.0 },
@@ -1857,7 +1855,14 @@ fn test_dump_analysis_schema_serde() {
             beats: vec![2.0, 4.0, 6.0, 8.0, 10.0],
             downbeats: vec![2.0, 6.0, 10.0],
         },
-        cut_beat_sync: 66.67,
+        cut_beat_sync: 0.6667,
+        sync_na: false,
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            confidence: 0.90,
+            justifications: vec!["High shake energy".to_string()],
+        },
+        one_framers: vec![1.5, 4.2],
         segments: vec![
             DumpSegment {
                 start: 0.0,
@@ -1868,9 +1873,20 @@ fn test_dump_analysis_schema_serde() {
                 },
                 mad_mean: 14.5,
                 mad_peak: 42.1,
+                motion: Some(SegmentMotion {
+                    shake_energy: 0.025,
+                    zoom_presence: true,
+                    mean_divergence: 0.012,
+                    mean_curl: 0.002,
+                }),
+                one_framer_count: 1,
+                speed_hint: "normal".to_string(),
             },
         ],
+        motion_warning: None,
         json_path: Some("C:/test/analysis.json".to_string()),
+        report_path: Some("C:/test/edit_report.md".to_string()),
+        reusable_project_path: Some("C:/test/reusable_project.json".to_string()),
     };
 
     let json_str = serde_json::to_string(&analysis).expect("Serialization must succeed");
@@ -1880,9 +1896,202 @@ fn test_dump_analysis_schema_serde() {
     assert_eq!(deserialized.cuts.len(), 3);
     assert_eq!(deserialized.scenes.len(), 4);
     assert_eq!(deserialized.beats.bpm, 128.0);
-    assert_eq!(deserialized.cut_beat_sync, 66.67);
+    assert_eq!(deserialized.cut_beat_sync, 0.6667);
+    assert!(!deserialized.sync_na);
+    assert_eq!(deserialized.detected_style.style_name, "jugg");
+    assert_eq!(deserialized.one_framers.len(), 2);
     assert_eq!(deserialized.segments.len(), 1);
     assert_eq!(deserialized.segments[0].lab.mean[0], 55.2);
+    assert!(deserialized.segments[0].motion.is_some());
+}
+
+#[test]
+fn test_motion_extraction_synthetic() {
+    // Synthetic TRF line with median translation of dx=10, dy=-5 on 1000x500 frame
+    let trf_sample = "VID.STAB 1\nFrame 1 (List 0 [])\nFrame 2 (List 3 [(LM 9 -5 400 200 32 0.5 0.5),(LM 10 -5 500 250 32 0.5 0.5),(LM 11 -4 600 300 32 0.5 0.5)])";
+    let frames = parse_trf_content(trf_sample, 1000.0, 500.0, 30.0);
+    assert_eq!(frames.len(), 2);
+
+    // Frame 1 is empty
+    assert_eq!(frames[0].tx, 0.0);
+    assert_eq!(frames[0].ty, 0.0);
+
+    // Frame 2: median dx=10 -> tx = 10/1000 = 0.01, median dy=-5 -> ty = -5/500 = -0.01
+    assert!((frames[1].tx - 0.01).abs() < 1e-4);
+    assert!((frames[1].ty - (-0.01)).abs() < 1e-4);
+}
+
+#[test]
+fn test_one_framer_detection_synthetic() {
+    // Baseline ~5.0 with an isolated spike to 45.0 at index 5 (t=2.5s)
+    let mad_series = vec![5.0, 5.2, 4.8, 5.1, 5.0, 45.0, 5.2, 5.0, 4.9, 5.1];
+    let timestamps = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5];
+
+    let one_framers = detect_one_framers(&mad_series, &timestamps);
+    assert_eq!(one_framers.len(), 1);
+    assert!((one_framers[0] - 2.5).abs() < 1e-4);
+}
+
+#[test]
+fn test_style_classifier_5_archetypes() {
+    // 1. basic/clean
+    let feat_basic = ClassifierFeatures {
+        cuts_count: 1,
+        cut_density: 0.1,
+        shake_energy: 0.005,
+        one_framer_density: 0.0,
+        sync: 0.0,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_basic).style_name, "basic/clean");
+
+    // 2. jugg
+    let feat_jugg = ClassifierFeatures {
+        cuts_count: 8,
+        cut_density: 0.8,
+        shake_energy: 0.020,
+        one_framer_density: 0.40,
+        sync: 0.65,
+        zoom_presence: true,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_jugg).style_name, "jugg");
+
+    // 3. glitch-leaning
+    let feat_glitch = ClassifierFeatures {
+        cuts_count: 20,
+        cut_density: 2.2,
+        shake_energy: 0.015,
+        one_framer_density: 0.20,
+        sync: 0.30,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_glitch).style_name, "glitch-leaning");
+
+    // 4. velocity/flow
+    let feat_velocity = ClassifierFeatures {
+        cuts_count: 4,
+        cut_density: 0.4,
+        shake_energy: 0.008,
+        one_framer_density: 0.05,
+        sync: 0.70,
+        zoom_presence: false,
+        slowdown_presence: true,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_velocity).style_name, "velocity/flow");
+
+    // 5. hybrid/unclassified
+    let feat_hybrid = ClassifierFeatures {
+        cuts_count: 5,
+        cut_density: 0.5,
+        shake_energy: 0.008,
+        one_framer_density: 0.05,
+        sync: 0.20,
+        zoom_presence: false,
+        slowdown_presence: false,
+        motion_available: true,
+    };
+    assert_eq!(classify_style(&feat_hybrid).style_name, "hybrid/unclassified");
+}
+
+#[test]
+fn test_markdown_report_mandatory_sections() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/edit.mp4".to_string(),
+        duration: 12.0,
+        fps: 30.0,
+        cuts: vec![2.0, 6.0],
+        scenes: vec![
+            SceneItem { start: 0.0, end: 2.0 },
+            SceneItem { start: 2.0, end: 6.0 },
+            SceneItem { start: 6.0, end: 12.0 },
+        ],
+        beats: BeatResult { bpm: 120.0, beats: vec![1.0, 2.0, 3.0], downbeats: vec![1.0] },
+        cut_beat_sync: 0.50,
+        sync_na: false,
+        detected_style: StyleDecision {
+            style_name: "velocity/flow".to_string(),
+            confidence: 0.85,
+            justifications: vec!["Speed ramping detected".to_string()],
+        },
+        one_framers: vec![1.5],
+        segments: vec![
+            DumpSegment {
+                start: 0.0,
+                end: 2.0,
+                lab: LabStats { mean: [50.0, 0.0, 0.0], std: [10.0, 2.0, 2.0] },
+                mad_mean: 8.0,
+                mad_peak: 20.0,
+                motion: Some(SegmentMotion { shake_energy: 0.010, zoom_presence: false, mean_divergence: 0.0, mean_curl: 0.0 }),
+                one_framer_count: 1,
+                speed_hint: "normal".to_string(),
+            }
+        ],
+        motion_warning: None,
+        json_path: Some("C:/test/analysis.json".to_string()),
+        report_path: Some("C:/test/edit_report.md".to_string()),
+        reusable_project_path: Some("C:/test/reusable_project.json".to_string()),
+    };
+
+    let project = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/edit.mp4".to_string(),
+        beats: analysis.beats.clone(),
+        cuts: analysis.cuts.clone(),
+        segments: vec![],
+        suggested_style: "velocity/flow".to_string(),
+        fps_suggestion: 30.0,
+    };
+
+    let report = generate_markdown_report(&analysis, &project);
+
+    // Verify all mandatory section headers exist in generated report
+    assert!(report.contains("# Dump Report"));
+    assert!(report.contains("## Detected style"));
+    assert!(report.contains("## Cuts & sync"));
+    assert!(report.contains("## Beats"));
+    assert!(report.contains("## Segments (signatures)"));
+    assert!(report.contains("## Color signatures"));
+    assert!(report.contains("## One-framers"));
+    assert!(report.contains("## Motion"));
+    assert!(report.contains("## Reusable vs descriptive"));
+}
+
+#[test]
+fn test_reusable_project_json_schema() {
+    let proj = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: "C:/test/cut.mp4".to_string(),
+        beats: BeatResult { bpm: 115.4, beats: vec![0.5, 1.0], downbeats: vec![0.5] },
+        cuts: vec![0.68, 2.57],
+        segments: vec![
+            ReusableSegment {
+                start: 0.0,
+                end: 0.68,
+                lab_mean: [46.5, -13.2, 9.0],
+                lab_std: [22.2, 19.6, 25.1],
+                speed_hint: "normal".to_string(),
+            }
+        ],
+        suggested_style: "jugg".to_string(),
+        fps_suggestion: 60.0,
+    };
+
+    let json_str = serde_json::to_string(&proj).expect("Serialize ReusableProject");
+    let deserialized: ReusableProject = serde_json::from_str(&json_str).expect("Deserialize ReusableProject");
+
+    assert_eq!(deserialized.schema_version, "dumper_project_v1");
+    assert_eq!(deserialized.suggested_style, "jugg");
+    assert_eq!(deserialized.fps_suggestion, 60.0);
+    assert_eq!(deserialized.segments.len(), 1);
+    assert_eq!(deserialized.segments[0].speed_hint, "normal");
 }
 
 #[test]
@@ -1995,6 +2204,48 @@ fn test_benchmark_dumper_analysis() {
 }
 
 #[test]
+fn test_benchmark_motion_pass() {
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let video_path = r"C:\Users\cia\Downloads\cut.mp4";
+    if !std::path::Path::new(video_path).exists() {
+        return;
+    }
+
+    let temp_trf = std::env::temp_dir().join(format!("bench_motion_{}.trf", std::process::id()));
+    let temp_trf_str = temp_trf.to_string_lossy().replace('\\', "/").replace(':', "\\:");
+
+    let t_start = std::time::Instant::now();
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args([
+        "-v", "error",
+        "-y",
+        "-i", video_path,
+        "-vf", &format!("scale=640:-2,fps=30,vidstabdetect=result='{}':fileformat=ascii:shakiness=5:accuracy=9:stepsize=12", temp_trf_str),
+        "-an",
+        "-f", "null",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let status = cmd.status().expect("FFmpeg motion bench command failed");
+    let motion_time = t_start.elapsed().as_secs_f64();
+
+    if temp_trf.exists() {
+        let _ = std::fs::remove_file(&temp_trf);
+    }
+
+    assert!(status.success(), "Motion command must succeed");
+    println!(
+        "\n[BENCH] Motion Extraction Pass on cut.mp4:\n  Motion Time: {:.3}s (< 2x T23 analysis threshold ~30s)\n",
+        motion_time
+    );
+    assert!(motion_time < 30.0, "Motion extraction time ({:.3}s) must be < 30s", motion_time);
+}
+
+#[test]
 fn test_full_dump_pipeline_fixtures() {
     let fixtures = [
         r"C:\Users\cia\Downloads\jugg video & audio tester\snaptik_7674387013243538721_v3.mp4",
@@ -2018,28 +2269,43 @@ fn test_full_dump_pipeline_fixtures() {
         match res {
             Ok(analysis) => {
                 println!("[DUMP SUCCESS in {:.2}s]", elapsed);
-                println!("  Source:          {}", analysis.source);
-                println!("  Duration:        {:.2}s", analysis.duration);
-                println!("  FPS:             {:.2}", analysis.fps);
-                println!("  Cuts count:      {} -> {:?}", analysis.cuts.len(), analysis.cuts);
-                println!("  Scenes count:    {}", analysis.scenes.len());
-                println!("  BPM:             {:.1}", analysis.beats.bpm);
-                println!("  Beats count:     {}", analysis.beats.beats.len());
-                println!("  Downbeats count: {}", analysis.beats.downbeats.len());
-                println!("  Cut-Beat Sync:   {:.1}%", analysis.cut_beat_sync * 100.0);
-                println!("  Segments count:  {}", analysis.segments.len());
+                println!("  Source:            {}", analysis.source);
+                println!("  Duration:          {:.2}s", analysis.duration);
+                println!("  FPS:               {:.2}", analysis.fps);
+                println!("  Detected Style:    {} (Confidence: {:.0}%)", analysis.detected_style.style_name, analysis.detected_style.confidence * 100.0);
+                println!("  Justifications:    {:?}", analysis.detected_style.justifications);
+                println!("  Cuts count:        {} -> {:?}", analysis.cuts.len(), analysis.cuts);
+                println!("  Scenes count:      {}", analysis.scenes.len());
+                println!("  BPM:               {:.1}", analysis.beats.bpm);
+                println!("  Beats count:       {}", analysis.beats.beats.len());
+                println!("  Downbeats count:   {}", analysis.beats.downbeats.len());
+                if analysis.sync_na {
+                    println!("  Cut-Beat Sync:     N/A (0 cuts)");
+                } else {
+                    println!("  Cut-Beat Sync:     {:.1}% (±60ms)", analysis.cut_beat_sync * 100.0);
+                }
+                println!("  One-framers count: {}", analysis.one_framers.len());
+                println!("  Segments count:    {}", analysis.segments.len());
                 if let Some(first_seg) = analysis.segments.first() {
-                    println!("  First segment:   [{:.2}s - {:.2}s] LAB mean: {:?}, std: {:?}, MAD mean: {:.2}, peak: {:.2}",
-                        first_seg.start, first_seg.end, first_seg.lab.mean, first_seg.lab.std, first_seg.mad_mean, first_seg.mad_peak
+                    println!("  First segment:     [{:.2}s - {:.2}s] LAB mean: {:?}, std: {:?}, MAD mean: {:.2}, peak: {:.2}, hint: {}",
+                        first_seg.start, first_seg.end, first_seg.lab.mean, first_seg.lab.std, first_seg.mad_mean, first_seg.mad_peak, first_seg.speed_hint
                     );
                 }
-                println!("  JSON saved to:   {:?}", analysis.json_path);
+                println!("  JSON saved to:     {:?}", analysis.json_path);
+                println!("  Report saved to:   {:?}", analysis.report_path);
+                println!("  Reusable proj to:  {:?}", analysis.reusable_project_path);
 
                 assert_eq!(analysis.schema_version, 1);
                 assert!(analysis.duration > 0.0);
                 assert!(analysis.json_path.is_some());
                 if let Some(json_p) = analysis.json_path {
                     assert!(std::path::Path::new(&json_p).exists(), "Saved JSON file must exist");
+                }
+                if let Some(rep_p) = analysis.report_path {
+                    assert!(std::path::Path::new(&rep_p).exists(), "Saved Report file must exist");
+                }
+                if let Some(proj_p) = analysis.reusable_project_path {
+                    assert!(std::path::Path::new(&proj_p).exists(), "Saved Reusable Project file must exist");
                 }
             }
             Err(e) => {

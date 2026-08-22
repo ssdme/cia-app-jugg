@@ -5,7 +5,7 @@ use tauri::{Emitter, Manager};
 use std::os::windows::process::CommandExt;
 
 use crate::beat::{detect_beats_internal, get_binary_path_opt, BeatResult};
-use crate::probe::{probe_media_internal};
+use crate::probe::probe_media_internal;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -33,12 +33,43 @@ pub struct SceneResult {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FrameMotion {
+    pub t: f64,
+    pub tx: f64,
+    pub ty: f64,
+    pub divergence: f64,
+    pub curl: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentMotion {
+    pub shake_energy: f64,
+    pub zoom_presence: bool,
+    pub mean_divergence: f64,
+    pub mean_curl: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DumpSegment {
     pub start: f64,
     pub end: f64,
     pub lab: LabStats,
     pub mad_mean: f64,
     pub mad_peak: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion: Option<SegmentMotion>,
+    pub one_framer_count: usize,
+    pub speed_hint: String, // "slow" | "normal" | "fast" | "snap"
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StyleDecision {
+    pub style_name: String, // "jugg" | "glitch-leaning" | "velocity/flow" | "basic/clean" | "hybrid/unclassified"
+    pub confidence: f64,   // 0.0 .. 1.0
+    pub justifications: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -52,20 +83,51 @@ pub struct DumpAnalysis {
     pub scenes: Vec<SceneItem>,
     pub beats: BeatResult,
     pub cut_beat_sync: f64,
+    pub sync_na: bool,
+    pub detected_style: StyleDecision,
+    pub one_framers: Vec<f64>,
     pub segments: Vec<DumpSegment>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion_warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub json_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reusable_project_path: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReusableSegment {
+    pub start: f64,
+    pub end: f64,
+    pub lab_mean: [f64; 3],
+    pub lab_std: [f64; 3],
+    pub speed_hint: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReusableProject {
+    pub schema_version: String, // "dumper_project_v1"
+    pub source: String,
+    pub beats: BeatResult,
+    pub cuts: Vec<f64>,
+    pub segments: Vec<ReusableSegment>,
+    pub suggested_style: String,
+    pub fps_suggestion: f64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DumpProgressPayload {
-    pub phase: String, // "SCENES" | "BEATS" | "PROFILES"
+    pub phase: String, // "SCENES" | "BEATS" | "MOTION" | "PROFILES" | "REPORT"
     pub percent: u32,
     pub message: String,
 }
 
-// --- Math & Metric Calculation Functions ---
+// --- Math & Color Functions ---
 
 pub fn compute_luminance_mad(prev_rgb: &[u8], curr_rgb: &[u8], width: usize, height: usize) -> f64 {
     let num_pixels = width * height;
@@ -115,12 +177,10 @@ pub fn rgb_to_cielab(r_u8: u8, g_u8: u8, b_u8: u8) -> [f64; 3] {
     let g = srgb_to_linear(g_u8 as f64 / 255.0);
     let b = srgb_to_linear(b_u8 as f64 / 255.0);
 
-    // Standard sRGB D65 matrix
     let x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b;
     let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
     let z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b;
 
-    // D65 reference white
     let x_n = 0.95047;
     let y_n = 1.00000;
     let z_n = 1.08883;
@@ -153,7 +213,6 @@ pub fn downsample_and_compute_lab_stats(frame_rgb: &[u8], src_w: usize, src_h: u
             let sx0 = (gx * src_w) / GRID_SIZE;
             let sx1 = (((gx + 1) * src_w) / GRID_SIZE).max(sx0 + 1);
 
-            // Area average RGB in cell
             let mut cell_r = 0u64;
             let mut cell_g = 0u64;
             let mut cell_b = 0u64;
@@ -223,15 +282,17 @@ pub fn downsample_and_compute_lab_stats(frame_rgb: &[u8], src_w: usize, src_h: u
     }
 }
 
-pub fn compute_cut_beat_sync(cuts: &[f64], beats: &[f64], fps: f64) -> f64 {
+// --- Fix T23: Cut-Beat Sync (±60 ms threshold) ---
+
+pub fn compute_cut_beat_sync(cuts: &[f64], beats: &[f64]) -> (f64, bool) {
     if cuts.is_empty() {
-        return 1.0;
+        return (0.0, true);
     }
     if beats.is_empty() {
-        return 0.0;
+        return (0.0, false);
     }
 
-    let threshold = 0.5 / fps.max(1.0);
+    const THRESHOLD_SECONDS: f64 = 0.060; // +/- 60 ms
     let mut synced_count = 0usize;
 
     for &cut in cuts {
@@ -242,12 +303,479 @@ pub fn compute_cut_beat_sync(cuts: &[f64], beats: &[f64], fps: f64) -> f64 {
                 min_diff = diff;
             }
         }
-        if min_diff <= threshold + 1e-4 {
+        if min_diff <= THRESHOLD_SECONDS + 1e-4 {
             synced_count += 1;
         }
     }
 
-    ((synced_count as f64 / cuts.len() as f64) * 10000.0).round() / 10000.0
+    let sync = ((synced_count as f64 / cuts.len() as f64) * 10000.0).round() / 10000.0;
+    (sync, false)
+}
+
+// --- One-Framer & Slowdown Detection ---
+
+pub fn detect_one_framers(mad_series: &[f64], timestamps: &[f64]) -> Vec<f64> {
+    if mad_series.len() < 3 || mad_series.len() != timestamps.len() {
+        return Vec::new();
+    }
+    let mut one_framers = Vec::new();
+    let mean_mad: f64 = mad_series.iter().sum::<f64>() / mad_series.len() as f64;
+    let threshold_spike = (mean_mad * 1.5).max(12.0);
+
+    for i in 1..(mad_series.len() - 1) {
+        let prev = mad_series[i - 1];
+        let curr = mad_series[i];
+        let next = mad_series[i + 1];
+
+        if curr >= threshold_spike && curr >= prev + 6.0 && curr >= next + 6.0 {
+            one_framers.push(timestamps[i]);
+        }
+    }
+    one_framers
+}
+
+pub fn detect_slowdown_presence(mad_series: &[f64]) -> bool {
+    if mad_series.len() < 4 {
+        return false;
+    }
+    let mean_mad: f64 = mad_series.iter().sum::<f64>() / mad_series.len() as f64;
+    let low_threshold = (mean_mad * 0.4).min(4.0);
+
+    let mut consecutive_low = 0usize;
+    for &val in mad_series {
+        if val <= low_threshold {
+            consecutive_low += 1;
+            if consecutive_low >= 4 {
+                return true;
+            }
+        } else {
+            consecutive_low = 0;
+        }
+    }
+    false
+}
+
+// --- Motion Extraction & Parsing ---
+
+#[derive(Debug, Clone, Default)]
+pub struct RawMotionBlock {
+    pub dx: f64,
+    pub dy: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+pub fn parse_trf_content(content: &str, width: f64, height: f64, fps: f64) -> Vec<FrameMotion> {
+    let mut frames = Vec::new();
+    let cx = width / 2.0;
+    let cy = height / 2.0;
+    let dt = if fps > 0.0 { 1.0 / fps } else { 1.0 / 30.0 };
+    let mut frame_idx = 0usize;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("Frame ") {
+            continue;
+        }
+
+        let mut blocks = Vec::new();
+        if let Some(start_idx) = trimmed.find("(LM ") {
+            let list_str = &trimmed[start_idx..];
+            for item in list_str.split("(LM ") {
+                let item = item.trim_matches(|c| c == ')' || c == ',' || c == ']' || c == ' ' || c == '(');
+                if item.is_empty() {
+                    continue;
+                }
+                let mut parts = item.split_whitespace();
+                if let (Some(dx_s), Some(dy_s), Some(x_s), Some(y_s)) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                {
+                    if let (Ok(dx), Ok(dy), Ok(x), Ok(y)) = (
+                        dx_s.parse::<f64>(),
+                        dy_s.parse::<f64>(),
+                        x_s.parse::<f64>(),
+                        y_s.parse::<f64>(),
+                    ) {
+                        blocks.push(RawMotionBlock { dx, dy, x, y });
+                    }
+                }
+            }
+        }
+
+        let t = frame_idx as f64 * dt;
+        frame_idx += 1;
+
+        if blocks.is_empty() {
+            frames.push(FrameMotion {
+                t,
+                tx: 0.0,
+                ty: 0.0,
+                divergence: 0.0,
+                curl: 0.0,
+            });
+            continue;
+        }
+
+        let mut dxs: Vec<f64> = blocks.iter().map(|b| b.dx).collect();
+        let mut dys: Vec<f64> = blocks.iter().map(|b| b.dy).collect();
+        dxs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        dys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let med_dx = dxs[dxs.len() / 2];
+        let med_dy = dys[dys.len() / 2];
+
+        let mut divs = Vec::new();
+        let mut curls = Vec::new();
+
+        for b in &blocks {
+            let rx = b.x - cx;
+            let ry = b.y - cy;
+            let r2 = rx * rx + ry * ry;
+            if r2 > 100.0 {
+                let vx = b.dx - med_dx;
+                let vy = b.dy - med_dy;
+                let div = (vx * rx + vy * ry) / r2;
+                let curl = (vy * rx - vx * ry) / r2;
+                divs.push(div);
+                curls.push(curl);
+            }
+        }
+
+        divs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        curls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let med_div = if divs.is_empty() { 0.0 } else { divs[divs.len() / 2] };
+        let med_curl = if curls.is_empty() { 0.0 } else { curls[curls.len() / 2] };
+
+        frames.push(FrameMotion {
+            t,
+            tx: if width > 0.0 { med_dx / width } else { 0.0 },
+            ty: if height > 0.0 { med_dy / height } else { 0.0 },
+            divergence: med_div,
+            curl: med_curl,
+        });
+    }
+
+    frames
+}
+
+pub fn parse_lavfi_mv_content(content: &str, width: f64, height: f64) -> Vec<FrameMotion> {
+    let mut frames = Vec::new();
+    let mut curr_t = 0.0;
+    let mut curr_tx = 0.0;
+    let mut curr_ty = 0.0;
+    let mut has_data = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("pkt_pts_time=") || trimmed.starts_with("pts_time=") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                if let Ok(t) = val.parse::<f64>() {
+                    if has_data {
+                        frames.push(FrameMotion {
+                            t: curr_t,
+                            tx: if width > 0.0 { curr_tx / width } else { 0.0 },
+                            ty: if height > 0.0 { curr_ty / height } else { 0.0 },
+                            divergence: 0.0,
+                            curl: 0.0,
+                        });
+                    }
+                    curr_t = t;
+                    curr_tx = 0.0;
+                    curr_ty = 0.0;
+                    has_data = false;
+                }
+            }
+        } else if trimmed.starts_with("lavfi.mv.dx=") || trimmed.starts_with("lavfi.mv.x=") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                if let Ok(v) = val.parse::<f64>() {
+                    curr_tx = v;
+                    has_data = true;
+                }
+            }
+        } else if trimmed.starts_with("lavfi.mv.dy=") || trimmed.starts_with("lavfi.mv.y=") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                if let Ok(v) = val.parse::<f64>() {
+                    curr_ty = v;
+                    has_data = true;
+                }
+            }
+        }
+    }
+    if has_data {
+        frames.push(FrameMotion {
+            t: curr_t,
+            tx: if width > 0.0 { curr_tx / width } else { 0.0 },
+            ty: if height > 0.0 { curr_ty / height } else { 0.0 },
+            divergence: 0.0,
+            curl: 0.0,
+        });
+    }
+    frames
+}
+
+pub fn compute_segment_motion(motion_frames: &[FrameMotion]) -> Option<SegmentMotion> {
+    if motion_frames.len() < 2 {
+        return None;
+    }
+
+    let mut dxs = Vec::with_capacity(motion_frames.len() - 1);
+    let mut dys = Vec::with_capacity(motion_frames.len() - 1);
+    let mut divs = Vec::with_capacity(motion_frames.len());
+    let mut curls = Vec::with_capacity(motion_frames.len());
+
+    for i in 1..motion_frames.len() {
+        dxs.push(motion_frames[i].tx - motion_frames[i - 1].tx);
+        dys.push(motion_frames[i].ty - motion_frames[i - 1].ty);
+    }
+    for f in motion_frames {
+        divs.push(f.divergence);
+        curls.push(f.curl);
+    }
+
+    let mean_dx = dxs.iter().sum::<f64>() / dxs.len() as f64;
+    let mean_dy = dys.iter().sum::<f64>() / dys.len() as f64;
+
+    let var_dx = dxs.iter().map(|&d| (d - mean_dx).powi(2)).sum::<f64>() / dxs.len() as f64;
+    let var_dy = dys.iter().map(|&d| (d - mean_dy).powi(2)).sum::<f64>() / dys.len() as f64;
+
+    let std_dx = var_dx.sqrt();
+    let std_dy = var_dy.sqrt();
+    let shake_energy = (std_dx + std_dy) * 10.0;
+
+    let mean_div = divs.iter().sum::<f64>() / divs.len() as f64;
+    let mean_curl = curls.iter().sum::<f64>() / curls.len() as f64;
+    let zoom_presence = divs.iter().map(|&d| d.abs()).sum::<f64>() / divs.len() as f64 > 0.008;
+
+    Some(SegmentMotion {
+        shake_energy: (shake_energy * 10000.0).round() / 10000.0,
+        zoom_presence,
+        mean_divergence: (mean_div * 10000.0).round() / 10000.0,
+        mean_curl: (mean_curl * 10000.0).round() / 10000.0,
+    })
+}
+
+// --- Style Classifier v1 ---
+
+#[derive(Debug, Clone)]
+pub struct ClassifierFeatures {
+    pub cuts_count: usize,
+    pub cut_density: f64,
+    pub shake_energy: f64,
+    pub one_framer_density: f64,
+    pub sync: f64,
+    pub zoom_presence: bool,
+    pub slowdown_presence: bool,
+    pub motion_available: bool,
+}
+
+pub fn classify_style(features: &ClassifierFeatures) -> StyleDecision {
+    let mut justifications = Vec::new();
+
+    // 1. Basic / Clean: cuts < 2 and low shake
+    if features.cuts_count < 2 && features.shake_energy < 0.015 {
+        justifications.push(format!("Very low cut count ({})", features.cuts_count));
+        justifications.push(format!("Low camera shake energy ({:.4})", features.shake_energy));
+        let conf = if features.cuts_count <= 1 { 0.90 } else { 0.80 };
+        return StyleDecision {
+            style_name: "basic/clean".to_string(),
+            confidence: conf,
+            justifications,
+        };
+    }
+
+    // 2. Jugg: high shake + one-framers >= 0.3/s + sync >= 0.5 (or sync >= 0.4 with very high shake)
+    if features.shake_energy >= 0.012 && features.one_framer_density >= 0.30 && features.sync >= 0.40 {
+        justifications.push(format!("High shake energy ({:.4})", features.shake_energy));
+        justifications.push(format!("Frequent one-framers ({:.2} per sec)", features.one_framer_density));
+        justifications.push(format!("Rhythmic beat synchronization ({:.1}%)", features.sync * 100.0));
+        let conf = (0.80 + (features.sync * 0.15)).min(0.95);
+        return StyleDecision {
+            style_name: "jugg".to_string(),
+            confidence: (conf * 100.0).round() / 100.0,
+            justifications,
+        };
+    }
+
+    // 3. Glitch-leaning: extreme cut density (>1.5/s) or extreme one-framers (>0.8/s)
+    if features.cut_density >= 1.5 || (features.one_framer_density >= 0.8 && features.shake_energy >= 0.010) {
+        if features.cut_density >= 1.5 {
+            justifications.push(format!("High cut density ({:.2} cuts/sec)", features.cut_density));
+        }
+        if features.one_framer_density >= 0.8 {
+            justifications.push(format!("Heavy 1-frame flashes ({:.2} per sec)", features.one_framer_density));
+        }
+        return StyleDecision {
+            style_name: "glitch-leaning".to_string(),
+            confidence: 0.85,
+            justifications,
+        };
+    }
+
+    // 4. Velocity / Flow: sync >= 0.45 + low/moderate shake + slowdowns present
+    if features.sync >= 0.45 && features.shake_energy < 0.020 && features.slowdown_presence {
+        justifications.push(format!("Solid beat synchronization ({:.1}%)", features.sync * 100.0));
+        justifications.push("Speed ramping / slowdowns detected".to_string());
+        justifications.push(format!("Controlled motion flow (shake: {:.4})", features.shake_energy));
+        return StyleDecision {
+            style_name: "velocity/flow".to_string(),
+            confidence: 0.85,
+            justifications,
+        };
+    }
+
+    // 5. Hybrid / Unclassified
+    justifications.push("Mixed characteristics across multiple style archetypes".to_string());
+    if features.cut_density > 0.0 {
+        justifications.push(format!(
+            "Cut density: {:.2}/s, Sync: {:.1}%",
+            features.cut_density,
+            features.sync * 100.0
+        ));
+    }
+    if !features.motion_available {
+        justifications.push("Motion metadata not available; classification operating in degraded mode".to_string());
+    }
+
+    StyleDecision {
+        style_name: "hybrid/unclassified".to_string(),
+        confidence: if features.motion_available { 0.65 } else { 0.50 },
+        justifications,
+    }
+}
+
+// --- Markdown Report Generator ---
+
+pub fn generate_markdown_report(analysis: &DumpAnalysis, project: &ReusableProject) -> String {
+    let source_name = std::path::Path::new(&analysis.source)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| analysis.source.clone());
+
+    let mut md = String::new();
+    md.push_str(&format!("# Dump Report: {}\n\n", source_name));
+
+    // ## Detected style
+    md.push_str("## Detected style\n");
+    md.push_str(&format!("- **Style:** `{}`\n", analysis.detected_style.style_name));
+    md.push_str(&format!("- **Confidence:** {:.0}%\n", analysis.detected_style.confidence * 100.0));
+    md.push_str("- **Justifications:**\n");
+    for just in &analysis.detected_style.justifications {
+        md.push_str(&format!("  - {}\n", just));
+    }
+    md.push('\n');
+
+    // ## Cuts & sync
+    md.push_str("## Cuts & sync\n");
+    let cut_density = analysis.cuts.len() as f64 / analysis.duration.max(0.1);
+    md.push_str(&format!("- **Total cuts:** {} (Density: {:.2} cuts/s)\n", analysis.cuts.len(), cut_density));
+    if !analysis.cuts.is_empty() {
+        md.push_str(&format!("- **Cut timestamps (s):** `{:?}`\n", analysis.cuts));
+    }
+    if analysis.sync_na {
+        md.push_str("- **Cut-Beat Sync (±60ms):** N/A (0 cuts detected)\n");
+    } else {
+        md.push_str(&format!("- **Cut-Beat Sync (±60ms):** {:.1}%\n", analysis.cut_beat_sync * 100.0));
+    }
+    md.push('\n');
+
+    // ## Beats
+    md.push_str("## Beats\n");
+    md.push_str(&format!("- **Detected BPM:** {:.1}\n", analysis.beats.bpm));
+    md.push_str(&format!("- **Total beats:** {}\n", analysis.beats.beats.len()));
+    md.push_str(&format!("- **Total downbeats:** {}\n", analysis.beats.downbeats.len()));
+    md.push('\n');
+
+    // ## Segments (signatures)
+    md.push_str("## Segments (signatures)\n");
+    md.push_str("| # | Time Range | LAB Mean [L, a, b] | LAB Std | MAD Mean | MAD Peak | Shake Energy | One-Framers | Speed Hint |\n");
+    md.push_str("|---|---|---|---|---|---|---|---|---|\n");
+    for (i, seg) in analysis.segments.iter().enumerate() {
+        let shake_str = seg
+            .motion
+            .as_ref()
+            .map(|m| format!("{:.3}", m.shake_energy))
+            .unwrap_or_else(|| "N/A".to_string());
+        md.push_str(&format!(
+            "| {} | {:.2}s - {:.2}s | [{:.1}, {:.1}, {:.1}] | [{:.1}, {:.1}, {:.1}] | {:.1} | {:.1} | {} | {} | `{}` |\n",
+            i + 1,
+            seg.start,
+            seg.end,
+            seg.lab.mean[0], seg.lab.mean[1], seg.lab.mean[2],
+            seg.lab.std[0], seg.lab.std[1], seg.lab.std[2],
+            seg.mad_mean,
+            seg.mad_peak,
+            shake_str,
+            seg.one_framer_count,
+            seg.speed_hint
+        ));
+    }
+    md.push('\n');
+
+    // ## Color signatures
+    md.push_str("## Color signatures\n");
+    let avg_l: f64 = if !analysis.segments.is_empty() {
+        analysis.segments.iter().map(|s| s.lab.mean[0]).sum::<f64>() / analysis.segments.len() as f64
+    } else {
+        0.0
+    };
+    let avg_a: f64 = if !analysis.segments.is_empty() {
+        analysis.segments.iter().map(|s| s.lab.mean[1]).sum::<f64>() / analysis.segments.len() as f64
+    } else {
+        0.0
+    };
+    let avg_b: f64 = if !analysis.segments.is_empty() {
+        analysis.segments.iter().map(|s| s.lab.mean[2]).sum::<f64>() / analysis.segments.len() as f64
+    } else {
+        0.0
+    };
+    md.push_str(&format!("- **Average Global Luminance (L*):** {:.1}\n", avg_l));
+    md.push_str(&format!("- **Average Chromaticity (a*, b*):** [{:.1}, {:.1}]\n", avg_a, avg_b));
+    md.push('\n');
+
+    // ## One-framers
+    md.push_str("## One-framers\n");
+    let one_framer_density = analysis.one_framers.len() as f64 / analysis.duration.max(0.1);
+    md.push_str(&format!("- **Total detected:** {} ({:.2}/s)\n", analysis.one_framers.len(), one_framer_density));
+    if !analysis.one_framers.is_empty() {
+        md.push_str(&format!("- **Timestamps:** `{:?}`\n", analysis.one_framers));
+    }
+    md.push('\n');
+
+    // ## Motion
+    md.push_str("## Motion\n");
+    if let Some(ref warn) = analysis.motion_warning {
+        md.push_str(&format!("- **Status:** Warning — {}\n", warn));
+    } else {
+        let avg_shake: f64 = analysis
+            .segments
+            .iter()
+            .filter_map(|s| s.motion.as_ref().map(|m| m.shake_energy))
+            .sum::<f64>()
+            / analysis.segments.len().max(1) as f64;
+        let zoom_count = analysis
+            .segments
+            .iter()
+            .filter(|s| s.motion.as_ref().map(|m| m.zoom_presence).unwrap_or(false))
+            .count();
+        md.push_str(&format!("- **Average Shake Energy:** {:.4}\n", avg_shake));
+        md.push_str(&format!("- **Zoom Segments:** {} / {}\n", zoom_count, analysis.segments.len()));
+        md.push_str("- **Reverse remap status:** Non mesurable depuis la sortie seule (non deviné, laissé aux métadonnées de projet originales).\n");
+    }
+    md.push('\n');
+
+    // ## Reusable vs descriptive
+    md.push_str("## Reusable vs descriptive\n");
+    md.push_str("- **Measurable & Reusable (Project schema):**\n");
+    md.push_str("  - Audio BPM, beat and downbeat grid\n");
+    md.push_str("  - Cut timestamps & segment boundaries\n");
+    md.push_str("  - Color palettes (LAB mean/std per segment)\n");
+    md.push_str(&format!("  - Suggested style preset (`{}`) & target FPS ({:.0} fps)\n", project.suggested_style, project.fps_suggestion));
+    md.push_str("- **Descriptive Only (Non-reconstructible from output):**\n");
+    md.push_str("  - Clip source reverse remap (cannot be mathematically derived from single rendered clip without original sources)\n");
+    md.push_str("  - Layer composition and raw footage pre-FX state\n");
+
+    md
 }
 
 // --- Scene Detection & Pipeline Implementations ---
@@ -322,10 +850,9 @@ pub fn run_dump_pipeline_internal(
     } else {
         30.0
     };
-    // Profile pass: cap fps at 30
     let analysis_fps = original_fps.min(30.0);
 
-    // Phase 1: SCENES (0..30%)
+    // Phase 1: SCENES (0..20%)
     if let Some(app_handle) = app {
         let _ = app_handle.emit(
             "dump-progress",
@@ -341,7 +868,6 @@ pub fn run_dump_pipeline_internal(
     let cuts = scene_res.cuts;
     let mut scenes = scene_res.scenes;
 
-    // Normalize scenes if none detected
     if scenes.is_empty() {
         scenes.push(SceneItem {
             start: 0.0,
@@ -354,19 +880,19 @@ pub fn run_dump_pipeline_internal(
             "dump-progress",
             DumpProgressPayload {
                 phase: "SCENES".to_string(),
-                percent: 30,
+                percent: 20,
                 message: format!("Detected {} cuts ({} scenes)", cuts.len(), scenes.len()),
             },
         );
     }
 
-    // Phase 2: BEATS (30..60%)
+    // Phase 2: BEATS (20..40%)
     if let Some(app_handle) = app {
         let _ = app_handle.emit(
             "dump-progress",
             DumpProgressPayload {
                 phase: "BEATS".to_string(),
-                percent: 35,
+                percent: 25,
                 message: "Extracting audio and tracking beats...".to_string(),
             },
         );
@@ -427,14 +953,14 @@ pub fn run_dump_pipeline_internal(
         }
     };
 
-    let cut_beat_sync = compute_cut_beat_sync(&cuts, &beats.beats, analysis_fps);
+    let (cut_beat_sync, sync_na) = compute_cut_beat_sync(&cuts, &beats.beats);
 
     if let Some(app_handle) = app {
         let _ = app_handle.emit(
             "dump-progress",
             DumpProgressPayload {
                 phase: "BEATS".to_string(),
-                percent: 60,
+                percent: 40,
                 message: format!(
                     "BPM: {:.1} · Cut-Beat Sync: {:.0}%",
                     beats.bpm,
@@ -444,7 +970,78 @@ pub fn run_dump_pipeline_internal(
         );
     }
 
-    // Phase 3: PROFILES (60..100%)
+    // Phase 3: MOTION (40..60%)
+    if let Some(app_handle) = app {
+        let _ = app_handle.emit(
+            "dump-progress",
+            DumpProgressPayload {
+                phase: "MOTION".to_string(),
+                percent: 45,
+                message: "Extracting motion vectors and camera dynamics...".to_string(),
+            },
+        );
+    }
+
+    let decode_w: u32 = 640;
+    let decode_h: u32 = ((media_info.height as f64 * (640.0 / media_info.width as f64)) as u32) & !1;
+
+    let temp_trf_path = cache_dir.join(format!("dump_motion_{}.trf", std::process::id()));
+    let temp_trf_str = temp_trf_path.to_string_lossy().replace('\\', "/").replace(':', "\\:");
+
+    let mut motion_cmd = std::process::Command::new(ffmpeg_bin);
+    motion_cmd.args([
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        &format!("scale={decode_w}:{decode_h},fps={analysis_fps:.3},vidstabdetect=result='{temp_trf_str}':fileformat=ascii:shakiness=5:accuracy=9:stepsize=12"),
+        "-an",
+        "-f",
+        "null",
+        "-",
+    ]);
+    motion_cmd.stdout(std::process::Stdio::null());
+    motion_cmd.stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    motion_cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let motion_status = motion_cmd.status();
+    let (motion_frames, motion_warning) = if motion_status.map(|s| s.success()).unwrap_or(false)
+        && temp_trf_path.exists()
+    {
+        if let Ok(content) = std::fs::read_to_string(&temp_trf_path) {
+            let _ = std::fs::remove_file(&temp_trf_path);
+            let frames = parse_trf_content(
+                &content,
+                decode_w as f64,
+                decode_h as f64,
+                analysis_fps,
+            );
+            if frames.is_empty() {
+                (Vec::new(), Some("Motion vector metadata was empty".to_string()))
+            } else {
+                (frames, None)
+            }
+        } else {
+            let _ = std::fs::remove_file(&temp_trf_path);
+            (Vec::new(), Some("Failed to read motion transforms file".to_string()))
+        }
+    } else {
+        (Vec::new(), Some("Motion estimation filter unavailable or execution failed".to_string()))
+    };
+
+    if let Some(app_handle) = app {
+        let _ = app_handle.emit(
+            "dump-progress",
+            DumpProgressPayload {
+                phase: "MOTION".to_string(),
+                percent: 60,
+                message: format!("Motion vectors extracted ({} frames)", motion_frames.len()),
+            },
+        );
+    }
+
+    // Phase 4: PROFILES & COLOR & MAD (60..85%)
     if let Some(app_handle) = app {
         let _ = app_handle.emit(
             "dump-progress",
@@ -456,8 +1053,6 @@ pub fn run_dump_pipeline_internal(
         );
     }
 
-    let decode_w: u32 = 640;
-    let decode_h: u32 = ((media_info.height as f64 * (640.0 / media_info.width as f64)) as u32) & !1;
     let frame_bytes = (decode_w * decode_h * 3) as usize;
 
     let mut decode_cmd = std::process::Command::new(ffmpeg_bin);
@@ -530,7 +1125,7 @@ pub fn run_dump_pipeline_internal(
         frame_idx += 1;
 
         if frame_idx.is_multiple_of(15) && total_est_frames > 0 {
-            let pct = 60 + (((frame_idx as f64 / total_est_frames as f64) * 35.0).min(35.0) as u32);
+            let pct = 65 + (((frame_idx as f64 / total_est_frames as f64) * 20.0).min(20.0) as u32);
             if let Some(app_handle) = app {
                 let _ = app_handle.emit(
                     "dump-progress",
@@ -546,8 +1141,15 @@ pub fn run_dump_pipeline_internal(
 
     let _ = decode_child.wait();
 
+    let all_mads: Vec<f64> = frame_metrics.iter().map(|f| f.mad).collect();
+    let all_timestamps: Vec<f64> = frame_metrics.iter().map(|f| f.t).collect();
+    let global_one_framers = detect_one_framers(&all_mads, &all_timestamps);
+    let global_slowdown_presence = detect_slowdown_presence(&all_mads);
+
     // Aggregate metrics per segment
     let mut segments: Vec<DumpSegment> = Vec::new();
+    let mut segment_shake_energies = Vec::new();
+
     for win in boundaries.windows(2) {
         let seg_start = win[0];
         let seg_end = win[1];
@@ -557,16 +1159,34 @@ pub fn run_dump_pipeline_internal(
             .filter(|f| f.t >= seg_start - 1e-4 && f.t < seg_end + 1e-4)
             .collect();
 
+        let seg_motion_frames: Vec<FrameMotion> = motion_frames
+            .iter()
+            .filter(|f| f.t >= seg_start - 1e-4 && f.t < seg_end + 1e-4)
+            .cloned()
+            .collect();
+
+        let seg_motion = compute_segment_motion(&seg_motion_frames);
+        if let Some(ref m) = seg_motion {
+            segment_shake_energies.push(m.shake_energy);
+        }
+
+        let seg_mads: Vec<f64> = seg_frames.iter().map(|f| f.mad).collect();
+        let seg_ts: Vec<f64> = seg_frames.iter().map(|f| f.t).collect();
+        let seg_one_framers = detect_one_framers(&seg_mads, &seg_ts);
+
         if seg_frames.is_empty() {
             segments.push(DumpSegment {
-                start: seg_start,
-                end: seg_end,
+                start: (seg_start * 1000.0).round() / 1000.0,
+                end: (seg_end * 1000.0).round() / 1000.0,
                 lab: LabStats {
                     mean: [0.0, 0.0, 0.0],
                     std: [0.0, 0.0, 0.0],
                 },
                 mad_mean: 0.0,
                 mad_peak: 0.0,
+                motion: seg_motion,
+                one_framer_count: 0,
+                speed_hint: "normal".to_string(),
             });
             continue;
         }
@@ -594,6 +1214,19 @@ pub fn run_dump_pipeline_internal(
             }
         }
 
+        let mad_mean = ((sum_mad / n) * 100.0).round() / 100.0;
+        let mad_peak = (peak_mad * 100.0).round() / 100.0;
+
+        let speed_hint = if mad_mean < 4.0 && (seg_end - seg_start) > 0.8 {
+            "slow".to_string()
+        } else if mad_mean > 18.0 {
+            "fast".to_string()
+        } else if mad_peak > 35.0 && !seg_one_framers.is_empty() {
+            "snap".to_string()
+        } else {
+            "normal".to_string()
+        };
+
         segments.push(DumpSegment {
             start: (seg_start * 1000.0).round() / 1000.0,
             end: (seg_end * 1000.0).round() / 1000.0,
@@ -609,10 +1242,48 @@ pub fn run_dump_pipeline_internal(
                     ((sum_b_s / n) * 100.0).round() / 100.0,
                 ],
             },
-            mad_mean: ((sum_mad / n) * 100.0).round() / 100.0,
-            mad_peak: (peak_mad * 100.0).round() / 100.0,
+            mad_mean,
+            mad_peak,
+            motion: seg_motion,
+            one_framer_count: seg_one_framers.len(),
+            speed_hint,
         });
     }
+
+    // Phase 5: CLASSIFICATION, REPORT & REUSABLE PROJECT (85..100%)
+    if let Some(app_handle) = app {
+        let _ = app_handle.emit(
+            "dump-progress",
+            DumpProgressPayload {
+                phase: "REPORT".to_string(),
+                percent: 90,
+                message: "Running style classifier and generating reports...".to_string(),
+            },
+        );
+    }
+
+    let avg_shake = if !segment_shake_energies.is_empty() {
+        segment_shake_energies.iter().sum::<f64>() / segment_shake_energies.len() as f64
+    } else {
+        0.0
+    };
+
+    let zoom_presence = segments
+        .iter()
+        .any(|s| s.motion.as_ref().map(|m| m.zoom_presence).unwrap_or(false));
+
+    let features = ClassifierFeatures {
+        cuts_count: cuts.len(),
+        cut_density: cuts.len() as f64 / duration.max(0.1),
+        shake_energy: avg_shake,
+        one_framer_density: global_one_framers.len() as f64 / duration.max(0.1),
+        sync: cut_beat_sync,
+        zoom_presence,
+        slowdown_presence: global_slowdown_presence,
+        motion_available: motion_warning.is_none() && !motion_frames.is_empty(),
+    };
+
+    let detected_style = classify_style(&features);
 
     let dump_dir = if let Some(app_handle) = app {
         app_handle
@@ -631,7 +1302,44 @@ pub fn run_dump_pipeline_internal(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    let video_stem = std::path::Path::new(video_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "video".to_string());
+
     let json_file_path = dump_dir.join(format!("analysis_{timestamp}.json"));
+    let report_file_path = dump_dir.join(format!("{video_stem}_report.md"));
+    let reusable_project_path = dump_dir.join("reusable_project.json");
+
+    // Build Reusable Project
+    let reusable_segments: Vec<ReusableSegment> = segments
+        .iter()
+        .map(|s| ReusableSegment {
+            start: s.start,
+            end: s.end,
+            lab_mean: s.lab.mean,
+            lab_std: s.lab.std,
+            speed_hint: s.speed_hint.clone(),
+        })
+        .collect();
+
+    let fps_suggestion = if original_fps >= 55.0 {
+        60.0
+    } else if original_fps >= 28.0 {
+        30.0
+    } else {
+        16.0
+    };
+
+    let reusable_project = ReusableProject {
+        schema_version: "dumper_project_v1".to_string(),
+        source: video_path.to_string(),
+        beats: beats.clone(),
+        cuts: cuts.clone(),
+        segments: reusable_segments,
+        suggested_style: detected_style.style_name.clone(),
+        fps_suggestion,
+    };
 
     let analysis = DumpAnalysis {
         schema_version: 1,
@@ -642,23 +1350,40 @@ pub fn run_dump_pipeline_internal(
         scenes,
         beats,
         cut_beat_sync,
+        sync_na,
+        detected_style,
+        one_framers: global_one_framers,
         segments,
+        motion_warning,
         json_path: Some(json_file_path.to_string_lossy().to_string()),
+        report_path: Some(report_file_path.to_string_lossy().to_string()),
+        reusable_project_path: Some(reusable_project_path.to_string_lossy().to_string()),
     };
 
+    // Serialize analysis.json
     let json_content = serde_json::to_string_pretty(&analysis)
         .map_err(|e| format!("Failed to serialize analysis JSON: {e}"))?;
-
     std::fs::write(&json_file_path, json_content)
         .map_err(|e| format!("Failed to write analysis JSON file: {e}"))?;
+
+    // Serialize reusable_project.json
+    let project_content = serde_json::to_string_pretty(&reusable_project)
+        .map_err(|e| format!("Failed to serialize reusable project JSON: {e}"))?;
+    std::fs::write(&reusable_project_path, project_content)
+        .map_err(|e| format!("Failed to write reusable project file: {e}"))?;
+
+    // Generate markdown report
+    let report_content = generate_markdown_report(&analysis, &reusable_project);
+    std::fs::write(&report_file_path, report_content)
+        .map_err(|e| format!("Failed to write markdown report file: {e}"))?;
 
     if let Some(app_handle) = app {
         let _ = app_handle.emit(
             "dump-progress",
             DumpProgressPayload {
-                phase: "PROFILES".to_string(),
+                phase: "REPORT".to_string(),
                 percent: 100,
-                message: "Analysis completed successfully".to_string(),
+                message: "Analysis and reports completed successfully".to_string(),
             },
         );
     }
