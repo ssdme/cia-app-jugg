@@ -2525,3 +2525,170 @@ fn test_apply_dumper_project_on_cut_fixture_flow() {
         );
     }
 }
+
+// ─── T27 COMPOSITION & SEE-THROUGH TESTS ───────────────────────────────────
+
+#[test]
+fn test_composition_layers_json_schema() {
+    let raw_json = r#"[
+        { "name": "hair_back", "file": "hair_back.png", "zOrder": 0, "hasContent": true },
+        { "name": "body", "file": "body.png", "zOrder": 1, "hasContent": true },
+        { "name": "clothes_lower", "file": "clothes_lower.png", "zOrder": 2, "hasContent": true },
+        { "name": "clothes_upper", "file": "clothes_upper.png", "zOrder": 3, "hasContent": true },
+        { "name": "face", "file": "face.png", "zOrder": 4, "hasContent": false },
+        { "name": "mouth", "file": "mouth.png", "zOrder": 5, "hasContent": true },
+        { "name": "eyes", "file": "eyes.png", "zOrder": 6, "hasContent": true },
+        { "name": "hair_front", "file": "hair_front.png", "zOrder": 7, "hasContent": true },
+        { "name": "accessories", "file": "accessories.png", "zOrder": 8, "hasContent": false }
+    ]"#;
+
+    let layers: Vec<LayerItem> = serde_json::from_str(raw_json).expect("layers.json must parse correctly");
+    assert_eq!(layers.len(), 9);
+    assert_eq!(layers[0].name, "hair_back");
+    assert_eq!(layers[0].z_order, 0);
+    assert_eq!(layers[0].has_content, Some(true));
+
+    let proj = CompProject {
+        schema_version: "comp_project_v1".to_string(),
+        character_path: "C:/test/character.png".to_string(),
+        background_path: Some("C:/test/bg.mp4".to_string()),
+        layers: layers.clone(),
+    };
+
+    let serialized = serde_json::to_string(&proj).expect("CompProject must serialize");
+    let deserialized: CompProject = serde_json::from_str(&serialized).expect("CompProject must deserialize");
+    assert_eq!(deserialized.schema_version, "comp_project_v1");
+    assert_eq!(deserialized.layers.len(), 9);
+}
+
+#[test]
+fn test_gpu_detection_clean_status() {
+    let gpu_res = check_nvidia_gpu_internal();
+    match gpu_res {
+        Ok(info) => {
+            println!("NVIDIA GPU successfully detected: {}", info);
+            assert!(!info.is_empty());
+        }
+        Err(err) => {
+            println!("NVIDIA GPU not detected: {}", err);
+            assert!(err.contains("NVIDIA GPU"));
+        }
+    }
+}
+
+#[test]
+fn test_see_through_segmentation_and_recomposition_accuracy() {
+    let character_path = r"C:\Users\cia\Downloads\spider-man-11530958085nzzlmiz6hg-732305370.png";
+    if !std::path::Path::new(character_path).exists() {
+        return;
+    }
+
+    let temp_out = std::env::temp_dir().join("cia_t27_test_comp");
+    let _ = std::fs::remove_dir_all(&temp_out);
+
+    let res = segment_character_internal(None, character_path, Some(temp_out.to_str().unwrap()))
+        .expect("Character segmentation must succeed");
+
+    assert_eq!(res.status, "success");
+    assert!(res.layers_count >= 8);
+    assert!(std::path::Path::new(&res.layers_json_path).exists());
+
+    // Verify all layer PNGs exist
+    for layer in &res.layers {
+        let p = temp_out.join(&layer.file);
+        assert!(p.exists(), "Layer file {} must exist", layer.file);
+    }
+
+    // LE TEST DE JUSTESSE: Recomposition test in Rust
+    // Verify each layer loads, composite in z-order on transparent background, compare with original
+    let mut py_test = std::process::Command::new("py");
+    py_test.arg("-3.11");
+    py_test.arg("-c");
+    py_test.arg(format!(
+        r#"
+from PIL import Image
+import numpy as np
+import json, os, sys
+
+orig = Image.open(r"{char_p}").convert("RGBA")
+orig_arr = np.array(orig)
+
+out_dir = r"{out_d}"
+with open(os.path.join(out_dir, "layers.json")) as f:
+    layers = json.load(f)
+
+layers_sorted = sorted(layers, key=lambda x: x["zOrder"])
+
+recomp = Image.new("RGBA", orig.size, (0, 0, 0, 0))
+for l in layers_sorted:
+    l_path = os.path.join(out_dir, l["file"])
+    if os.path.exists(l_path):
+        l_img = Image.open(l_path).convert("RGBA")
+        recomp.alpha_composite(l_img)
+
+recomp_arr = np.array(recomp)
+opaque = orig_arr[:, :, 3] > 10
+diff = np.abs(orig_arr[opaque].astype(int) - recomp_arr[opaque].astype(int))
+max_diff = np.max(diff)
+print(f"Max pixel difference on opaque regions: {{max_diff}}")
+if max_diff > 2:
+    sys.exit(1)
+sys.exit(0)
+"#,
+        char_p = character_path,
+        out_d = temp_out.to_str().unwrap().replace('\\', "/")
+    ));
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        py_test.creation_flags(0x08000000);
+    }
+
+    let py_out = py_test.output().expect("Failed to run python recomposition verification");
+    println!("Python verification output: {}", String::from_utf8_lossy(&py_out.stdout));
+    assert!(
+        py_out.status.success(),
+        "Recomposition error exceeds tolerance (2/channel): {}",
+        String::from_utf8_lossy(&py_out.stderr)
+    );
+}
+
+#[test]
+fn test_save_composition_project() {
+    let layers = vec![
+        LayerItem {
+            name: "face".to_string(),
+            file: "face.png".to_string(),
+            z_order: 4,
+            has_content: Some(true),
+            full_path: Some("C:/test/face.png".to_string()),
+            thumbnail_base64: None,
+        },
+        LayerItem {
+            name: "body".to_string(),
+            file: "body.png".to_string(),
+            z_order: 1,
+            has_content: Some(true),
+            full_path: Some("C:/test/body.png".to_string()),
+            thumbnail_base64: None,
+        },
+    ];
+
+    let proj = CompProject {
+        schema_version: "comp_project_v1".to_string(),
+        character_path: "C:/test/spiderman.png".to_string(),
+        background_path: Some("C:/test/bg.mp4".to_string()),
+        layers,
+    };
+
+    let target = std::env::temp_dir().join("test_comp_proj.json");
+    let saved_path = save_composition_project(proj, Some(target.to_str().unwrap().to_string()))
+        .expect("Saving comp project must succeed");
+
+    assert!(std::path::Path::new(&saved_path).exists());
+    let content = std::fs::read_to_string(&saved_path).unwrap();
+    assert!(content.contains("comp_project_v1"));
+    assert!(content.contains("spiderman.png"));
+}
+

@@ -284,11 +284,23 @@ pub fn pick_file(kind: String) -> Result<Option<String>, String> {
                 &["mp3", "wav", "flac", "m4a", "ogg"],
             );
         }
+        "image" | "character" => {
+            dialog = dialog.add_filter(
+                "Image Files (*.png, *.jpg, *.jpeg, *.webp)",
+                &["png", "jpg", "jpeg", "webp"],
+            );
+        }
+        "media_or_image" | "background" => {
+            dialog = dialog.add_filter(
+                "Media or Image (*.png, *.jpg, *.jpeg, *.webp, *.mp4, *.mkv, *.webm, *.mov)",
+                &["png", "jpg", "jpeg", "webp", "mp4", "mkv", "webm", "mov", "avi"],
+            );
+        }
         _ => {
             dialog = dialog.add_filter(
                 "Media Files",
                 &[
-                    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "flac", "m4a", "ogg",
+                    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "flac", "m4a", "ogg", "png", "jpg", "jpeg", "webp",
                 ],
             );
         }

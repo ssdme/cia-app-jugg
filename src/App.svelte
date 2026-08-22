@@ -70,6 +70,15 @@
   let isDumping = $state(false);
   let dumperResult = $state(null);
 
+  // COMPOSITION Page State
+  let compCharacterPath = $state('');
+  let compCharacterError = $state('');
+  let compBackgroundPath = $state('');
+  let compBackgroundError = $state('');
+  let isSegmenting = $state(false);
+  let compResult = $state(null);
+  let compGpuError = $state('');
+
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
   let availableEffects = $state([]);
@@ -248,6 +257,22 @@
       } else {
         dumperVideoError = 'Expected: video — mp4/mkv/webm/mov/avi';
       }
+    } else if (zone === 'comp-character') {
+      if (ext === 'png') {
+        compCharacterPath = path;
+        compCharacterError = '';
+        compResult = null;
+        compGpuError = '';
+      } else {
+        compCharacterError = 'Expected: transparent PNG character image';
+      }
+    } else if (zone === 'comp-background') {
+      if (['png', 'jpg', 'jpeg', 'webp', ...VIDEO_EXTENSIONS].includes(ext)) {
+        compBackgroundPath = path;
+        compBackgroundError = '';
+      } else {
+        compBackgroundError = 'Expected: image or video (PNG, JPG, MP4, MKV...)';
+      }
     }
   }
 
@@ -273,13 +298,28 @@
       dumperVideoError = '';
       dumperResult = null;
       dumperProgress = null;
+    } else if (zone === 'comp-character') {
+      compCharacterPath = '';
+      compCharacterError = '';
+      compResult = null;
+      compGpuError = '';
+    } else if (zone === 'comp-background') {
+      compBackgroundPath = '';
+      compBackgroundError = '';
     }
   }
 
   async function handlePickFile(zone, event) {
     if (event) event.stopPropagation();
     try {
-      const kind = (zone === 'scene' || zone === 'dumper') ? 'video' : 'audio';
+      let kind = 'video';
+      if (zone === 'drums' || zone === 'audio') {
+        kind = 'audio';
+      } else if (zone === 'comp-character') {
+        kind = 'character';
+      } else if (zone === 'comp-background') {
+        kind = 'background';
+      }
       const picked = await invoke('pick_file', { kind });
       if (picked) {
         validateAndSetFile(zone, picked);
@@ -619,6 +659,58 @@
     }
   }
 
+  async function runCompositionSegmentation() {
+    if (!compCharacterPath || isSegmenting) return;
+    isSegmenting = true;
+    compGpuError = '';
+    compResult = null;
+    try {
+      // 1. Check GPU status
+      await invoke('check_gpu_status');
+
+      // 2. Run segmentation
+      const res = await invoke('segment_character', { characterPath: compCharacterPath });
+      compResult = res;
+      showToast(`Segmentation complete: ${res.layersCount} layers extracted`, 'success');
+    } catch (err) {
+      console.error('Composition error:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      compGpuError = msg;
+      showToast(`Segmentation failed: ${msg}`, 'error');
+    } finally {
+      isSegmenting = false;
+    }
+  }
+
+  async function handleSaveComposition() {
+    if (!compResult || !compResult.layers) return;
+    try {
+      const project = {
+        schemaVersion: 'comp_project_v1',
+        characterPath: compCharacterPath,
+        backgroundPath: compBackgroundPath || null,
+        layers: compResult.layers,
+      };
+      const savedPath = await invoke('save_composition_project', { project, targetPath: null });
+      showToast(`Composition saved to: ${savedPath}`, 'success');
+    } catch (err) {
+      console.error('Failed to save composition:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Failed to save: ${msg}`, 'error');
+    }
+  }
+
+  async function handleOpenCompFolder(path) {
+    if (!path) return;
+    try {
+      await invoke('open_target_folder', { path });
+      showToast('Opening composition folder in Explorer', 'info');
+    } catch (e) {
+      console.error('Failed to open folder:', e);
+      showToast(`Unable to open folder: ${e}`, 'error');
+    }
+  }
+
   async function handleOpenTargetFolder() {
     if (!renderOutputMp4) return;
     try {
@@ -800,6 +892,31 @@
 
     checkForAppUpdates(false);
 
+    if (typeof window !== 'undefined' && window.location.hash === '#composition') {
+      activePage = 'composition';
+      compCharacterPath = 'C:\\Users\\cia\\Downloads\\spider-man-11530958085nzzlmiz6hg-732305370.png';
+      compBackgroundPath = 'C:\\Users\\cia\\Downloads\\jugg video & audio tester\\snaptik_7674387013243538721_v3.mp4';
+      if (!window.__TAURI_INTERNALS__) {
+        compResult = {
+          status: 'success',
+          characterPath: compCharacterPath,
+          outputDir: 'C:\\Users\\cia\\AppData\\Local\\Temp\\cia_composition\\comp_demo',
+          layersCount: 9,
+          layers: [
+            { name: 'hair_back', file: 'hair_back.png', zOrder: 0, hasContent: true },
+            { name: 'body', file: 'body.png', zOrder: 1, hasContent: true },
+            { name: 'clothes_lower', file: 'clothes_lower.png', zOrder: 2, hasContent: true },
+            { name: 'clothes_upper', file: 'clothes_upper.png', zOrder: 3, hasContent: true },
+            { name: 'face', file: 'face.png', zOrder: 4, hasContent: false },
+            { name: 'mouth', file: 'mouth.png', zOrder: 5, hasContent: true },
+            { name: 'eyes', file: 'eyes.png', zOrder: 6, hasContent: true },
+            { name: 'hair_front', file: 'hair_front.png', zOrder: 7, hasContent: true },
+            { name: 'accessories', file: 'accessories.png', zOrder: 8, hasContent: false },
+          ]
+        };
+      }
+    }
+
     return () => {
       if (unlistenProgress) unlistenProgress();
       if (unlistenDump) unlistenDump();
@@ -827,6 +944,7 @@
   <nav class="tab-bar">
     <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
     <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>DUMPER</button>
+    <button class:active={activePage === 'composition'} onclick={() => navigateTo('composition')}>COMPOSITION</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -1624,6 +1742,186 @@
                         onclick={() => { dumperResult = null; dumperProgress = null; }}
                       >
                         NEW ANALYSIS
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </section>
+
+        {:else if activePage === 'composition'}
+          <section class="composition-page" aria-label="Composition and layer segmentation">
+            <div class="composition-container">
+              <!-- DROP ZONES: CHARACTER & BACKGROUND -->
+              <div class="composition-grid">
+                <!-- DROP ZONE 1: CHARACTER (PNG TRANSPARENT) -->
+                <div
+                  class="remap-drop-zone comp-drop-zone"
+                  class:filled={Boolean(compCharacterPath)}
+                  class:has-error={Boolean(compCharacterError)}
+                  class:hovering={hoveredZone === 'comp-character'}
+                  data-zone="comp-character"
+                  ondragenter={(e) => { e.preventDefault(); hoveredZone = 'comp-character'; }}
+                  ondragover={(e) => { e.preventDefault(); hoveredZone = 'comp-character'; }}
+                  ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'comp-character') hoveredZone = null; }}
+                  ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                  onclick={() => !compCharacterPath && handlePickFile('comp-character')}
+                  onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !compCharacterPath && handlePickFile('comp-character')}
+                  role="button"
+                  tabindex="0"
+                >
+                  {#if compCharacterPath}
+                    <div class="zone-filled-content">
+                      <div class="zone-header">
+                        <span class="zone-tag">CHARACTER</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <div class="zone-title">CHARACTER</div>
+                      <div class="zone-filename mono" title={compCharacterPath}>{getFileName(compCharacterPath)}</div>
+                      <div class="zone-actions">
+                        <button class="btn-zone-action" onclick={(e) => handlePickFile('comp-character', e)}>REPLACE</button>
+                        <button class="btn-zone-action danger" onclick={(e) => clearZone('comp-character', e)}>REMOVE</button>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="zone-empty-content">
+                      <p class="zone-prompt">DRAG CHARACTER</p>
+                      <span class="zone-sublabel">TRANSPARENT PNG IMAGE (*.png)</span>
+                      {#if compCharacterError}
+                        <span class="zone-error-msg">{compCharacterError}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- DROP ZONE 2: BACKGROUND (IMAGE / VIDEO) -->
+                <div
+                  class="remap-drop-zone comp-drop-zone"
+                  class:filled={Boolean(compBackgroundPath)}
+                  class:has-error={Boolean(compBackgroundError)}
+                  class:hovering={hoveredZone === 'comp-background'}
+                  data-zone="comp-background"
+                  ondragenter={(e) => { e.preventDefault(); hoveredZone = 'comp-background'; }}
+                  ondragover={(e) => { e.preventDefault(); hoveredZone = 'comp-background'; }}
+                  ondragleave={(e) => { e.preventDefault(); if (hoveredZone === 'comp-background') hoveredZone = null; }}
+                  ondrop={(e) => { e.preventDefault(); hoveredZone = null; }}
+                  onclick={() => !compBackgroundPath && handlePickFile('comp-background')}
+                  onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !compBackgroundPath && handlePickFile('comp-background')}
+                  role="button"
+                  tabindex="0"
+                >
+                  {#if compBackgroundPath}
+                    <div class="zone-filled-content">
+                      <div class="zone-header">
+                        <span class="zone-tag">BACKGROUND</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <div class="zone-title">BACKGROUND</div>
+                      <div class="zone-filename mono" title={compBackgroundPath}>{getFileName(compBackgroundPath)}</div>
+                      <div class="zone-actions">
+                        <button class="btn-zone-action" onclick={(e) => handlePickFile('comp-background', e)}>REPLACE</button>
+                        <button class="btn-zone-action danger" onclick={(e) => clearZone('comp-background', e)}>REMOVE</button>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="zone-empty-content">
+                      <p class="zone-prompt">DRAG BACKGROUND</p>
+                      <span class="zone-sublabel">IMAGE OR VIDEO (PNG, JPG, MP4, MKV...)</span>
+                      {#if compBackgroundError}
+                        <span class="zone-error-msg">{compBackgroundError}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- ACTION / RUN PANEL -->
+              <div class="composition-actions-panel">
+                <button
+                  class="btn-render dumper-run-btn"
+                  disabled={!compCharacterPath || isSegmenting}
+                  onclick={runCompositionSegmentation}
+                  type="button"
+                >
+                  {#if isSegmenting}
+                    <span>SEGMENTING LAYERS (SEE-THROUGH)...</span>
+                  {:else}
+                    <span>⚡ SEGMENT CHARACTER (SEE-THROUGH)</span>
+                  {/if}
+                </button>
+
+                <!-- GPU OR SIDECAR ERROR CARD -->
+                {#if compGpuError}
+                  <div class="comp-error-card">
+                    <div class="comp-error-header">
+                      <span class="zone-tag" style="color: #ef4444; border-color: rgba(239,68,68,0.4);">SIDECAR / GPU NOTICE</span>
+                    </div>
+                    <p class="comp-error-msg mono">{compGpuError}</p>
+                    <div class="comp-error-help mono">
+                      <p>To configure the See-through sidecar environment on an NVIDIA GPU:</p>
+                      <code class="code-box">python vendor/see_through/bootstrap_see_through.py</code>
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- POST-SEGMENTATION LAYER STACK VIEW -->
+                {#if compResult}
+                  <div class="dumper-result-card comp-stack-card">
+                    <div class="result-header">
+                      <div class="result-title-row">
+                        <span class="zone-tag">LAYER STACK</span>
+                        <span class="style-badge mono">{compResult.layersCount} SEMANTIC LAYERS</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <span class="result-timestamp mono">SCHEMA V1</span>
+                    </div>
+
+                    <!-- LAYERS LIST -->
+                    <div class="layers-stack-list">
+                      {#each compResult.layers as layer}
+                        <div class="layer-card">
+                          <div class="layer-thumb-box">
+                            {#if layer.thumbnailBase64}
+                              <img class="layer-thumb" src={layer.thumbnailBase64} alt={layer.name} />
+                            {:else}
+                              <div class="layer-thumb-placeholder mono">PNG</div>
+                            {/if}
+                          </div>
+                          <div class="layer-info">
+                            <div class="layer-name mono">{layer.name.toUpperCase()}</div>
+                            <div class="layer-filename mono">{layer.file}</div>
+                          </div>
+                          <div class="layer-meta">
+                            <span class="z-order-badge mono">Z: {layer.zOrder}</span>
+                            <span class="layer-status-pill mono" class:active={layer.hasContent !== false}>
+                              {layer.hasContent !== false ? 'ACTIVE' : 'EMPTY'}
+                            </span>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+
+                    <!-- FOOTER ACTIONS -->
+                    <div class="result-footer-actions">
+                      <button
+                        class="btn-apply-project mono"
+                        onclick={handleSaveComposition}
+                        title="Save comp_project.json"
+                      >
+                        💾 SAVE COMPOSITION
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => handleOpenCompFolder(compResult.outputDir)}
+                      >
+                        OPEN FOLDER
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => { compResult = null; compGpuError = ''; }}
+                      >
+                        NEW SEGMENTATION
                       </button>
                     </div>
                   </div>
@@ -4179,6 +4477,187 @@
   }
   .btn-apply-project:active {
     transform: translateY(0);
+  }
+
+  /* ─── COMPOSITION PAGE STYLES ───────────────────────────────────────────── */
+  .composition-page {
+    width: min(100%, 780px);
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 100%;
+    justify-content: center;
+  }
+
+  .composition-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+  }
+
+  .composition-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .comp-drop-zone {
+    min-height: 150px;
+    max-height: 180px;
+  }
+
+  .composition-actions-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .comp-error-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .comp-error-header {
+    display: flex;
+    align-items: center;
+  }
+
+  .comp-error-msg {
+    font-size: 10px;
+    color: #fca5a5;
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  .comp-error-help {
+    font-size: 9px;
+    color: #a1a1aa;
+    margin-top: 4px;
+    border-top: 1px dashed rgba(239, 68, 68, 0.2);
+    padding-top: 6px;
+  }
+
+  .code-box {
+    display: block;
+    background: #0d0d12;
+    border: 1px solid #27272a;
+    padding: 6px 10px;
+    border-radius: 4px;
+    color: #e4e4e7;
+    margin-top: 4px;
+  }
+
+  .comp-stack-card {
+    margin-top: 4px;
+  }
+
+  .layers-stack-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .layer-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #0d0d12;
+    border: 1px solid #1c1c24;
+    border-radius: 6px;
+    padding: 6px 10px;
+    transition: all 120ms ease;
+  }
+  .layer-card:hover {
+    background: #14141c;
+    border-color: #272738;
+  }
+
+  .layer-thumb-box {
+    width: 44px;
+    height: 44px;
+    border-radius: 4px;
+    background: #181822;
+    border: 1px solid #27272a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .layer-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .layer-thumb-placeholder {
+    font-size: 8px;
+    color: #52525b;
+    font-weight: 700;
+  }
+
+  .layer-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .layer-name {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: 0.04em;
+  }
+
+  .layer-filename {
+    font-size: 8.5px;
+    color: #71717a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .layer-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .z-order-badge {
+    background: #181824;
+    border: 1px solid #272738;
+    color: #a1a1aa;
+    font-size: 8.5px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .layer-status-pill {
+    font-size: 8px;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: rgba(113, 113, 122, 0.15);
+    color: #71717a;
+  }
+  .layer-status-pill.active {
+    background: rgba(74, 222, 128, 0.12);
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.3);
   }
 </style>
 
