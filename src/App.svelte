@@ -374,6 +374,7 @@
       mask_by_alpha: true,
       enabled: true,
       params: { color: [220.0, 240.0, 255.0] }
+    }
   ]);
 
   // T38 Fine Parameters (28 controls) State
@@ -3667,6 +3668,7 @@
           {/if}
         </div>
       </div>
+    </div>
   {/if}
 
   <!-- T44 Keyboard Shortcuts (Hotkeys) Modal Overlay -->
