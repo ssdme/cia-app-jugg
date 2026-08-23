@@ -1,5 +1,6 @@
 use tauri::Manager;
 
+pub mod audio;
 pub mod beat;
 pub mod composition;
 pub mod dumper;
@@ -9,6 +10,7 @@ pub mod preview;
 pub mod probe;
 pub mod render;
 
+pub use audio::*;
 pub use beat::*;
 pub use composition::*;
 pub use dumper::*;

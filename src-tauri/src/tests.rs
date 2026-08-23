@@ -3792,6 +3792,7 @@ fn test_time_curve_decoder_freeze() {
         transitions: vec![],
         ambiance: None,
         source_fx: vec![],
+        audio_mix: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3847,6 +3848,7 @@ fn test_time_curve_decoder_reverse() {
         transitions: vec![],
         ambiance: None,
         source_fx: vec![],
+        audio_mix: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3965,6 +3967,7 @@ fn test_assembly_end_to_end_benchmark() {
         transitions: vec![],
         ambiance: None,
         source_fx: vec![],
+        audio_mix: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -4190,6 +4193,159 @@ fn test_one_click_pipeline_mock() {
     assert!(res_err.is_err());
     assert_eq!(*execution_order.lock().unwrap(), vec!["DUMP"], "If Dump fails, Plan and Render must not execute");
     assert!(res_err.unwrap_err().contains("corrupted video stream"));
+}
+
+#[test]
+fn test_sidechain_ducking_envelope() {
+    let downbeats = vec![1.0, 2.0, 3.0];
+    let config = AudioMixConfig {
+        sidechain_ducking: true,
+        ducking_amount_db: -12.0,
+        attack_ms: 5.0,
+        release_ms: 150.0,
+        ..Default::default()
+    };
+
+    // Test 1: Far from downbeat (e.g. t = 0.5s) -> Gain must be 1.0 (0 dB)
+    let gain_idle = compute_sidechain_ducking_gain(0.5, &downbeats, config.ducking_amount_db, config.attack_ms, config.release_ms);
+    assert!((gain_idle - 1.0).abs() < 1e-4, "Gain before downbeat must be 1.0, got {}", gain_idle);
+
+    // Test 2: At peak of attack (t = 1.005s, 5ms after first downbeat) -> Gain must be ~ -12 dB (0.2512)
+    let target_min_gain = 10.0f32.powf(-12.0 / 20.0);
+    let gain_attack_peak = compute_sidechain_ducking_gain(1.005, &downbeats, config.ducking_amount_db, config.attack_ms, config.release_ms);
+    assert!((gain_attack_peak - target_min_gain).abs() < 1e-3, "Gain at 5ms attack peak must be -12dB ({:.4}), got {:.4}", target_min_gain, gain_attack_peak);
+
+    // Test 3: Mid-release (t = 1.050s) -> Gain recovering between min_gain and 1.0
+    let gain_mid_release = compute_sidechain_ducking_gain(1.050, &downbeats, config.ducking_amount_db, config.attack_ms, config.release_ms);
+    assert!(gain_mid_release > gain_attack_peak && gain_mid_release < 1.0, "Gain mid-release must be recovering, got {}", gain_mid_release);
+
+    // Test 4: End of release (t = 1.160s, > 150ms after attack) -> Gain recovered close to 1.0 (> 0.95)
+    let gain_recovered = compute_sidechain_ducking_gain(1.160, &downbeats, config.ducking_amount_db, config.attack_ms, config.release_ms);
+    assert!(gain_recovered >= 0.95, "Gain after 150ms release must be >= 0.95, got {}", gain_recovered);
+
+    // Test 5: In-place buffer test
+    let sample_rate = 44100;
+    let mut pcm_data = vec![1.0f32; sample_rate as usize * 4]; // 4 seconds of audio
+    apply_sidechain_ducking(&mut pcm_data, 1, sample_rate, &downbeats, &config);
+
+    let peak_idx = (1.005 * sample_rate as f64).round() as usize;
+    assert!((pcm_data[peak_idx] - target_min_gain).abs() < 5e-3, "Buffer sample at downbeat attack must match -12dB (got {:.4}, expected {:.4})", pcm_data[peak_idx], target_min_gain);
+}
+
+#[test]
+fn test_audio_varispeed_pitch_shift() {
+    let sample_rate = 44100;
+    let src_duration = 1.0; // 1 second of 440 Hz
+    let total_src_samples = (src_duration * sample_rate as f64) as usize;
+
+    // Generate pure 440 Hz sine wave
+    let mut src_samples = Vec::with_capacity(total_src_samples);
+    for n in 0..total_src_samples {
+        let t = (n as f64) / (sample_rate as f64);
+        let s = (2.0 * std::f64::consts::PI * 440.0 * t).sin() as f32;
+        src_samples.push(s);
+    }
+
+    // ProjectPlan with 2x slowdown: target_duration = 2.0s, s0 = 0.0, s1 = 1.0 (v = 0.5)
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "SMOOTH".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 2.0,
+        video_duration: 1.0,
+        audio_duration: 1.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 2.0,
+                s0: 0.0,
+                s1: 1.0, // Slowdown 2x -> Frequency should be divided by 2 (220 Hz)
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            }
+        ],
+        export: ExportConfig::default(),
+    };
+
+    let config = AudioMixConfig::default();
+    let resampled = resample_varispeed_audio(&src_samples, sample_rate, &plan, 2.0, sample_rate, 1, &config);
+
+    // Count zero-crossings in 1 second of resampled output
+    // A 440 Hz wave has 880 zero-crossings per second.
+    // A 220 Hz wave (resampled 2x slowdown) must have ~440 zero-crossings per second.
+    let mut zero_crossings = 0;
+    for i in 1..sample_rate as usize {
+        if (resampled[i - 1] <= 0.0 && resampled[i] > 0.0) || (resampled[i - 1] >= 0.0 && resampled[i] < 0.0) {
+            zero_crossings += 1;
+        }
+    }
+
+    assert!(
+        (zero_crossings as i32 - 440).abs() <= 2,
+        "2x slowdown must shift 440Hz to 220Hz (expected ~440 zero crossings/sec, got {})",
+        zero_crossings
+    );
+}
+
+#[test]
+fn test_audio_freeze_mute() {
+    let sample_rate = 44100;
+    let src_samples = vec![0.8f32; sample_rate as usize * 2]; // Non-zero source audio
+
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 1.0,
+        video_duration: 5.0,
+        audio_duration: 1.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.0,
+                s0: 2.0,
+                s1: 2.0, // Freeze: s0 == s1 (v = 0.0)
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            }
+        ],
+        export: ExportConfig::default(),
+    };
+
+    let config = AudioMixConfig::default();
+    let resampled = resample_varispeed_audio(&src_samples, sample_rate, &plan, 1.0, sample_rate, 1, &config);
+
+    // Audio during freeze must be strictly muted (all 0.0)
+    assert_eq!(resampled.len(), sample_rate as usize);
+    assert!(resampled.iter().all(|&s| s == 0.0), "Source audio during freeze must be strictly 0.0 (muted)");
 }
 
 

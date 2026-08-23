@@ -404,6 +404,8 @@ pub struct ProjectPlan {
     pub ambiance: Option<AmbianceConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_fx: Vec<SourceFxKeyframe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_mix: Option<crate::audio::AudioMixConfig>,
     pub segments: Vec<PlanSegment>,
     #[serde(default)]
     pub export: ExportConfig,
@@ -1084,6 +1086,7 @@ pub fn create_plan_internal(
         transitions,
         ambiance,
         source_fx: vec![],
+        audio_mix: Some(crate::audio::AudioMixConfig::default()),
         segments,
         export: ExportConfig::default(),
     })
