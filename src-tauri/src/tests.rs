@@ -3623,5 +3623,154 @@ fn test_post_fx_benchmark_1080p() {
     assert!(ms_per_frame < 35.0, "Performance must be under 35 ms/frame");
 }
 
+#[test]
+fn test_jugg_generates_hard_plan() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/jugg_video.mp4".to_string(),
+        duration: 10.0,
+        fps: 30.0,
+        cuts: vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 140.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0],
+            downbeats: vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5],
+        },
+        cut_beat_sync: 0.85,
+        sync_na: false,
+        sync_tolerance_ms: Some(85.7),
+        detected_style: StyleDecision {
+            style_name: "jugg (strict)".to_string(),
+            sub_style: Some("JUGG (Strict)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.95,
+            sync_tolerance_ms: Some(85.7),
+            justifications: vec!["High shake and tight sync".to_string()],
+        },
+        one_framers: vec![1.0, 2.5, 4.0],
+        one_framers_v2: Some(vec![1.0, 2.5, 4.0]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    assert_eq!(plan.style, "HARD");
+
+    // Must contain at least one reverse cut (reverse == true or s1 < s0)
+    let has_reverse = plan.segments.iter().any(|s| s.effects.reverse || s.s1 < s.s0);
+    assert!(has_reverse, "JUGG analysis must produce at least one reverse cut in HARD plan");
+
+    // Must contain discontinuous velocity slope curves (snap)
+    let has_snap = plan.segments.iter().any(|s| s.curve == "snap");
+    assert!(has_snap, "JUGG analysis must produce snap curves");
+}
+
+#[test]
+fn test_flow_generates_smooth_plan() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/flow_video.mp4".to_string(),
+        duration: 12.0,
+        fps: 30.0,
+        cuts: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 110.0,
+            beats: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+            downbeats: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+        },
+        cut_beat_sync: 0.70,
+        sync_na: false,
+        sync_tolerance_ms: Some(109.0),
+        detected_style: StyleDecision {
+            style_name: "velocity/flow".to_string(),
+            sub_style: Some("FLOW (Liquid)".to_string()),
+            archetype: Some(Archetype::FLOW),
+            confidence: 0.90,
+            sync_tolerance_ms: Some(109.0),
+            justifications: vec!["Speed ramping with controlled flow".to_string()],
+        },
+        one_framers: vec![],
+        one_framers_v2: Some(vec![]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    assert_eq!(plan.style, "SMOOTH");
+
+    // Must have ZERO reverse cuts
+    let any_reverse = plan.segments.iter().any(|s| s.effects.reverse || s.s1 < s.s0);
+    assert!(!any_reverse, "FLOW analysis must have 0 reverse cuts in SMOOTH plan");
+
+    // All segments must have smooth continuous derivative curves (saddle / bezier)
+    let all_smooth = plan.segments.iter().all(|s| s.curve == "saddle" || s.curve == "smooth" || s.curve == "bezier");
+    assert!(all_smooth, "FLOW analysis must have continuous derivative curves (saddle/smooth)");
+}
+
+#[test]
+fn test_plan_beat_alignment() {
+    let downbeats = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/beat_video.mp4".to_string(),
+        duration: 10.0,
+        fps: 30.0,
+        cuts: vec![1.0, 3.0, 5.0, 7.0, 9.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 120.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5],
+            downbeats: downbeats.clone(),
+        },
+        cut_beat_sync: 0.90,
+        sync_na: false,
+        sync_tolerance_ms: Some(100.0),
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            sub_style: Some("JUGG (Standard)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.90,
+            sync_tolerance_ms: Some(100.0),
+            justifications: vec!["Rhythmic beat sync".to_string()],
+        },
+        one_framers: vec![1.0, 3.0],
+        one_framers_v2: Some(vec![1.0, 3.0]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    let dt_frame = 1.0 / (plan.fps as f64);
+
+    let punch_in_segments: Vec<&PlanSegment> = plan.segments.iter()
+        .filter(|s| s.effects.zoom.scale_start > 1.001 || s.effects.zoom.scale_end > 1.001)
+        .collect();
+
+    assert!(!punch_in_segments.is_empty(), "Plan must contain punch-in segments");
+
+    // 100% of punch-in segments must align with a downbeat within ±1 frame
+    for seg in punch_in_segments {
+        let matches_downbeat = downbeats.iter().any(|&db| (seg.t0 - db).abs() <= dt_frame + 1e-4);
+        assert!(
+            matches_downbeat,
+            "Punch-in keyframe at t0={} must align with a downbeat ({:?}) within 1 frame ({:.4}s)",
+            seg.t0,
+            downbeats,
+            dt_frame
+        );
+    }
+}
+
 
 

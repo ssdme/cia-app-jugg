@@ -6,8 +6,9 @@ use std::os::windows::process::CommandExt;
 
 use crate::beat::{detect_beats_internal, get_binary_path_opt, BeatResult};
 use crate::effects::{
-    default_ambiance, AspectRatio, BouncyShake, BuildupChain, DissolveShake, OpticsBounce,
-    SegmentEffects, ShakeEffect, SkewShake, SquishPop, WarpStretch, ZoomEffect,
+    default_ambiance, AspectRatio, BouncyShake, BuildupChain, DissolveShake, OneFramer,
+    OpticsBounce, SegmentEffects, ShakeEffect, SkewShake, SquishPop, WarpStretch, ZoomEffect,
+    ONE_FRAMER_TYPES,
 };
 use crate::plan::{
     generate_one_framers, generate_transitions, get_style_defaults, ColorHints, ExportConfig,
@@ -1814,6 +1815,193 @@ pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<Proje
     })
 }
 
+pub type EditPlan = ProjectPlan;
+
+pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<ProjectPlan, String> {
+    let mapped_style = match analysis.detected_style.archetype {
+        Some(Archetype::JUGG) | Some(Archetype::GLITCH) => "HARD",
+        Some(Archetype::FLOW) | Some(Archetype::CLEAN) => "SMOOTH",
+        Some(Archetype::VIBE) | Some(Archetype::HYBRID) => "HYBRID",
+        None => map_dumper_style_to_jugg_style(&analysis.detected_style.style_name),
+    };
+
+    let fps = clamp_dumper_fps(analysis.fps);
+    let bpm = if analysis.beats.bpm > 0.0 { analysis.beats.bpm } else { 120.0 };
+    let _beats = &analysis.beats.beats;
+    let downbeats = &analysis.beats.downbeats;
+    let target_duration = if analysis.duration > 0.0 { analysis.duration } else { 10.0 };
+    let dt_frame = 1.0 / (fps as f64);
+    let min_seg_dur = 3.0 * dt_frame;
+
+    // 1. Build initial bounds: start at 0.0, include cuts, downbeats, end at target_duration
+    let mut initial_bounds = vec![0.0];
+    for &c in &analysis.cuts {
+        if c > 0.0 && c < target_duration {
+            initial_bounds.push(c);
+        }
+    }
+    for &db in downbeats {
+        if db > 0.0 && db < target_duration && !initial_bounds.iter().any(|&b| (b - db).abs() < min_seg_dur) {
+            initial_bounds.push(db);
+        }
+    }
+    initial_bounds.push(target_duration);
+    initial_bounds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    initial_bounds.dedup_by(|a, b| (*b - *a).abs() < 1e-4);
+
+    let mut filtered_bounds = vec![0.0];
+    for &b in &initial_bounds[1..] {
+        let last = *filtered_bounds.last().unwrap();
+        if b - last >= min_seg_dur {
+            filtered_bounds.push(b);
+        }
+    }
+    if *filtered_bounds.last().unwrap() < target_duration {
+        if target_duration - *filtered_bounds.last().unwrap() < min_seg_dur && filtered_bounds.len() > 1 {
+            filtered_bounds.pop();
+        }
+        filtered_bounds.push(target_duration);
+    }
+
+    // 2. Punch-in amplitude based on sync_score
+    let sync_score = if analysis.sync_na { 0.50 } else { analysis.cut_beat_sync.clamp(0.0, 1.0) };
+    let punch_amp_hard = 1.10 + 0.15 * sync_score;
+    let punch_amp_smooth = 1.04 + 0.04 * sync_score;
+    let punch_amp_hybrid = 1.07 + 0.08 * sync_score;
+
+    let (default_a0, default_omega, default_k) = match mapped_style {
+        "HARD" => {
+            let conf_factor = (analysis.detected_style.confidence - 0.5).max(0.0);
+            (8.0 * (1.0 + conf_factor), 20.0, 3.0)
+        }
+        "SMOOTH" => (2.5, 7.0, 1.8),
+        _ => (5.0, 12.0, 2.2), // HYBRID
+    };
+
+    let mut plan_segments = Vec::new();
+    let mut downbeat_count = 0usize;
+
+    for (idx, win) in filtered_bounds.windows(2).enumerate() {
+        let t0 = win[0];
+        let t1 = win[1];
+        let s_dur = t1 - t0;
+
+        let is_on_downbeat = downbeats.iter().any(|&db| (t0 - db).abs() <= dt_frame + 1e-4);
+        let mut reverse_this_segment = false;
+        let mut scale_start = 1.0;
+        let mut scale_end = 1.0;
+
+        if is_on_downbeat {
+            downbeat_count += 1;
+            match mapped_style {
+                "HARD" => {
+                    scale_start = punch_amp_hard;
+                    scale_end = 1.0;
+                    if downbeat_count % 3 == 1 || downbeat_count == 1 {
+                        reverse_this_segment = true;
+                    }
+                }
+                "SMOOTH" => {
+                    scale_start = punch_amp_smooth;
+                    scale_end = 1.0;
+                    reverse_this_segment = false; // Zero reverse cut in smooth
+                }
+                _ => {
+                    scale_start = punch_amp_hybrid;
+                    scale_end = 1.0;
+                    if downbeat_count % 5 == 1 {
+                        reverse_this_segment = true;
+                    }
+                }
+            }
+        }
+
+        let curve_name = match mapped_style {
+            "HARD" => "snap".to_string(),
+            "SMOOTH" => "saddle".to_string(),
+            _ => {
+                if idx % 2 == 0 {
+                    "snap".to_string()
+                } else {
+                    "saddle".to_string()
+                }
+            }
+        };
+
+        let (s0, s1) = if reverse_this_segment {
+            (s_dur, 0.0) // Negative slope / reverse
+        } else {
+            (0.0, s_dur) // Forward slope
+        };
+
+        let seed = ((idx as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
+
+        plan_segments.push(PlanSegment {
+            t0,
+            t1,
+            s0,
+            s1,
+            curve: curve_name,
+            effects: SegmentEffects {
+                shake: ShakeEffect {
+                    a0: default_a0,
+                    omega: default_omega,
+                    k: default_k,
+                    seed,
+                },
+                zoom: ZoomEffect {
+                    scale_start,
+                    scale_end,
+                },
+                reverse: reverse_this_segment,
+                ..crate::default_segment_effects()
+            },
+            transition: None,
+            color_hints: None,
+        });
+    }
+
+    let one_framers = if let Some(ref v2) = analysis.one_framers_v2 {
+        if !v2.is_empty() {
+            v2.iter()
+                .enumerate()
+                .map(|(i, &t)| OneFramer {
+                    t,
+                    framer_type: ONE_FRAMER_TYPES[i % ONE_FRAMER_TYPES.len()].to_string(),
+                })
+                .collect()
+        } else {
+            generate_one_framers(mapped_style, &plan_segments, downbeats, fps, target_duration)
+        }
+    } else {
+        generate_one_framers(mapped_style, &plan_segments, downbeats, fps, target_duration)
+    };
+
+    let transitions = generate_transitions(mapped_style, &mut plan_segments, &[], fps, None);
+    let ambiance = Some(default_ambiance(mapped_style, downbeats));
+
+    Ok(ProjectPlan {
+        schema_version: 2,
+        style: mapped_style.to_string(),
+        fps,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm,
+        target_duration,
+        video_duration: target_duration,
+        audio_duration: target_duration,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: Some(get_style_defaults(mapped_style)),
+        one_framers,
+        transitions,
+        ambiance,
+        segments: plan_segments,
+        export: ExportConfig::default(),
+    })
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -1844,5 +2032,23 @@ pub fn apply_dumper_project(
         convert_dumper_project_to_plan(&proj)
     } else {
         Err("Either project or project_path must be provided".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn generate_remap_plan(
+    analysis_path: Option<String>,
+    analysis: Option<DumpAnalysis>,
+) -> Result<ProjectPlan, String> {
+    if let Some(a) = analysis {
+        generate_remap_plan_from_analysis(&a)
+    } else if let Some(path) = analysis_path {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read analysis JSON at {path}: {e}"))?;
+        let parsed: DumpAnalysis = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse analysis JSON: {e}"))?;
+        generate_remap_plan_from_analysis(&parsed)
+    } else {
+        Err("Either analysis or analysis_path must be provided".to_string())
     }
 }

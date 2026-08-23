@@ -99,6 +99,7 @@ pub fn run() {
             dumper::detect_scenes,
             dumper::run_dump_pipeline,
             dumper::apply_dumper_project,
+            dumper::generate_remap_plan,
             composition::check_gpu_status,
             composition::segment_character,
             composition::save_composition_project,
