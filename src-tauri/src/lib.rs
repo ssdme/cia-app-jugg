@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 pub mod audio;
+pub mod batch;
 pub mod beat;
 pub mod composition;
 pub mod dumper;
@@ -15,6 +16,7 @@ pub mod render;
 pub mod timeline;
 
 pub use audio::*;
+pub use batch::*;
 pub use beat::*;
 pub use composition::*;
 pub use dumper::*;
@@ -129,6 +131,9 @@ pub fn run() {
             timeline::get_scrub_frame,
             timeline::get_time_curve_velocities,
             nle::export_for_nle,
+            batch::start_batch_job,
+            batch::get_batch_status,
+            batch::list_batch_jobs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

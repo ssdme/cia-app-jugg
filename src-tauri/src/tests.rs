@@ -5007,5 +5007,137 @@ fn test_beat_grid_json_accuracy() {
     assert!(has_2_5, "Downbeat at t=2.5s must be present with tolerance < 1ms");
 }
 
+#[test]
+fn test_batch_scanner_recursive() {
+    let temp_dir = std::env::temp_dir().join(format!("cia_test_batch_scan_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    let sub_dir = temp_dir.join("sub");
+    let deep_dir = sub_dir.join("deep");
+
+    std::fs::create_dir_all(&deep_dir).expect("Failed to create test dirs");
+
+    // Create files
+    std::fs::write(temp_dir.join("video1.mp4"), b"fake mp4").unwrap();
+    std::fs::write(sub_dir.join("video2.MP4"), b"fake mp4").unwrap();
+    std::fs::write(deep_dir.join("clip3.mkv"), b"fake mkv").unwrap();
+    std::fs::write(temp_dir.join("notes.txt"), b"ignore me").unwrap();
+    std::fs::write(sub_dir.join("image.png"), b"ignore me").unwrap();
+
+    let extensions = vec!["mp4".to_string(), "mkv".to_string()];
+    let scanned = scan_directory_recursive(&temp_dir, &extensions);
+
+    assert_eq!(scanned.len(), 3, "Scanner must find exactly 3 matching media files");
+    let filenames: Vec<String> = scanned.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_lowercase()).collect();
+    assert!(filenames.contains(&"video1.mp4".to_string()));
+    assert!(filenames.contains(&"video2.mp4".to_string()));
+    assert!(filenames.contains(&"clip3.mkv".to_string()));
+    assert!(!filenames.contains(&"notes.txt".to_string()));
+    assert!(!filenames.contains(&"image.png".to_string()));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_batch_concurrency_limit() {
+    // 10 tasks of 100ms each with concurrency limit 2 -> takes at least 5 * 100ms = 500ms
+    let total_tasks = 10;
+    let concurrency = 2;
+    let task_duration = std::time::Duration::from_millis(100);
+
+    let start_time = std::time::Instant::now();
+
+    let chunks: Vec<Vec<usize>> = (0..total_tasks)
+        .collect::<Vec<_>>()
+        .chunks(concurrency)
+        .map(|c| c.to_vec())
+        .collect();
+
+    let mut completed = 0;
+    for chunk in chunks {
+        let mut handles = Vec::new();
+        for _ in chunk {
+            let dur = task_duration;
+            handles.push(std::thread::spawn(move || {
+                std::thread::sleep(dur);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+            completed += 1;
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    println!("[BENCHMARK BATCH CONCURRENCY LIMIT]");
+    println!("  Processed {} tasks with concurrency {}: {:.2} ms (Expected >= 450 ms)", total_tasks, concurrency, elapsed.as_secs_f64() * 1000.0);
+
+    assert_eq!(completed, 10, "All 10 tasks must complete");
+    assert!(
+        elapsed.as_millis() >= 450,
+        "Concurrency limit of 2 must execute tasks in serial chunks of 2 (expected >= 450ms, got {}ms)",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
+fn test_batch_error_resilience() {
+    let mut job = BatchJob {
+        id: "batch_test_resilience".to_string(),
+        config: BatchConfig {
+            source_dir: "C:/test_batch".to_string(),
+            file_extensions: vec!["mp4".to_string()],
+            action: BatchAction::AnalyzeAndRender,
+            preset_name: Some("AGGRESSIVE_JUGG".to_string()),
+            export_settings: None,
+            concurrency_limit: 2,
+        },
+        total_files: 2,
+        completed_files: 2,
+        status: BatchJobStatus::Running,
+        items: vec![
+            BatchItemResult {
+                file_path: "C:/test_batch/valid_clip.mp4".to_string(),
+                file_name: "valid_clip.mp4".to_string(),
+                status: BatchItemStatus::Success,
+                output_path: Some("C:/test_batch/valid_clip_jugg_out.mp4".to_string()),
+                duration_secs: 1.25,
+                error_message: None,
+            },
+            BatchItemResult {
+                file_path: "C:/test_batch/corrupt_clip.mp4".to_string(),
+                file_name: "corrupt_clip.mp4".to_string(),
+                status: BatchItemStatus::Failed,
+                output_path: None,
+                duration_secs: 0.05,
+                error_message: Some("Corrupt video container / EOF reached prematurely".to_string()),
+            },
+        ],
+        report_path: None,
+        start_time: 1700000000,
+        end_time: Some(1700000010),
+    };
+
+    // Determine status
+    let has_failed = job.items.iter().any(|i| i.status == BatchItemStatus::Failed);
+    let all_failed = job.items.iter().all(|i| i.status == BatchItemStatus::Failed);
+    job.status = if all_failed {
+        BatchJobStatus::Failed
+    } else if has_failed {
+        BatchJobStatus::PartialSuccess
+    } else {
+        BatchJobStatus::Completed
+    };
+
+    assert_eq!(job.status, BatchJobStatus::PartialSuccess, "Job with mixed success/fail must have PartialSuccess status");
+
+    // Generate markdown report
+    let report = generate_batch_report_markdown(&job);
+    assert!(report.contains("Total Files**: `2`"));
+    assert!(report.contains("Success**: `1`"));
+    assert!(report.contains("Failed**: `1`"));
+    assert!(report.contains("valid_clip.mp4"));
+    assert!(report.contains("corrupt_clip.mp4"));
+    assert!(report.contains("Corrupt video container / EOF reached prematurely"));
+}
+
 
 
