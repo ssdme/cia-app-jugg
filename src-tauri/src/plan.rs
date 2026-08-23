@@ -361,6 +361,24 @@ pub struct PlanSegment {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceFxType {
+    RgbSplit,
+    Flash,
+    BlockGlitch,
+    Invert,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFxKeyframe {
+    pub timestamp: f64,
+    pub duration: f64,
+    pub fx_type: SourceFxType,
+    pub intensity: f32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectPlan {
     pub schema_version: u32,
     pub style: String,
@@ -384,6 +402,8 @@ pub struct ProjectPlan {
     pub transitions: Vec<TransitionItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ambiance: Option<AmbianceConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fx: Vec<SourceFxKeyframe>,
     pub segments: Vec<PlanSegment>,
     #[serde(default)]
     pub export: ExportConfig,
@@ -1063,6 +1083,7 @@ pub fn create_plan_internal(
         one_framers,
         transitions,
         ambiance,
+        source_fx: vec![],
         segments,
         export: ExportConfig::default(),
     })

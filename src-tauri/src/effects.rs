@@ -1,4 +1,5 @@
 use crate::probe::{mirror_coordinate, sample_pixel_mirrored};
+use crate::plan::{SourceFxKeyframe, SourceFxType};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct AspectRatio {
@@ -1173,3 +1174,109 @@ pub fn apply_ambiance_effects(
         }
     }
 }
+
+// ─── T36 Procedural Source FX Engine ──────────────────────────────────────────
+
+pub fn apply_active_source_fx(
+    buf: &mut [u8],
+    width: usize,
+    height: usize,
+    source_fx: &[SourceFxKeyframe],
+    t: f64,
+) {
+    for kf in source_fx {
+        if t >= kf.timestamp - 1e-4 && t < kf.timestamp + kf.duration - 1e-4 {
+            match kf.fx_type {
+                SourceFxType::RgbSplit => {
+                    apply_source_rgb_split(buf, width, height, kf.intensity);
+                }
+                SourceFxType::Flash => {
+                    apply_source_flash(buf, kf.intensity);
+                }
+                SourceFxType::Invert => {
+                    apply_source_invert(buf, kf.intensity);
+                }
+                SourceFxType::BlockGlitch => {
+                    let seed = ((t * 1000.0) as u64).wrapping_mul(6364136223846793005);
+                    apply_source_block_glitch(buf, width, height, seed, kf.intensity);
+                }
+            }
+        }
+    }
+}
+
+pub fn apply_source_rgb_split(buf: &mut [u8], width: usize, height: usize, intensity: f32) {
+    let shift = ((intensity * 12.0).round() as i32).max(1);
+    let mut row_copy = vec![0u8; width * 3];
+
+    for y in 0..height {
+        let row_start = y * width * 3;
+        let row_end = row_start + width * 3;
+        if row_end > buf.len() { break; }
+        row_copy.copy_from_slice(&buf[row_start..row_end]);
+
+        for x in 0..width {
+            let r_x = (x as i32 + shift).clamp(0, width as i32 - 1) as usize;
+            let b_x = (x as i32 - shift).clamp(0, width as i32 - 1) as usize;
+
+            let dst_idx = row_start + x * 3;
+            buf[dst_idx] = row_copy[r_x * 3];
+            buf[dst_idx + 1] = row_copy[x * 3 + 1];
+            buf[dst_idx + 2] = row_copy[b_x * 3 + 2];
+        }
+    }
+}
+
+pub fn apply_source_flash(buf: &mut [u8], intensity: f32) {
+    let factor = intensity.clamp(0.0, 1.0);
+    let inv_factor = 1.0 - factor;
+    for px in buf.iter_mut() {
+        *px = ((*px as f32) * inv_factor + 255.0 * factor).round() as u8;
+    }
+}
+
+pub fn apply_source_invert(buf: &mut [u8], intensity: f32) {
+    let factor = intensity.clamp(0.0, 1.0);
+    let inv_factor = 1.0 - factor;
+    for px in buf.iter_mut() {
+        let inv = 255 - *px;
+        *px = ((*px as f32) * inv_factor + (inv as f32) * factor).round() as u8;
+    }
+}
+
+pub fn apply_source_block_glitch(
+    buf: &mut [u8],
+    width: usize,
+    height: usize,
+    seed: u64,
+    intensity: f32,
+) {
+    let block_height = 16usize;
+    let num_blocks = height / block_height;
+    let mut row_copy = vec![0u8; width * 3];
+
+    for b in 0..num_blocks {
+        let block_seed = seed.wrapping_add((b as u64).wrapping_mul(2654435761));
+        if (block_seed % 100) < (intensity * 60.0) as u64 {
+            let shift_px = ((block_seed % 40) as i32 - 20) * ((intensity * 2.0) as i32).max(1);
+            let y_start = b * block_height;
+            let y_end = (y_start + block_height).min(height);
+
+            for y in y_start..y_end {
+                let row_start = y * width * 3;
+                let row_end = row_start + width * 3;
+                if row_end > buf.len() { break; }
+                row_copy.copy_from_slice(&buf[row_start..row_end]);
+
+                for x in 0..width {
+                    let src_x = (x as i32 + shift_px).rem_euclid(width as i32) as usize;
+                    let dst_idx = row_start + x * 3;
+                    buf[dst_idx] = row_copy[src_x * 3];
+                    buf[dst_idx + 1] = row_copy[src_x * 3 + 1];
+                    buf[dst_idx + 2] = row_copy[src_x * 3 + 2];
+                }
+            }
+        }
+    }
+}
+

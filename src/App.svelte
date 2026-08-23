@@ -672,6 +672,59 @@
     }
   }
 
+  async function handleOneClickJugg() {
+    const vPath = scenePath || dumperVideoPath;
+    const aPath = audioPath || drumsPath;
+    if (!vPath || !aPath) {
+      showToast('Please select at least a Video (Scene) and an Audio source for One-Click Jugg', 'error');
+      return;
+    }
+
+    renderState = 'running';
+    renderError = '';
+    renderOutputMp4 = '';
+    renderProgress = {
+      phase: 'DECODING',
+      percent: 5,
+      currentFrame: 0,
+      totalFrames: 100,
+      message: '⚡ ONE-CLICK JUGG: Starting full autonomous pipeline...'
+    };
+    navigateTo('settings');
+
+    try {
+      console.log('[ONE-CLICK] Launching autonomous one-click jugg pipeline...');
+      const renderRes = await invoke('run_one_click_jugg', {
+        sourceVideo: vPath,
+        targetAudio: aPath,
+        outputPath: null,
+      });
+
+      console.log('[ONE-CLICK] Autonomous pipeline completed successfully:', renderRes);
+      renderStats = typeof renderRes === 'object' && renderRes !== null ? renderRes : {
+        outputPath: renderRes,
+        renderTimeSecs: 0,
+        fileSizeMb: 0,
+        targetFps: fpsValue || 30,
+        effectsCount: 0
+      };
+      renderOutputMp4 = renderStats.outputPath;
+      renderState = 'done';
+      showToast('⚡ One-Click Jugg rendered successfully!', 'success');
+    } catch (err) {
+      console.error('One-Click Jugg failed:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      if (msg.includes('cancelled') || msg.includes('Cancel')) {
+        renderState = 'idle';
+        showToast('Process cancelled by user', 'info');
+      } else {
+        renderState = 'error';
+        renderError = msg;
+        showToast(`One-Click Jugg failed: ${msg}`, 'error');
+      }
+    }
+  }
+
   async function handleCancelRender() {
     try {
       await invoke('cancel_render');
@@ -1395,10 +1448,18 @@
               </div>
             </div>
 
-            {#if allZonesFilled}
+            {#if allZonesFilled || (Boolean(scenePath) && Boolean(audioPath))}
               <div class="continue-row">
                 <button
-                  class="btn-continue"
+                  class="btn-continue btn-one-click"
+                  onclick={handleOneClickJugg}
+                  disabled={isAnalyzing}
+                  title="Run automated 3-phase pipeline: Dumper v2 Analysis -> Rhythmic Remap Plan -> Render Final Assembly"
+                >
+                  ⚡ ONE-CLICK JUGG
+                </button>
+                <button
+                  class="btn-continue btn-manual-continue"
                   onclick={handleContinue}
                   disabled={isAnalyzing}
                 >
@@ -1406,7 +1467,7 @@
                     <span class="spinner-inline"></span>
                     <span>{analyzingStep || 'PROCESSING...'}</span>
                   {:else}
-                    CONTINUE &gt;
+                    MANUAL SETTINGS &gt;
                   {/if}
                 </button>
               </div>
@@ -3209,6 +3270,32 @@
   .btn-continue:disabled {
     opacity: 0.8;
     cursor: wait;
+  }
+
+  .btn-one-click {
+    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+    color: #000000;
+    border: 1px solid #00f2fe;
+    box-shadow: 0 0 20px rgba(0, 242, 254, 0.35);
+  }
+
+  .btn-one-click:hover:not(:disabled) {
+    background: #000000;
+    color: #00f2fe;
+    border-color: #00f2fe;
+    box-shadow: 0 0 25px rgba(0, 242, 254, 0.6);
+  }
+
+  .btn-manual-continue {
+    background: transparent;
+    color: #888888;
+    border: 1px solid #333333;
+  }
+
+  .btn-manual-continue:hover:not(:disabled) {
+    background: #111111;
+    color: #ffffff;
+    border-color: #666666;
   }
 
   .spinner-inline {
