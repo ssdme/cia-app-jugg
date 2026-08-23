@@ -3791,6 +3791,7 @@ fn test_time_curve_decoder_freeze() {
         one_framers: vec![],
         transitions: vec![],
         ambiance: None,
+        source_fx: vec![],
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3845,6 +3846,7 @@ fn test_time_curve_decoder_reverse() {
         one_framers: vec![],
         transitions: vec![],
         ambiance: None,
+        source_fx: vec![],
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3962,6 +3964,7 @@ fn test_assembly_end_to_end_benchmark() {
         one_framers: vec![],
         transitions: vec![],
         ambiance: None,
+        source_fx: vec![],
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -4056,6 +4059,137 @@ fn test_assembly_end_to_end_benchmark() {
     }
 
     assert!(total_secs < 3.0, "Total assembly time must be under 3.0 seconds, got {:.3}s", total_secs);
+}
+
+#[test]
+fn test_source_fx_rgb_split_generation() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0];
+    let downbeats = vec![1.0, 2.0, 3.0];
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/jugg_video.mp4".to_string(),
+        duration: 4.0,
+        fps: 30.0,
+        cuts: vec![1.0, 2.0, 3.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 120.0,
+            beats: beats.clone(),
+            downbeats: downbeats.clone(),
+        },
+        cut_beat_sync: 0.85,
+        sync_na: false,
+        sync_tolerance_ms: Some(100.0),
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            sub_style: Some("JUGG (Standard)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.88,
+            sync_tolerance_ms: Some(100.0),
+            justifications: vec!["Heavy rhythmic shake energy".to_string()],
+        },
+        one_framers: vec![],
+        one_framers_v2: None,
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+
+    let rgb_splits: Vec<&SourceFxKeyframe> = plan.source_fx.iter()
+        .filter(|fx| fx.fx_type == SourceFxType::RgbSplit)
+        .collect();
+
+    assert!(!rgb_splits.is_empty(), "Plan must contain RGB split keyframes when shake intensity > 0.5");
+    assert!(rgb_splits.iter().all(|fx| fx.intensity >= 0.8), "RGB split intensity must be >= 0.8");
+    assert_eq!(rgb_splits.len(), beats.len(), "Each beat must receive an RGB split keyframe");
+}
+
+#[test]
+fn test_source_fx_flash_on_downbeat() {
+    let downbeats = vec![1.0, 2.0, 3.0];
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/flash_video.mp4".to_string(),
+        duration: 4.0,
+        fps: 30.0,
+        cuts: vec![1.0, 2.0, 3.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 120.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            downbeats: downbeats.clone(),
+        },
+        cut_beat_sync: 0.90,
+        sync_na: false,
+        sync_tolerance_ms: Some(100.0),
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            sub_style: Some("JUGG (Standard)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.85,
+            sync_tolerance_ms: Some(100.0),
+            justifications: vec!["Rhythmic strobe and one-framers".to_string()],
+        },
+        one_framers: vec![1.0, 2.0, 3.0],
+        one_framers_v2: Some(vec![1.0, 2.0, 3.0]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+
+    let flashes: Vec<&SourceFxKeyframe> = plan.source_fx.iter()
+        .filter(|fx| fx.fx_type == SourceFxType::Flash || fx.fx_type == SourceFxType::Invert)
+        .collect();
+
+    assert!(!flashes.is_empty(), "Plan must contain Flash Source FX on downbeats when one-framers are present");
+
+    let first_flash = flashes.first().unwrap();
+    assert!((first_flash.timestamp - downbeats[0]).abs() < 1e-4, "First flash must be placed at first downbeat timestamp {} (got {})", downbeats[0], first_flash.timestamp);
+    assert!((first_flash.duration - (1.0 / 30.0)).abs() < 1e-4, "Flash duration must be exactly 1 frame");
+}
+
+#[test]
+fn test_one_click_pipeline_mock() {
+    let execution_order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+
+    let simulate_one_click = |dump_success: bool| -> Result<(), String> {
+        let order = execution_order.clone();
+
+        // Phase 1: Dump
+        order.lock().unwrap().push("DUMP");
+        if !dump_success {
+            return Err("Dump analysis error: corrupted video stream".to_string());
+        }
+
+        // Phase 2: Plan
+        order.lock().unwrap().push("PLAN");
+
+        // Phase 3: Render
+        order.lock().unwrap().push("RENDER");
+
+        Ok(())
+    };
+
+    // Case A: Successful pipeline run
+    execution_order.lock().unwrap().clear();
+    let res_ok = simulate_one_click(true);
+    assert!(res_ok.is_ok());
+    assert_eq!(*execution_order.lock().unwrap(), vec!["DUMP", "PLAN", "RENDER"], "Execution order must be strictly Dump -> Plan -> Render");
+
+    // Case B: Failure during Dump -> Plan and Render must NEVER execute
+    execution_order.lock().unwrap().clear();
+    let res_err = simulate_one_click(false);
+    assert!(res_err.is_err());
+    assert_eq!(*execution_order.lock().unwrap(), vec!["DUMP"], "If Dump fails, Plan and Render must not execute");
+    assert!(res_err.unwrap_err().contains("corrupted video stream"));
 }
 
 

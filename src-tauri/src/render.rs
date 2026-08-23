@@ -720,6 +720,17 @@ pub async fn run_render_pipeline(
             }
         }
 
+        // 3.6 T36 Procedural Source FX
+        if !plan.source_fx.is_empty() {
+            crate::effects::apply_active_source_fx(
+                &mut cropped_buf,
+                crop.width as usize,
+                crop.height as usize,
+                &plan.source_fx,
+                t,
+            );
+        }
+
         // 4. Pipe to encoder
         encode_stdin.write_all(&cropped_buf)
             .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
@@ -996,6 +1007,17 @@ pub fn render_final_jugg_internal(
             if src_end <= base_raw_buf.len() && dst_end <= cropped_buf.len() {
                 cropped_buf[dst_start..dst_end].copy_from_slice(&base_raw_buf[src_start..src_end]);
             }
+        }
+
+        // Apply active procedural Source FX (T36) directly to base cropped buffer
+        if !plan.source_fx.is_empty() {
+            crate::effects::apply_active_source_fx(
+                &mut cropped_buf,
+                crop.width as usize,
+                crop.height as usize,
+                &plan.source_fx,
+                target_t,
+            );
         }
 
         // If composition layers exist, render character at TARGET time target_t

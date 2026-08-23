@@ -12,7 +12,7 @@ use crate::effects::{
 };
 use crate::plan::{
     generate_one_framers, generate_transitions, get_style_defaults, ColorHints, ExportConfig,
-    PlanSegment, ProjectPlan,
+    PlanSegment, ProjectPlan, SourceFxKeyframe, SourceFxType,
 };
 use crate::probe::probe_media_internal;
 
@@ -1810,6 +1810,7 @@ pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<Proje
         one_framers,
         transitions,
         ambiance,
+        source_fx: vec![],
         segments: plan_segments,
         export: ExportConfig::default(),
     })
@@ -1980,6 +1981,70 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
     let transitions = generate_transitions(mapped_style, &mut plan_segments, &[], fps, None);
     let ambiance = Some(default_ambiance(mapped_style, downbeats));
 
+    // Procedural Source FX Generation (T36)
+    let shake_intensity = if let Some(Archetype::JUGG) | Some(Archetype::GLITCH) = analysis.detected_style.archetype {
+        (analysis.detected_style.confidence as f32).max(0.8)
+    } else if let Some(Archetype::HYBRID) = analysis.detected_style.archetype {
+        0.6f32
+    } else if analysis.detected_style.style_name.to_uppercase().contains("JUGG") {
+        0.8f32
+    } else {
+        0.0f32
+    };
+
+    let one_framer_density = if let Some(ref v2) = analysis.one_framers_v2 {
+        v2.len() as f64 / target_duration.max(1.0)
+    } else {
+        analysis.one_framers.len() as f64 / target_duration.max(1.0)
+    };
+
+    let mut source_fx: Vec<SourceFxKeyframe> = Vec::new();
+
+    // 1. If shake_intensity > 0.5 -> Inject RGB Split / Chromatic Aberration on each beat/snare
+    if shake_intensity > 0.5 {
+        for &b in &analysis.beats.beats {
+            if b >= 0.0 && b < target_duration {
+                source_fx.push(SourceFxKeyframe {
+                    timestamp: b,
+                    duration: (3.0 * dt_frame).min(0.12),
+                    fx_type: SourceFxType::RgbSplit,
+                    intensity: shake_intensity,
+                });
+            }
+        }
+    }
+
+    // 2. If one_framer_density > 0.2 (or one_framers present) -> Inject 1-frame Flashes on downbeats
+    if one_framer_density > 0.2 || analysis.one_framers_v2.as_ref().map_or(false, |v| !v.is_empty()) || !analysis.one_framers.is_empty() {
+        for &db in downbeats {
+            if db >= 0.0 && db < target_duration {
+                source_fx.push(SourceFxKeyframe {
+                    timestamp: db,
+                    duration: dt_frame,
+                    fx_type: SourceFxType::Flash,
+                    intensity: 0.9,
+                });
+            }
+        }
+    }
+
+    // 3. If style is GLITCH -> Add micro-cuts / block glitch on segments
+    let is_glitch = matches!(analysis.detected_style.archetype, Some(Archetype::GLITCH))
+        || analysis.detected_style.style_name.to_uppercase().contains("GLITCH");
+
+    if is_glitch {
+        for (i, seg) in plan_segments.iter().enumerate() {
+            if i % 2 == 0 {
+                source_fx.push(SourceFxKeyframe {
+                    timestamp: seg.t0,
+                    duration: (seg.t1 - seg.t0) * 0.5,
+                    fx_type: SourceFxType::BlockGlitch,
+                    intensity: 0.75,
+                });
+            }
+        }
+    }
+
     Ok(ProjectPlan {
         schema_version: 2,
         style: mapped_style.to_string(),
@@ -1997,6 +2062,7 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
         one_framers,
         transitions,
         ambiance,
+        source_fx,
         segments: plan_segments,
         export: ExportConfig::default(),
     })
@@ -2051,4 +2117,79 @@ pub fn generate_remap_plan(
     } else {
         Err("Either analysis or analysis_path must be provided".to_string())
     }
+}
+
+pub fn run_one_click_jugg_internal(
+    app: Option<&tauri::AppHandle>,
+    source_video: &str,
+    target_audio: &str,
+    output_path: Option<&str>,
+) -> Result<crate::render::RenderStats, String> {
+    if let Some(a) = app {
+        let _ = a.emit("render-progress", crate::render::RenderProgressPayload {
+            phase: "DECODING".to_string(),
+            percent: 5,
+            current_frame: 0,
+            total_frames: 100,
+            message: "Phase 1/3: Analyzing source video with Dumper v2...".to_string(),
+        });
+    }
+
+    // Step 1: Run Dumper analysis (Fail-fast: if analysis fails, abort immediately)
+    let analysis = run_dump_pipeline_internal(app, source_video)
+        .map_err(|e| format!("One-Click Jugg aborted at Phase 1 (Analysis): {e}"))?;
+
+    if let Some(a) = app {
+        let _ = a.emit("render-progress", crate::render::RenderProgressPayload {
+            phase: "SAMPLING".to_string(),
+            percent: 25,
+            current_frame: 25,
+            total_frames: 100,
+            message: "Phase 2/3: Generating rhythmic remap plan & Source FX...".to_string(),
+        });
+    }
+
+    // Step 2: Generate Remap Plan & Source FX
+    let plan = generate_remap_plan_from_analysis(&analysis)
+        .map_err(|e| format!("One-Click Jugg aborted at Phase 2 (Plan Generation): {e}"))?;
+
+    let plan_json = serde_json::to_string(&plan)
+        .map_err(|e| format!("Failed to serialize plan JSON: {e}"))?;
+
+    if let Some(a) = app {
+        let _ = a.emit("render-progress", crate::render::RenderProgressPayload {
+            phase: "ENCODING".to_string(),
+            percent: 30,
+            current_frame: 30,
+            total_frames: 100,
+            message: "Phase 3/3: Rendering Final Assembly...".to_string(),
+        });
+    }
+
+    // Step 3: Render Final Jugg Assembly
+    let stats = crate::render::render_final_jugg_internal(
+        app,
+        &plan_json,
+        source_video,
+        target_audio,
+        None,
+        output_path,
+    )?;
+
+    Ok(stats)
+}
+
+#[tauri::command]
+pub async fn run_one_click_jugg(
+    app: tauri::AppHandle,
+    source_video: String,
+    target_audio: String,
+    output_path: Option<String>,
+) -> Result<crate::render::RenderStats, String> {
+    run_one_click_jugg_internal(
+        Some(&app),
+        &source_video,
+        &target_audio,
+        output_path.as_deref(),
+    )
 }

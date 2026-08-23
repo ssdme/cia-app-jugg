@@ -101,6 +101,7 @@ pub fn run() {
             dumper::run_dump_pipeline,
             dumper::apply_dumper_project,
             dumper::generate_remap_plan,
+            dumper::run_one_click_jugg,
             composition::check_gpu_status,
             composition::segment_character,
             composition::save_composition_project,
