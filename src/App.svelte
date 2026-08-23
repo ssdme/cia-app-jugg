@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
+  import Timeline from './Timeline.svelte';
   import appLogo from '../src-tauri/icons/128x128@2x.png';
 
   const appWindow =
@@ -18,6 +19,14 @@
   let toast = $state({ show: false, message: '', type: 'info' });
   let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
+
+  // T40 Timeline & Scrubbing State
+  let timelineCurrentTime = $state(0.0);
+  let scrubbedFrameData = $state(null);
+
+  function handleTimelineScrub(p) {
+    scrubbedFrameData = p;
+  }
 
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
@@ -2128,6 +2137,17 @@
                     {/each}
                   </div>
                 </div>
+              {/if}
+
+              <!-- T40 Interactive Timeline Component -->
+              {#if planSummary}
+                <Timeline
+                  plan={planSummary}
+                  beats={beats || []}
+                  downbeats={downbeats || []}
+                  bind:currentTime={timelineCurrentTime}
+                  onScrub={handleTimelineScrub}
+                />
               {/if}
 
               <!-- Footer Actions (only when idle/error) -->

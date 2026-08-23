@@ -4624,5 +4624,155 @@ fn test_render_queue_non_blocking() {
     assert!(status_list.iter().any(|j| j.id == job_id));
 }
 
+#[test]
+fn test_scrub_cache_hit() {
+    let mut cache = LruFrameCache::new(30);
+
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 5.0,
+        video_duration: 10.0,
+        audio_duration: 5.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        remap_params: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 5.0,
+                s0: 0.0,
+                s1: 5.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            }
+        ],
+        export: ExportConfig::default(),
+    };
+
+    // 1. Request frame at t = 1.0s (frame_idx = 30) -> Cache miss, decode_count = 1
+    assert_eq!(cache.decode_count, 0);
+    let (idx1, _) = get_scrub_frame_cached(1.0, &plan, &mut cache);
+    assert_eq!(idx1, 30);
+    assert_eq!(cache.decode_count, 1, "First request must trigger decode");
+
+    // 2. Request frame at t = 1.01s (frame_idx = 30) -> Cache hit, decode_count remains 1
+    let (idx2, _) = get_scrub_frame_cached(1.01, &plan, &mut cache);
+    assert_eq!(idx2, 30);
+    assert_eq!(cache.decode_count, 1, "t=1.01s maps to same frame 30 -> must hit cache without re-decoding");
+
+    // 3. Request frame at t = 1.0s again -> Cache hit, decode_count remains 1
+    let (idx3, _) = get_scrub_frame_cached(1.0, &plan, &mut cache);
+    assert_eq!(idx3, 30);
+    assert_eq!(cache.decode_count, 1, "Repeated request must hit cache");
+
+    // 4. Request frame at t = 2.0s (frame_idx = 60) -> Cache miss, decode_count = 2
+    let (idx4, _) = get_scrub_frame_cached(2.0, &plan, &mut cache);
+    assert_eq!(idx4, 60);
+    assert_eq!(cache.decode_count, 2, "Different frame 60 must trigger new decode");
+}
+
+#[test]
+fn test_timecurve_derivative_calculation() {
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 4.0,
+        video_duration: 10.0,
+        audio_duration: 4.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        remap_params: None,
+        segments: vec![
+            // Segment 0: Normal linear speed (v = 1.0)
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.0,
+                s0: 0.0,
+                s1: 1.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            // Segment 1: Freeze (s0 == s1 -> v = 0.0)
+            PlanSegment {
+                t0: 1.0,
+                t1: 2.0,
+                s0: 2.0,
+                s1: 2.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            // Segment 2: Reverse cut (s0 > s1 -> v < 0.0, v = -2.0)
+            PlanSegment {
+                t0: 2.0,
+                t1: 3.0,
+                s0: 4.0,
+                s1: 2.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            // Segment 3: 2x Slowdown (v = 0.5)
+            PlanSegment {
+                t0: 3.0,
+                t1: 4.0,
+                s0: 0.0,
+                s1: 0.5,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+        ],
+        export: ExportConfig::default(),
+    };
+
+    // 1. Linear segment at t = 0.5 -> v = 1.0
+    let v_linear = compute_instantaneous_velocity(&plan, 0.5);
+    assert!((v_linear - 1.0).abs() < 1e-4, "Linear segment velocity must be 1.0, got {}", v_linear);
+
+    // 2. Freeze segment at t = 1.5 -> v = 0.0
+    let v_freeze = compute_instantaneous_velocity(&plan, 1.5);
+    assert_eq!(v_freeze, 0.0, "Freeze velocity must be strictly 0.0, got {}", v_freeze);
+
+    // 3. Reverse segment at t = 2.5 -> v < 0.0 (strictly negative)
+    let v_reverse = compute_instantaneous_velocity(&plan, 2.5);
+    assert!(v_reverse < 0.0, "Reverse cut velocity must be strictly negative (< 0.0), got {}", v_reverse);
+    assert!((v_reverse - (-2.0)).abs() < 1e-4, "Reverse cut velocity (4.0 -> 2.0 in 1.0s) must be -2.0, got {}", v_reverse);
+
+    // 4. Slowdown segment at t = 3.5 -> v = 0.5
+    let v_slow = compute_instantaneous_velocity(&plan, 3.5);
+    assert!((v_slow - 0.5).abs() < 1e-4, "Slowdown velocity must be 0.5, got {}", v_slow);
+}
+
 
 
