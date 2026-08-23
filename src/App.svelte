@@ -8,6 +8,7 @@
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
   import Timeline from './Timeline.svelte';
+  import MediaPool from './MediaPool.svelte';
   import appLogo from '../src-tauri/icons/128x128@2x.png';
 
   const appWindow =
@@ -95,6 +96,32 @@
         console.warn('Batch poll error:', e);
       }
     }, 500);
+  }
+
+  // T43 Media Pool Handlers
+  function handlePoolSelectScene(path) {
+    scenePath = path;
+    probeSceneFile(path);
+    showToast(`Selected as Scene: ${getFileName(path)}`, 'info');
+  }
+
+  function handlePoolSelectDrums(path) {
+    drumsPath = path;
+    probeDrumsFile(path);
+    showToast(`Selected as Drums: ${getFileName(path)}`, 'info');
+  }
+
+  function handlePoolSelectAudio(path) {
+    audioPath = path;
+    showToast(`Selected as Audio: ${getFileName(path)}`, 'info');
+  }
+
+  function handlePoolDirectOneClick(path) {
+    scenePath = path;
+    if (!audioPath && !drumsPath) {
+      audioPath = path;
+    }
+    handleOneClickJugg();
   }
 
   // Auto-Updater State
@@ -1804,6 +1831,14 @@
                 </button>
               </div>
             {/if}
+
+            <!-- T43 Media Pool & Smart Cache Section -->
+            <MediaPool
+              onSelectAsScene={handlePoolSelectScene}
+              onSelectAsDrums={handlePoolSelectDrums}
+              onSelectAsAudio={handlePoolSelectAudio}
+              onDirectOneClick={handlePoolDirectOneClick}
+            />
           </section>
 
         {:else if activePage === 'settings'}
