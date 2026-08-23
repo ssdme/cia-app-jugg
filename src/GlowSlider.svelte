@@ -133,16 +133,16 @@
   }
 
   .slider-label {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 500;
-    color: #94a3b8;
+    color: #a1a1aa;
   }
 
   .slider-val {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #ffffff;
     font-variant-numeric: tabular-nums;
   }
 
@@ -174,7 +174,7 @@
     left: 0;
     width: 100%;
     height: 4px;
-    background: #1e222e;
+    background: #1c1c20;
     border-radius: 999px;
   }
 
@@ -183,7 +183,7 @@
     position: absolute;
     left: 0;
     height: 4px;
-    background: #3b82f6;
+    background: #ffffff;
     border-radius: 999px;
     pointer-events: none;
     z-index: 2;
@@ -207,14 +207,14 @@
     width: 12px;
     height: 12px;
     background: #ffffff;
-    border: 2.5px solid #3b82f6;
+    border: 2px solid #09090c;
     border-radius: 50%;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
     transition: transform 0.1s ease;
   }
 
   .slider-track-wrap:hover .grab-dot {
-    transform: scale(1.15);
+    transform: scale(1.2);
   }
 
   .grab-ring {

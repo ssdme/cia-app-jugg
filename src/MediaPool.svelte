@@ -160,7 +160,7 @@
               <button class="btn-assign" onclick={() => onSelectAsAudio(asset.absolutePath)} type="button">Audio</button>
             {/if}
             {#if onDirectOneClick}
-              <button class="btn-assign btn-jugg-quick" onclick={() => onDirectOneClick(asset.absolutePath)} type="button">⚡ One-Click</button>
+              <button class="btn-assign btn-jugg-quick" onclick={() => onDirectOneClick(asset.absolutePath)} type="button">One-Click</button>
             {/if}
           </div>
         </div>
@@ -175,16 +175,16 @@
     flex-direction: column;
     gap: 12px;
     padding: 14px 16px;
-    background: #111318;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
+    background: #09090c;
+    border: 1px solid #1c1c20;
+    border-radius: 8px;
     box-sizing: border-box;
     transition: border-color 150ms ease, background-color 150ms ease;
     margin-top: 14px;
   }
   .media-pool-card.dragging-over {
-    border-color: #3b82f6;
-    background: #131826;
+    border-color: #ffffff;
+    background: #121215;
   }
 
   .media-pool-top {
@@ -198,56 +198,59 @@
     gap: 8px;
   }
   .pool-title {
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #ffffff;
     letter-spacing: 0.02em;
   }
   .pool-counter-badge {
-    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
     font-weight: 500;
-    color: #94a3b8;
-    background: rgba(255, 255, 255, 0.05);
-    padding: 2px 7px;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #71717a;
+    background: #0d0d10;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #27272a;
   }
 
   .pool-btn-group {
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
   .btn-pool-action {
-    background: #181b22;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #cbd5e1;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #d4d4d8;
     font-size: 11px;
     font-weight: 500;
     padding: 5px 10px;
-    border-radius: 6px;
+    border-radius: 5px;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-pool-action:hover {
-    background: #232732;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .btn-pool-primary {
-    background: #2563eb;
-    border: 1px solid #3b82f6;
-    color: #ffffff;
+    background: #ffffff;
+    border: 1px solid #ffffff;
+    color: #000000;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     padding: 5px 12px;
-    border-radius: 6px;
+    border-radius: 5px;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-pool-primary:hover:not(:disabled) {
-    background: #1d4ed8;
+    background: #e4e4e7;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
   }
   .btn-pool-primary:disabled {
-    opacity: 0.5;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
@@ -258,29 +261,29 @@
     justify-content: center;
     gap: 6px;
     padding: 24px 16px;
-    background: #0d0f13;
-    border: 1px dashed rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
+    background: #050507;
+    border: 1px dashed #27272a;
+    border-radius: 6px;
   }
   .empty-icon-wrap {
-    color: #64748b;
+    color: #71717a;
     margin-bottom: 2px;
   }
   .empty-title {
     font-size: 12px;
     font-weight: 500;
-    color: #cbd5e1;
+    color: #e4e4e7;
     margin: 0;
   }
   .empty-sub {
-    font-size: 11px;
-    color: #64748b;
+    font-size: 10.5px;
+    color: #71717a;
   }
 
   .media-pool-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 10px;
+    gap: 8px;
   }
 
   .media-item {
@@ -288,13 +291,13 @@
     flex-direction: column;
     gap: 8px;
     padding: 10px 12px;
-    background: #161820;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
+    background: #0d0d10;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
     transition: border-color 120ms ease;
   }
   .media-item:hover {
-    border-color: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.35);
   }
 
   .media-item-header {
@@ -304,9 +307,9 @@
     gap: 8px;
   }
   .media-item-name {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #ffffff;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -314,14 +317,14 @@
   .media-item-del {
     background: transparent;
     border: none;
-    color: #64748b;
-    font-size: 15px;
+    color: #71717a;
+    font-size: 14px;
     line-height: 1;
     cursor: pointer;
     padding: 0 3px;
   }
   .media-item-del:hover {
-    color: #ef4444;
+    color: #ffffff;
   }
 
   .media-meta-row {
@@ -330,29 +333,26 @@
     gap: 5px;
   }
   .meta-tag {
-    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9.5px;
     font-weight: 500;
     padding: 2px 6px;
-    background: #0d0f13;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
-    color: #94a3b8;
+    background: #050507;
+    border: 1px solid #27272a;
+    border-radius: 3px;
+    color: #a1a1aa;
   }
   .meta-tag.bpm-tag {
-    color: #38bdf8;
-    background: rgba(56, 189, 248, 0.08);
-    border-color: rgba(56, 189, 248, 0.2);
+    color: #e4e4e7;
+    border-color: #3f3f46;
   }
   .meta-tag.style-tag {
-    color: #34d399;
-    background: rgba(52, 211, 153, 0.08);
-    border-color: rgba(52, 211, 153, 0.2);
-    text-transform: capitalize;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.25);
+    text-transform: uppercase;
   }
   .meta-tag.uncached-tag {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.2);
+    color: #71717a;
   }
 
   .media-actions-row {
@@ -362,28 +362,29 @@
   }
   .btn-assign {
     flex: 1;
-    background: #1c202a;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    color: #cbd5e1;
+    background: #141418;
+    border: 1px solid #27272a;
+    color: #d4d4d8;
     padding: 5px 6px;
-    border-radius: 5px;
-    font-size: 10.5px;
-    font-weight: 500;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-assign:hover {
-    background: #2563eb;
-    border-color: #3b82f6;
+    background: #1c1c22;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .btn-assign.btn-jugg-quick {
-    background: #312e81;
-    border-color: #4f46e5;
-    color: #c7d2fe;
+    background: #ffffff;
+    border-color: #ffffff;
+    color: #000000;
+    font-weight: 700;
   }
   .btn-assign.btn-jugg-quick:hover {
-    background: #4338ca;
-    color: #ffffff;
+    background: #e4e4e7;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.25);
   }
 </style>

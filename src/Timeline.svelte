@@ -1,4 +1,4 @@
-﻿<script>
+<script>
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
@@ -272,11 +272,11 @@
   });
 </script>
 
-<div class="timeline-container card-cyber">
+<div class="timeline-container">
   <div class="timeline-toolbar">
     <div class="toolbar-left">
-      <button class="btn-play-pause" onclick={togglePlayPause} type="button">
-        {isPlaying ? '⏸ PAUSE' : '▶ PLAY'}
+      <button class="btn-play-pause mono" onclick={togglePlayPause} type="button">
+        {isPlaying ? 'PAUSE' : 'PLAY'}
       </button>
       <div class="timecode-display mono">
         <span class="tc-current">{formatTimecode(currentTime)}</span>
@@ -287,13 +287,13 @@
 
     <div class="toolbar-center">
       <span class="legend-item"><span class="dot white"></span> CUTS</span>
-      <span class="legend-item"><span class="dot red"></span> DOWNBEATS</span>
+      <span class="legend-item"><span class="dot white-muted"></span> DOWNBEATS</span>
       <span class="legend-item"><span class="dot gray"></span> BEATS</span>
-      <span class="legend-item"><span class="dot cyan"></span> SPEED CURVE</span>
+      <span class="legend-item"><span class="dot white-solid"></span> SPEED CURVE</span>
     </div>
 
     <div class="toolbar-right mono">
-      <span class="stat-pill" class:reverse={instantaneousVelocity < 0} class:freeze={Math.abs(instantaneousVelocity) < 1e-4}>
+      <span class="stat-pill">
         {#if Math.abs(instantaneousVelocity) < 1e-4}
           0.00x (FREEZE)
         {:else if instantaneousVelocity < 0}
@@ -317,8 +317,8 @@
     flex-direction: column;
     gap: 8px;
     padding: 12px 14px;
-    background: #09090e;
-    border: 1px solid #1c1c2b;
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     width: 100%;
     box-sizing: border-box;
@@ -340,44 +340,44 @@
   }
 
   .btn-play-pause {
-    background: #181826;
-    border: 1px solid #3b82f6;
-    color: #93c5fd;
+    background: #ffffff;
+    border: 1px solid #ffffff;
+    color: #000000;
     padding: 5px 12px;
     border-radius: 4px;
     font-size: 11px;
-    font-weight: 800;
+    font-weight: 700;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-play-pause:hover {
-    background: #2563eb;
-    color: #ffffff;
+    background: #e4e4e7;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
   }
 
   .timecode-display {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    background: #12121c;
+    background: #0d0d10;
     padding: 4px 8px;
     border-radius: 4px;
-    border: 1px solid #272738;
+    border: 1px solid #27272a;
   }
   .tc-current {
-    color: #f59e0b;
+    color: #ffffff;
   }
   .tc-divider {
     color: #52525b;
   }
   .tc-total {
-    color: #a1a1aa;
+    color: #71717a;
   }
 
   .legend-item {
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
     color: #71717a;
   }
@@ -387,37 +387,28 @@
     border-radius: 50%;
   }
   .dot.white { background: #ffffff; }
-  .dot.red { background: #ef4444; }
-  .dot.gray { background: #71717a; }
-  .dot.cyan { background: #06b6d4; }
+  .dot.white-muted { background: #a1a1aa; }
+  .dot.gray { background: #52525b; }
+  .dot.white-solid { background: #ffffff; box-shadow: 0 0 4px rgba(255, 255, 255, 0.5); }
 
   .stat-pill {
     font-size: 10px;
-    font-weight: 800;
+    font-weight: 700;
     padding: 3px 8px;
     border-radius: 4px;
-    background: #181826;
-    color: #06b6d4;
-    border: 1px solid #164e63;
-  }
-  .stat-pill.freeze {
-    color: #a1a1aa;
-    border-color: #3f3f46;
-  }
-  .stat-pill.reverse {
-    color: #ec4899;
-    border-color: #831843;
+    background: #0d0d10;
+    color: #ffffff;
+    border: 1px solid #27272a;
   }
   .stat-pill.source-time {
-    color: #10b981;
-    border-color: #064e3b;
+    color: #a1a1aa;
   }
 
   .timeline-canvas-wrapper {
     width: 100%;
     height: 90px;
-    background: #0a0a10;
-    border: 1px solid #1a1a26;
+    background: #050507;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     overflow: hidden;
     cursor: crosshair;

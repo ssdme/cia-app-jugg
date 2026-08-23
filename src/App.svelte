@@ -186,7 +186,7 @@
         if (state.plan) {
           planSummary = state.plan;
         }
-        showToast(`↶ Undone: ${state.description || 'Action'}`, 'info');
+        showToast(`Undone: ${state.description || 'Action'}`, 'info');
       }
       await refreshHistoryStatus();
     } catch (e) {
@@ -204,7 +204,7 @@
         if (state.plan) {
           planSummary = state.plan;
         }
-        showToast(`↷ Redone: ${state.description || 'Action'}`, 'info');
+        showToast(`Redone: ${state.description || 'Action'}`, 'info');
       }
       await refreshHistoryStatus();
     } catch (e) {
@@ -1176,7 +1176,7 @@
       percent: 5,
       currentFrame: 0,
       totalFrames: 100,
-      message: '⚡ ONE-CLICK JUGG: Starting full autonomous pipeline...'
+      message: 'ONE-CLICK JUGG: Starting full autonomous pipeline...'
     };
     navigateTo('settings');
 
@@ -1198,7 +1198,7 @@
       };
       renderOutputMp4 = renderStats.outputPath;
       renderState = 'done';
-      showToast('⚡ One-Click Jugg rendered successfully!', 'success');
+      showToast('One-Click Jugg rendered successfully!', 'success');
     } catch (err) {
       console.error('One-Click Jugg failed:', err);
       const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
@@ -1971,7 +1971,7 @@
                   disabled={isAnalyzing}
                   title="Run automated 3-phase pipeline: Dumper v2 Analysis -> Rhythmic Remap Plan -> Render Final Assembly"
                 >
-                  ⚡ ONE-CLICK JUGG
+                  ONE-CLICK JUGG
                 </button>
                 <button
                   class="btn-continue btn-manual-continue"
@@ -2406,8 +2406,8 @@
               {#if renderQueue.length > 0}
                 <div class="render-queue-card card-cyber">
                   <div class="render-queue-header">
-                    <span class="group-label">⚡ RENDER QUEUE ({renderQueue.length} JOBS)</span>
-                    <button class="btn-param-action" onclick={pollRenderQueue} type="button">🔄 REFRESH</button>
+                    <span class="group-label">RENDER QUEUE ({renderQueue.length} JOBS)</span>
+                    <button class="btn-param-action" onclick={pollRenderQueue} type="button">REFRESH</button>
                   </div>
                   <div class="render-queue-list">
                     {#each renderQueue as job}
@@ -2460,10 +2460,10 @@
                     RUN PROCESS &gt;
                   </button>
                   <button class="btn-pro-secondary btn-nle-export" onclick={handleExportForNLE} type="button">
-                    📦 EXPORT FOR NLE (AE/Premiere)
+                    EXPORT FOR NLE (AE/Premiere)
                   </button>
                   <button class="btn-run-process btn-final-jugg" onclick={handleRenderFinalJugg}>
-                    ⚡ RENDER FINAL JUGG
+                    RENDER FINAL JUGG
                   </button>
                 </div>
               {/if}
@@ -2693,17 +2693,17 @@
                         <div class="reusable-column">
                           <div class="column-title success">MEASURABLE & REUSABLE (PROJECT SCHEMA)</div>
                           <ul class="feature-checklist">
-                            <li>✓ Audio BPM ({dumperResult.beats.bpm.toFixed(1)}), beat grid & downbeats</li>
-                            <li>✓ Scene cut timestamps & segment boundaries</li>
-                            <li>✓ Color palettes (LAB mean & std per segment)</li>
-                            <li>✓ Suggested style preset & target FPS ({dumperResult.fps})</li>
+                            <li>- Audio BPM ({dumperResult.beats.bpm.toFixed(1)}), beat grid & downbeats</li>
+                            <li>- Scene cut timestamps & segment boundaries</li>
+                            <li>- Color palettes (LAB mean & std per segment)</li>
+                            <li>- Suggested style preset & target FPS ({dumperResult.fps})</li>
                           </ul>
                         </div>
                         <div class="reusable-column">
                           <div class="column-title muted">DESCRIPTIVE ONLY (NOT RECONSTRUCTIBLE)</div>
                           <ul class="feature-checklist muted">
-                            <li>✗ Reverse clip speed remap</li>
-                            <li>✗ Pre-FX raw footage layers & compositions</li>
+                            <li>- Reverse clip speed remap</li>
+                            <li>- Pre-FX raw footage layers & compositions</li>
                           </ul>
                         </div>
                       </div>
@@ -2731,7 +2731,7 @@
                         onclick={handleGenerateEditPlan}
                         title="Auto-generate remap plan from Dumper v2 analysis and load into timeline"
                       >
-                        ⚡ GENERATE EDIT PLAN
+                        GENERATE EDIT PLAN
                       </button>
                       <button
                         class="btn-zone-action mono"
@@ -3046,7 +3046,7 @@
                     {#if isRenderingPreview}
                       <span>ANIMATING MESH ({compPreviewProgress ? `${compPreviewProgress.percent}%` : 'RUNNING'})...</span>
                     {:else}
-                      <span>🎬 RENDER PREVIEW (3s)</span>
+                      <span>RENDER PREVIEW (3s)</span>
                     {/if}
                   </button>
 
@@ -3059,7 +3059,7 @@
                     {#if isRenderingComposition}
                       <span>COMPOSITING ({compRenderProgress ? `${compRenderProgress.percent}%` : 'RUNNING'})...</span>
                     {:else}
-                      <span>⚡ RENDER COMPOSITION</span>
+                      <span>RENDER COMPOSITION</span>
                     {/if}
                   </button>
 
@@ -3072,7 +3072,7 @@
                     {#if isSegmenting}
                       <span>SEGMENTING (SEE-THROUGH)...</span>
                     {:else}
-                      <span>🧩 SEGMENT CHARACTER (SEE-THROUGH)</span>
+                      <span>SEGMENT CHARACTER (SEE-THROUGH)</span>
                     {/if}
                   </button>
                 </div>
@@ -3114,7 +3114,7 @@
                         onclick={() => handleOpenCompFolder(compPreviewResult.outputPath)}
                         title="Open folder in Windows Explorer"
                       >
-                        📂 OPEN FOLDER
+                        OPEN FOLDER
                       </button>
                       <button
                         class="btn-zone-action"
@@ -3163,7 +3163,7 @@
                         onclick={() => handleOpenCompFolder(compRenderResult.outputPath)}
                         title="Open folder in Windows Explorer"
                       >
-                        📂 OPEN FOLDER
+                        OPEN FOLDER
                       </button>
                       <button
                         class="btn-zone-action"
@@ -3229,7 +3229,7 @@
                         onclick={handleSaveComposition}
                         title="Save comp_project.json"
                       >
-                        💾 SAVE COMPOSITION
+                        SAVE COMPOSITION
                       </button>
                       <button
                         class="btn-zone-action"
@@ -3265,13 +3265,13 @@
                     <option value={preset}>{preset}</option>
                   {/each}
                 </select>
-                <button class="btn-param-action" onclick={handleSavePreset} type="button">💾 SAVE AS...</button>
-                <button class="btn-param-action reset" onclick={handleResetToDumperValues} type="button">🔄 RESET TO DUMPER</button>
+                <button class="btn-param-action" onclick={handleSavePreset} type="button">SAVE AS...</button>
+                <button class="btn-param-action reset" onclick={handleResetToDumperValues} type="button">RESET TO DUMPER</button>
               </div>
 
               <div class="project-controls-right">
-                <button class="btn-param-action" onclick={handleSaveProject} type="button">📁 SAVE PROJECT</button>
-                <button class="btn-param-action" onclick={handleLoadProject} type="button">📂 LOAD PROJECT</button>
+                <button class="btn-param-action" onclick={handleSaveProject} type="button">SAVE PROJECT</button>
+                <button class="btn-param-action" onclick={handleLoadProject} type="button">LOAD PROJECT</button>
               </div>
             </div>
 
@@ -3442,7 +3442,7 @@
                   <h1>BATCH PROCESSOR</h1>
                 </div>
                 <span class="stat-pill" class:running={batchRunning}>
-                  {batchRunning ? '⚡ PROCESSING BATCH' : 'IDLE'}
+                  {batchRunning ? 'PROCESSING BATCH' : 'IDLE'}
                 </span>
               </div>
 
@@ -3458,7 +3458,7 @@
                       bind:value={batchSourceDir}
                     />
                     <button class="btn-param-action" onclick={handleSelectBatchDir} type="button">
-                      📁 BROWSE
+                      BROWSE
                     </button>
                   </div>
                 </div>
@@ -3526,7 +3526,7 @@
                   disabled={batchRunning || !batchSourceDir}
                   type="button"
                 >
-                  {batchRunning ? '⚡ PROCESSING BATCH...' : '🚀 START BATCH PROCESSING'}
+                  {batchRunning ? 'PROCESSING BATCH...' : 'START BATCH PROCESSING'}
                 </button>
               </div>
 
@@ -3686,7 +3686,7 @@
     <div class="modal-backdrop" onclick={() => showHotkeysModal = false} role="presentation">
       <div class="modal-card hotkeys-modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
-          <h2>⌨️ KEYBOARD SHORTCUTS (NLE STANDARDS)</h2>
+          <h2>KEYBOARD SHORTCUTS (NLE STANDARDS)</h2>
           <button class="btn-close-modal" onclick={() => showHotkeysModal = false}>X</button>
         </div>
         <div class="modal-body">
@@ -3928,8 +3928,24 @@
 </div>
 
 <style>
-  /* REFINED STUDIO DARK SLATE DESIGN SYSTEM */
-  *, *::before, *::after {
+  /* CUSTOM MONOCHROME STUDIO SCROLLBARS */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #27272a;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #71717a;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #27272a transparent;
     box-sizing: border-box;
     margin: 0;
     padding: 0;
@@ -3940,8 +3956,8 @@
   :global(html), :global(body), :global(#app) {
     margin: 0;
     height: 100%;
-    background: #0b0c10;
-    color: #f1f5f9;
+    background: #050507;
+    color: #ffffff;
     overflow: hidden;
     user-select: none;
   }
@@ -3950,8 +3966,8 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    background: #0b0c10;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #050507;
+    border: 1px solid #1c1c20;
   }
 
   /* Titlebar */
@@ -3961,8 +3977,8 @@
     align-items: center;
     height: 38px;
     padding: 0 12px;
-    background: #0f1117;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    background: #09090c;
+    border-bottom: 1px solid #1c1c20;
   }
 
   .titlebar-brand {
@@ -3974,23 +3990,24 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #3b82f6;
-    box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+    background: #ffffff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
   }
   .titlebar-text {
     font-size: 11.5px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #f1f5f9;
+    color: #ffffff;
   }
   .version-tag {
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     font-weight: 500;
-    color: #64748b;
-    background: rgba(255, 255, 255, 0.04);
+    color: #71717a;
+    background: #0d0d10;
     padding: 1px 6px;
     border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid #27272a;
   }
 
   .titlebar-controls {
@@ -4002,10 +4019,10 @@
   .tb-btn {
     height: 24px;
     padding: 0 9px;
-    background: #161822;
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: #0d0d10;
+    border: 1px solid #27272a;
     border-radius: 5px;
-    color: #cbd5e1;
+    color: #d4d4d8;
     font-size: 11px;
     font-weight: 500;
     cursor: pointer;
@@ -4015,8 +4032,8 @@
     transition: all 0.12s ease;
   }
   .tb-btn:hover:not(:disabled) {
-    background: #2563eb;
-    border-color: #3b82f6;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .tb-btn:disabled {
@@ -4024,12 +4041,12 @@
     cursor: not-allowed;
   }
   .tb-btn.tb-hotkeys {
-    color: #94a3b8;
+    color: #a1a1aa;
   }
   .tb-btn.tb-update {
-    background: rgba(16, 185, 129, 0.12);
-    border-color: rgba(16, 185, 129, 0.3);
-    color: #34d399;
+    background: #121215;
+    border-color: rgba(255, 255, 255, 0.35);
+    color: #ffffff;
   }
 
   .titlebar-sys-btn {
@@ -4037,7 +4054,7 @@
     height: 24px;
     border: none;
     background: transparent;
-    color: #94a3b8;
+    color: #71717a;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -4054,17 +4071,17 @@
     display: flex;
     align-items: center;
     padding: 8px 16px;
-    background: #0f1117;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    background: #09090c;
+    border-bottom: 1px solid #1c1c20;
   }
 
   .tab-pill-group {
     display: flex;
     gap: 3px;
-    background: #141720;
+    background: #0d0d10;
     padding: 3px;
     border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    border: 1px solid #1c1c20;
   }
 
   .tab-pill-group button {
@@ -4072,7 +4089,7 @@
     background: transparent;
     border: none;
     border-radius: 6px;
-    color: #94a3b8;
+    color: #71717a;
     cursor: pointer;
     font-size: 11.5px;
     font-weight: 500;
@@ -4080,14 +4097,14 @@
     transition: all 120ms ease;
   }
   .tab-pill-group button:hover {
-    color: #f1f5f9;
-    background: rgba(255, 255, 255, 0.04);
+    color: #ffffff;
+    background: #16161a;
   }
   .tab-pill-group button.active {
-    color: #ffffff;
-    background: #2563eb;
-    font-weight: 600;
-    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.35);
+    color: #000000;
+    background: #ffffff;
+    font-weight: 700;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
   }
 
   /* Main Content Area */
@@ -4096,7 +4113,7 @@
     min-height: 0;
     overflow-y: auto;
     padding: 16px 20px;
-    background: #0b0c10;
+    background: #050507;
     display: flex;
     flex-direction: column;
   }
@@ -4136,9 +4153,9 @@
     justify-content: center;
     min-height: 220px;
     padding: 20px 16px;
-    border: 1.5px dashed rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    background: #111319;
+    border: 1.5px dashed #27272a;
+    border-radius: 8px;
+    background: #09090c;
     cursor: pointer;
     transition: all 0.15s ease;
     position: relative;
@@ -4148,8 +4165,8 @@
 
   .remap-drop-zone:hover,
   .remap-drop-zone.hovering {
-    border-color: #3b82f6;
-    background: #141926;
+    border-color: rgba(255, 255, 255, 0.42);
+    background: #121215;
   }
 
   .remap-drop-zone.has-error {
@@ -4158,8 +4175,8 @@
   }
 
   .remap-drop-zone.filled {
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: #151822;
+    border: 1px solid #1c1c20;
+    background: #0d0d10;
     cursor: default;
   }
 
@@ -4173,25 +4190,25 @@
   }
 
   .zone-icon-wrap {
-    color: #64748b;
+    color: #71717a;
     margin-bottom: 4px;
     transition: color 120ms ease;
   }
   .remap-drop-zone:hover .zone-icon-wrap {
-    color: #3b82f6;
+    color: #ffffff;
   }
 
   .zone-prompt {
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 600;
     margin: 0;
-    color: #f1f5f9;
+    color: #ffffff;
   }
 
   .zone-sublabel {
     font-size: 10.5px;
     font-weight: 400;
-    color: #64748b;
+    color: #71717a;
   }
 
   .zone-error-msg {
@@ -4222,21 +4239,21 @@
   }
 
   .zone-tag {
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 600;
-    color: #94a3b8;
-    background: #0d0f14;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #a1a1aa;
+    background: #050507;
+    border: 1px solid #27272a;
     border-radius: 4px;
-    padding: 2px 7px;
+    padding: 2px 6px;
   }
 
   .zone-filename {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
-    color: #f8fafc;
-    background: #0d0f14;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+    background: #050507;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     padding: 10px 12px;
     width: 100%;
@@ -4256,18 +4273,18 @@
   .btn-zone-action {
     flex: 1;
     padding: 6px 10px;
-    background: #1c202c;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 5px;
-    color: #cbd5e1;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    color: #d4d4d8;
     cursor: pointer;
     font-size: 10.5px;
-    font-weight: 500;
+    font-weight: 600;
     transition: all 0.12s ease;
   }
   .btn-zone-action:hover {
-    background: #2563eb;
-    border-color: #3b82f6;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .btn-zone-action.danger:hover {
@@ -4287,32 +4304,33 @@
   .btn-continue {
     padding: 10px 20px;
     border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11.5px;
+    font-weight: 700;
     cursor: pointer;
     transition: all 0.15s ease;
   }
   .btn-continue.btn-one-click {
-    background: linear-gradient(135deg, #4f46e5, #3b82f6);
-    border: 1px solid #60a5fa;
-    color: #ffffff;
-    box-shadow: 0 2px 10px rgba(79, 70, 229, 0.35);
+    background: #ffffff;
+    border: 1px solid #ffffff;
+    color: #000000;
+    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
   }
   .btn-continue.btn-one-click:hover:not(:disabled) {
-    background: linear-gradient(135deg, #4338ca, #2563eb);
-    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.5);
+    background: #e4e4e7;
+    box-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
   }
   .btn-continue.btn-manual-continue {
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #cbd5e1;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #d4d4d8;
   }
   .btn-continue.btn-manual-continue:hover:not(:disabled) {
-    background: #222736;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .btn-continue:disabled {
-    opacity: 0.6;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
@@ -4555,9 +4573,9 @@
   .options-buttons-row {
     display: flex;
     gap: 2px;
-    background: #0d0f14;
+    background: #050507;
     padding: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid #27272a;
     border-radius: 6px;
   }
 
@@ -4567,7 +4585,7 @@
     background: transparent;
     border: none;
     border-radius: 4px;
-    color: #94a3b8;
+    color: #71717a;
     font-size: 11px;
     font-weight: 500;
     cursor: pointer;
@@ -4576,15 +4594,15 @@
   }
 
   .btn-option:hover {
-    color: #f1f5f9;
-    background: rgba(255, 255, 255, 0.04);
+    color: #ffffff;
+    background: #16161a;
   }
 
   .btn-option.active {
-    background: #2563eb;
-    color: #ffffff;
-    font-weight: 600;
-    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3);
+    background: #ffffff;
+    color: #000000;
+    font-weight: 700;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
   }
 
   .custom-ar-inputs-inline {
@@ -6433,8 +6451,8 @@
   }
 
   .comp-op-item {
-    background: #13161f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     padding: 10px 12px;
     display: flex;
@@ -6443,9 +6461,9 @@
     transition: all 120ms ease;
   }
   .comp-op-item.disabled {
-    opacity: 0.45;
-    background: #0d0e14;
-    border-color: rgba(255, 255, 255, 0.04);
+    opacity: 0.4;
+    background: #050507;
+    border-color: #16161a;
   }
 
   .op-top-row {
@@ -6462,7 +6480,7 @@
   }
 
   .op-checkbox {
-    accent-color: #3b82f6;
+    accent-color: #ffffff;
     cursor: pointer;
     width: 14px;
     height: 14px;
@@ -6471,16 +6489,16 @@
   .op-title {
     font-size: 11.5px;
     font-weight: 600;
-    color: #f8fafc;
+    color: #ffffff;
   }
 
   .op-blend-badge {
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: #94a3b8;
-    font-size: 10px;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #a1a1aa;
+    font-size: 9.5px;
     font-weight: 500;
-    padding: 2px 7px;
+    padding: 2px 6px;
     border-radius: 4px;
   }
 
@@ -6493,7 +6511,7 @@
   .op-pct-label {
     font-size: 10.5px;
     font-weight: 500;
-    color: #94a3b8;
+    color: #a1a1aa;
     white-space: nowrap;
     min-width: 75px;
   }
@@ -6506,7 +6524,7 @@
 
   .op-desc-row {
     font-size: 10px;
-    color: #64748b;
+    color: #71717a;
     line-height: 1.35;
   }
 
@@ -6526,16 +6544,16 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: 6px;
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    color: #cbd5e1;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #d4d4d8;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .comp-sidecar-btn:hover:not(:disabled) {
-    background: #2563eb;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
-    border-color: #3b82f6;
   }
   .comp-sidecar-btn:disabled {
     opacity: 0.4;
@@ -6547,8 +6565,8 @@
   }
 
   .comp-stack-container {
-    background: #13161f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     padding: 14px 16px;
     display: flex;
@@ -6571,14 +6589,14 @@
   .pro-tag {
     font-size: 11px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #ffffff;
     letter-spacing: 0.03em;
   }
 
   .stack-count {
     font-size: 10px;
     font-weight: 500;
-    color: #64748b;
+    color: #71717a;
   }
 
   .comp-ops-list {
@@ -6588,8 +6606,8 @@
   }
 
   .comp-op-card {
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #0d0d10;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     padding: 10px 12px;
     display: flex;
@@ -6612,13 +6630,14 @@
   .op-name {
     font-size: 11.5px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #ffffff;
   }
 
   .op-val-display {
-    font-size: 11.5px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
     font-weight: 600;
-    color: #3b82f6;
+    color: #ffffff;
   }
 
   .op-slider-row {
@@ -6634,7 +6653,7 @@
 
   .op-desc {
     font-size: 10px;
-    color: #64748b;
+    color: #71717a;
     line-height: 1.3;
   }
 
@@ -6651,8 +6670,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 16px;
-    background: #13161f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     gap: 16px;
   }
@@ -6665,44 +6684,44 @@
   }
 
   .preset-select {
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #f1f5f9;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #ffffff;
     padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 11.5px;
+    border-radius: 5px;
+    font-size: 11px;
     font-family: inherit;
     font-weight: 500;
     outline: none;
     cursor: pointer;
   }
   .preset-select:focus {
-    border-color: #3b82f6;
+    border-color: rgba(255, 255, 255, 0.42);
   }
 
   .btn-param-action {
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #cbd5e1;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #d4d4d8;
     padding: 6px 12px;
-    border-radius: 6px;
+    border-radius: 5px;
     font-size: 11px;
     font-weight: 500;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-param-action:hover {
-    background: #232734;
+    background: #16161a;
     color: #ffffff;
-    border-color: #3b82f6;
+    border-color: rgba(255, 255, 255, 0.42);
   }
   .btn-param-action.reset {
-    color: #fbbf24;
-    border-color: rgba(251, 191, 36, 0.3);
+    color: #ffffff;
+    border-color: #27272a;
   }
   .btn-param-action.reset:hover {
-    background: rgba(251, 191, 36, 0.15);
-    border-color: #fbbf24;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
   }
 
   .params-grid-layout {
@@ -6719,8 +6738,8 @@
   }
 
   .accordion-card {
-    background: #13161f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     overflow: hidden;
   }
@@ -6730,30 +6749,32 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    background: #161922;
+    background: #0d0d10;
     cursor: pointer;
     user-select: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid #1c1c20;
     transition: background 120ms ease;
   }
   .accordion-header:hover {
-    background: #1a1e28;
+    background: #16161a;
   }
   .accordion-header h3 {
     margin: 0;
     font-size: 12px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #ffffff;
     letter-spacing: 0.02em;
   }
 
   .badge-tag {
-    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9.5px;
     font-weight: 500;
-    padding: 2px 7px;
-    background: rgba(255, 255, 255, 0.06);
-    border-radius: 4px;
-    color: #94a3b8;
+    padding: 2px 6px;
+    background: #050507;
+    border: 1px solid #27272a;
+    border-radius: 3px;
+    color: #71717a;
   }
 
   .accordion-body {
@@ -6769,8 +6790,8 @@
   }
 
   .live-preview-box {
-    background: #13161f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     padding: 14px;
     display: flex;
@@ -6781,7 +6802,7 @@
     margin: 0;
     font-size: 11.5px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #ffffff;
     letter-spacing: 0.04em;
   }
 
@@ -6789,8 +6810,8 @@
     width: 256px;
     height: 256px;
     margin: 0 auto;
-    background: #090a0d;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #050507;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     overflow: hidden;
   }
@@ -6806,21 +6827,22 @@
     justify-content: center;
   }
   .stat-pill {
-    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9.5px;
     font-weight: 500;
-    padding: 3px 8px;
-    background: #181c26;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    color: #94a3b8;
+    padding: 2px 7px;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    color: #71717a;
   }
 
   /* T39 Render Queue Styles */
   .render-queue-card {
     margin-top: 14px;
     padding: 14px;
-    background: #0a0a10;
-    border: 1px solid #1f1f2e;
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     display: flex;
     flex-direction: column;
@@ -6836,13 +6858,13 @@
   .render-queue-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .render-queue-item {
     padding: 10px 12px;
-    background: #11111a;
-    border: 1px solid #1a1a28;
+    background: #0d0d10;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     display: flex;
     flex-direction: column;
@@ -6857,11 +6879,11 @@
   }
 
   .job-id {
-    color: #a1a1aa;
+    color: #71717a;
   }
 
   .job-path {
-    color: #e4e4e7;
+    color: #ffffff;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -6871,27 +6893,30 @@
 
   .job-status-pill {
     font-size: 9px;
-    font-weight: 800;
+    font-weight: 700;
     padding: 2px 6px;
     border-radius: 4px;
-    background: #27273a;
-    color: #cbd5e1;
+    background: #16161a;
+    color: #a1a1aa;
+    border: 1px solid #27272a;
   }
   .job-status-pill.running {
-    background: #1e3a8a;
-    color: #60a5fa;
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
   }
   .job-status-pill.completed {
-    background: #064e3b;
-    color: #34d399;
+    background: #121215;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.42);
   }
   .job-status-pill.failed {
-    background: #7f1d1d;
-    color: #f87171;
+    background: #27272a;
+    color: #ffffff;
   }
   .job-status-pill.cancelled {
-    background: #78350f;
-    color: #fbbf24;
+    background: #1c1c20;
+    color: #71717a;
   }
 
   .job-progress-row {
@@ -6903,14 +6928,14 @@
   .progress-pct {
     font-size: 11px;
     font-weight: 700;
-    color: #a1a1aa;
+    color: #71717a;
     min-width: 36px;
   }
 
   .btn-cancel-job {
-    background: #7f1d1d33;
-    border: 1px solid #dc2626;
-    color: #fca5a5;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    color: #ffffff;
     padding: 3px 8px;
     border-radius: 4px;
     font-size: 9.5px;
@@ -6919,8 +6944,8 @@
     transition: all 120ms ease;
   }
   .btn-cancel-job:hover {
-    background: #dc2626;
-    color: #ffffff;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
   }
 
   .job-error-msg {
@@ -6929,12 +6954,13 @@
   }
 
   .btn-nle-export {
-    background: #1e1b4b;
-    border-color: #6366f1;
-    color: #a5b4fc;
+    background: #0d0d10;
+    border-color: #27272a;
+    color: #d4d4d8;
   }
   .btn-nle-export:hover {
-    background: #4338ca;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
 
@@ -6955,14 +6981,15 @@
     justify-content: space-between;
   }
   .batch-title-group h1 {
-    font-size: 20px;
+    font-size: 18px;
     margin: 4px 0 0 0;
     letter-spacing: 0.05em;
+    color: #ffffff;
   }
 
   .batch-config-card {
-    background: #0c0c14;
-    border: 1px solid #1c1c2b;
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     padding: 16px;
     display: flex;
@@ -6976,15 +7003,15 @@
   }
   .batch-dir-input {
     flex: 1;
-    background: #06060a;
-    border: 1px solid #232336;
+    background: #050507;
+    border: 1px solid #27272a;
     border-radius: 4px;
     padding: 8px 12px;
-    color: #e4e4e7;
+    color: #ffffff;
     font-size: 11px;
   }
   .batch-dir-input:focus {
-    border-color: #3b82f6;
+    border-color: rgba(255, 255, 255, 0.42);
     outline: none;
   }
 
@@ -6998,12 +7025,19 @@
     margin-top: 6px;
     padding: 12px;
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 700;
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
+  }
+  .btn-start-batch:hover:not(:disabled) {
+    background: #e4e4e7;
+    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
   }
 
   .batch-status-card {
-    background: #090910;
-    border: 1px solid #1f1f30;
+    background: #09090c;
+    border: 1px solid #1c1c20;
     border-radius: 8px;
     padding: 16px;
     display: flex;
@@ -7022,9 +7056,10 @@
     gap: 10px;
   }
   .batch-progress-fraction {
-    font-size: 12px;
-    font-weight: 700;
-    color: #a1a1aa;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #71717a;
   }
 
   .batch-report-row {
@@ -7034,7 +7069,7 @@
     font-size: 11px;
   }
   .report-path {
-    color: #34d399;
+    color: #ffffff;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7054,8 +7089,8 @@
     align-items: center;
     gap: 10px;
     padding: 6px 10px;
-    background: #12121e;
-    border: 1px solid #1a1a28;
+    background: #0d0d10;
+    border: 1px solid #1c1c20;
     border-radius: 4px;
     font-size: 11px;
   }
@@ -7064,7 +7099,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #e4e4e7;
+    color: #ffffff;
   }
   .batch-item-duration {
     color: #71717a;
@@ -7083,9 +7118,9 @@
   .titlebar-btn.history-btn {
     font-size: 10px;
     font-weight: 700;
-    color: #cbd5e1;
-    background: #181826;
-    border: 1px solid #272738;
+    color: #d4d4d8;
+    background: #0d0d10;
+    border: 1px solid #27272a;
     border-radius: 4px;
     padding: 3px 8px;
     margin: 0 2px;
@@ -7093,8 +7128,8 @@
     transition: all 120ms ease;
   }
   .titlebar-btn.history-btn:hover:not(:disabled) {
-    background: #2563eb;
-    border-color: #3b82f6;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
   .titlebar-btn.history-btn:disabled {
@@ -7105,9 +7140,9 @@
   .titlebar-btn.hotkeys-badge {
     font-size: 10px;
     font-weight: 700;
-    color: #a5b4fc;
-    background: #1e1b4b;
-    border: 1px solid #4338ca;
+    color: #d4d4d8;
+    background: #0d0d10;
+    border: 1px solid #27272a;
     border-radius: 4px;
     padding: 3px 8px;
     margin: 0 2px;
@@ -7115,13 +7150,16 @@
     transition: all 120ms ease;
   }
   .titlebar-btn.hotkeys-badge:hover {
-    background: #4f46e5;
+    background: #16161a;
+    border-color: rgba(255, 255, 255, 0.42);
     color: #ffffff;
   }
 
   .hotkeys-modal-card {
     max-width: 540px;
     width: 90vw;
+    background: #09090c;
+    border: 1px solid #1c1c20;
   }
   .hotkeys-table {
     display: flex;
@@ -7134,11 +7172,11 @@
     gap: 8px;
   }
   .hotkeys-cat-title {
-    font-size: 10.5px;
-    font-weight: 800;
-    color: #38bdf8;
+    font-size: 10px;
+    font-weight: 700;
+    color: #ffffff;
     letter-spacing: 0.05em;
-    border-bottom: 1px solid #1e293b;
+    border-bottom: 1px solid #1c1c20;
     padding-bottom: 4px;
   }
   .hotkey-row {
@@ -7152,20 +7190,19 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: #e2e8f0;
+    color: #ffffff;
   }
   .hotkey-keys kbd {
-    background: #1e1e2e;
-    border: 1px solid #33334d;
+    background: #0d0d10;
+    border: 1px solid #27272a;
     border-radius: 4px;
     padding: 2px 6px;
-    font-family: monospace;
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
-    color: #f1f5f9;
-    box-shadow: 0 2px 0 #0f0f17;
+    color: #ffffff;
   }
   .hotkey-desc {
-    color: #94a3b8;
+    color: #71717a;
   }
 </style>
 
