@@ -5,6 +5,7 @@ pub mod beat;
 pub mod composition;
 pub mod dumper;
 pub mod effects;
+pub mod export;
 pub mod plan;
 pub mod presets;
 pub mod preview;
@@ -16,6 +17,7 @@ pub use beat::*;
 pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
+pub use export::*;
 pub use plan::*;
 pub use presets::*;
 pub use preview::*;
@@ -117,6 +119,9 @@ pub fn run() {
             presets::list_presets,
             presets::save_project_state,
             presets::load_project_state,
+            export::queue_render_job,
+            export::get_queue_status,
+            export::cancel_render_job,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
