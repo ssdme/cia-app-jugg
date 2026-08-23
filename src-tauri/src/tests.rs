@@ -2665,6 +2665,7 @@ fn test_save_composition_project() {
             has_content: Some(true),
             full_path: Some("C:/test/face.png".to_string()),
             thumbnail_base64: None,
+            z_depth: None,
         },
         LayerItem {
             name: "body".to_string(),
@@ -2673,6 +2674,7 @@ fn test_save_composition_project() {
             has_content: Some(true),
             full_path: Some("C:/test/body.png".to_string()),
             thumbnail_base64: None,
+            z_depth: None,
         },
     ];
 
@@ -3049,8 +3051,9 @@ fn test_mesh_coverage_and_no_nan() {
         }
 
         // Test multiple timestamps
+        let camera = CameraState::default();
         for &t in &[0.0, 0.25, 0.5, 1.0, 2.1, 3.2, 5.0] {
-            let deformed = compute_deformed_vertices(&mesh, t, (t * 30.0) as u32, 30.0, &beats, &downbeats, &config, 1);
+            let deformed = compute_deformed_vertices(&mesh, t, (t * 30.0) as u32, 30.0, &beats, &downbeats, &config, 1, 0.5, &camera, w, h);
             assert_eq!(deformed.len(), mesh.vertices.len());
 
             for &(x, y) in &deformed {
@@ -3095,21 +3098,116 @@ fn test_eyes_blink_controller() {
     let fps = 30.0;
     let beats = vec![];
     let downbeats = vec![];
+    let camera = CameraState::default();
 
     // Between blinks (e.g. t = 1.5s): scaleY is normal ~1.0
-    let verts_open = compute_deformed_vertices(&mesh, 1.5, 45, fps, &beats, &downbeats, &config, 6);
+    let verts_open = compute_deformed_vertices(&mesh, 1.5, 45, fps, &beats, &downbeats, &config, 6, 0.7, &camera, w, h);
     let top_y_open = verts_open.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
     let bot_y_open = verts_open.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
     let height_open = bot_y_open - top_y_open;
 
     // Peak of blink (at cycle start t = 3.05s, frame 1.5 into 3-frame blink):
     // cycle_t = 0.05s (halfway through 3/30 = 0.10s blink duration)
-    let verts_closed = compute_deformed_vertices(&mesh, 3.05, 91, fps, &beats, &downbeats, &config, 6);
+    let verts_closed = compute_deformed_vertices(&mesh, 3.05, 91, fps, &beats, &downbeats, &config, 6, 0.7, &camera, w, h);
     let top_y_closed = verts_closed.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
     let bot_y_closed = verts_closed.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
     let height_closed = bot_y_closed - top_y_closed;
 
     assert!(height_closed < height_open * 0.20, "Eyes height at peak blink must collapse towards 0 (open: {:.1}, closed: {:.1})", height_open, height_closed);
+}
+
+#[test]
+fn test_camera_identity() {
+    let w = 120;
+    let h = 140;
+    let mut data = vec![0u8; w * h * 4];
+
+    for y in 20..120 {
+        for x in 20..100 {
+            let idx = (y * w + x) * 4;
+            data[idx] = ((x * 3) % 256) as u8;
+            data[idx + 1] = ((y * 3) % 256) as u8;
+            data[idx + 2] = 210;
+            data[idx + 3] = 255;
+        }
+    }
+
+    let src_img = RawImage { width: w, height: h, data: data.clone() };
+    let mesh = build_layer_mesh("body", &src_img);
+
+    let mut undeformed_verts = Vec::new();
+    for v in &mesh.vertices {
+        undeformed_verts.push((v.orig_x, v.orig_y));
+    }
+
+    let rendered = render_deformed_mesh(&src_img, &mesh, &undeformed_verts);
+    assert_eq!(rendered.width, w);
+    assert_eq!(rendered.height, h);
+
+    let mut max_diff = 0i32;
+    for y in 25..115 {
+        for x in 25..95 {
+            let idx = (y * w + x) * 4;
+            for c in 0..4 {
+                let diff = (src_img.data[idx + c] as i32 - rendered.data[idx + c] as i32).abs();
+                if diff > max_diff {
+                    max_diff = diff;
+                }
+            }
+        }
+    }
+
+    assert_eq!(max_diff, 0, "Camera at identity (0,0,0) and zoom 1.0 must produce zero delta vs original PNG");
+}
+
+#[test]
+fn test_parallax_separation() {
+    let w = 1920usize;
+    let h = 1080usize;
+    let img = RawImage { width: w, height: h, data: vec![255u8; w * h * 4] };
+    let mesh = build_layer_mesh("body", &img);
+
+    let camera = CameraState { pan_x: 0.1, pan_y: 0.0, zoom: 1.0, roll: 0.0 };
+    let mut config = AnimationConfig::default();
+    config.entrance_enabled = false;
+    config.parallax_strength = 1.0;
+
+    let beats = vec![];
+    let downbeats = vec![];
+
+    // Layer 0: z=0.0
+    let verts_z0 = compute_deformed_vertices(
+        &mesh, 0.0, 0, 30.0, &beats, &downbeats, &config, 0, 0.0, &camera, w, h
+    );
+
+    // Layer 1: z=1.0
+    let verts_z1 = compute_deformed_vertices(
+        &mesh, 0.0, 0, 30.0, &beats, &downbeats, &config, 1, 1.0, &camera, w, h
+    );
+
+    // For any vertex, difference in X coordinate between z=1.0 and z=0.0:
+    let diff_x = verts_z1[0].0 - verts_z0[0].0;
+    let expected_separation = 0.1 * (w as f32); // 192.0
+
+    assert!((diff_x - expected_separation).abs() < 1e-3, "Parallax separation (actual: {:.3}, expected: {:.3}) must be exactly 0.1 * viewport_width", diff_x, expected_separation);
+}
+
+#[test]
+fn test_beat_punch_decay() {
+    let mut config = AnimationConfig::default();
+    config.beat_punch_intensity = 0.6;
+
+    let downbeats = vec![1.0]; // Downbeat at 1.0s
+    let beats = vec![1.0];
+
+    // Spike at downbeat (t = 1.0s)
+    let cam_spike = compute_camera_state(1.0, &beats, &downbeats, &config);
+    assert!(cam_spike.zoom > 1.025, "Camera zoom must punch on downbeat (got {:.4})", cam_spike.zoom);
+
+    // At 200 ms after downbeat (t = 1.200s), zoom must return within ±0.001 of 1.0
+    let cam_decayed = compute_camera_state(1.200, &beats, &downbeats, &config);
+    let diff = (cam_decayed.zoom - 1.0).abs();
+    assert!(diff <= 0.001, "Camera zoom must return to ±0.001 of 1.0 within 200 ms (at 200ms diff is {:.6}, zoom is {:.6})", diff, cam_decayed.zoom);
 }
 
 #[test]
@@ -3124,6 +3222,7 @@ fn test_mesh_render_benchmark_1080p() {
     ];
 
     let mut layers = Vec::new();
+    let total = layer_names.len();
     for (i, name) in layer_names.iter().enumerate() {
         let mut data = vec![0u8; w * h * 4];
         let y_min = 100 + i * 80;
@@ -3143,7 +3242,8 @@ fn test_mesh_render_benchmark_1080p() {
 
         let raw = RawImage { width: w, height: h, data };
         let mesh = build_layer_mesh(name, &raw);
-        layers.push((name.to_string(), raw, mesh, i));
+        let z_depth = i as f32 / (total - 1) as f32;
+        layers.push((name.to_string(), raw, mesh, i, z_depth));
     }
 
     let config = AnimationConfig::default();
@@ -3151,8 +3251,10 @@ fn test_mesh_render_benchmark_1080p() {
     let downbeats = vec![0.5, 2.0];
     let fps = 30.0;
 
+    let camera = compute_camera_state(0.0, &beats, &downbeats, &config);
+
     // Warm up
-    let _ = render_animated_character_frame(&layers, 0.0, 0, fps, &beats, &downbeats, &config, w, h);
+    let _ = render_animated_character_frame(&layers, 0.0, 0, fps, &beats, &downbeats, &config, &camera, w, h);
 
     // Measure 15 frames
     let num_frames = 15;
@@ -3160,7 +3262,8 @@ fn test_mesh_render_benchmark_1080p() {
 
     for f in 0..num_frames {
         let t = (f as f64) / fps;
-        let frame = render_animated_character_frame(&layers, t, f, fps, &beats, &downbeats, &config, w, h);
+        let cam = compute_camera_state(t, &beats, &downbeats, &config);
+        let frame = render_animated_character_frame(&layers, t, f, fps, &beats, &downbeats, &config, &cam, w, h);
         assert_eq!(frame.width, w);
         assert_eq!(frame.height, h);
     }
@@ -3168,17 +3271,17 @@ fn test_mesh_render_benchmark_1080p() {
     let elapsed = start_time.elapsed();
     let ms_per_frame = (elapsed.as_secs_f64() * 1000.0) / (num_frames as f64);
 
-    println!("\n[BENCHMARK 1080p MESH ANIMATION]");
+    println!("\n[BENCHMARK 1080p MESH + CAMERA PARALLAX]");
     println!("  Resolution: {}x{}", w, h);
     println!("  Layers Count: {}", layers.len());
     println!("  Total Time for {} frames: {:.2} ms", num_frames, elapsed.as_secs_f64() * 1000.0);
-    println!("  Performance: {:.2} ms / frame", ms_per_frame);
+    println!("  Performance: {:.2} ms / frame (ceiling < 25 ms/frame)", ms_per_frame);
 
-    if ms_per_frame > 80.0 {
-        panic!("BENCHMARK FAILED: {:.2} ms/frame exceeds 80 ms/frame limit! STOP + plan optimization", ms_per_frame);
+    if ms_per_frame > 25.0 {
+        panic!("BENCHMARK FAILED: {:.2} ms/frame exceeds 25 ms/frame limit! STOP + plan optimization", ms_per_frame);
     }
 
-    assert!(ms_per_frame < 80.0, "Performance must be under 80 ms/frame");
+    assert!(ms_per_frame < 25.0, "Performance must be under 25 ms/frame");
 }
 
 

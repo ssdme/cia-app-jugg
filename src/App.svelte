@@ -84,6 +84,8 @@
   let isRenderingPreview = $state(false);
   let compPreviewProgress = $state(null);
   let compPreviewResult = $state(null);
+  let compParallaxStrength = $state(0.5);
+  let compBeatPunchIntensity = $state(0.6);
   let compOps = $state([
     {
       id: 'drop_shadow',
@@ -790,7 +792,9 @@
         characterPath: compCharacterPath,
         backgroundPath: compBackgroundPath || null,
         audioPath: drumsPath || audioPath || null,
-        ops: compOps
+        ops: compOps,
+        parallaxStrength: compParallaxStrength,
+        beatPunchIntensity: compBeatPunchIntensity
       });
       compPreviewResult = {
         outputPath,
@@ -2010,6 +2014,64 @@
                         </div>
                       </div>
                     {/each}
+                  </div>
+                </div>
+
+                <!-- CAMERA & 2.5D PARALLAX SECTION -->
+                <div class="comp-stack-container" style="margin-top: 14px;">
+                  <div class="comp-stack-header">
+                    <div class="stack-title-row">
+                      <span class="pro-tag">CAMÉRA & PARALLAXE 2.5D</span>
+                      <span class="stack-count mono">PROCÉDURAL + BEATS</span>
+                    </div>
+                  </div>
+
+                  <div class="comp-ops-list">
+                    <div class="comp-op-card active">
+                      <div class="op-card-top">
+                        <div class="op-label-group">
+                          <span class="op-name">Parallax Strength</span>
+                          <span class="op-blend-badge mono">2.5D DEPTH</span>
+                        </div>
+                        <span class="op-val-display mono">{Math.round(compParallaxStrength * 100)}%</span>
+                      </div>
+                      <div class="op-slider-row">
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.05"
+                          bind:value={compParallaxStrength}
+                          class="op-slider"
+                        />
+                      </div>
+                      <div class="op-desc-row">
+                        <span class="op-desc">Depth separation amplitude across character layers during camera pan/zoom</span>
+                      </div>
+                    </div>
+
+                    <div class="comp-op-card active">
+                      <div class="op-card-top">
+                        <div class="op-label-group">
+                          <span class="op-name">Beat Punch Intensity</span>
+                          <span class="op-blend-badge mono">DOWNBEAT ZOOM</span>
+                        </div>
+                        <span class="op-val-display mono">{Math.round(compBeatPunchIntensity * 100)}%</span>
+                      </div>
+                      <div class="op-slider-row">
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.05"
+                          bind:value={compBeatPunchIntensity}
+                          class="op-slider"
+                        />
+                      </div>
+                      <div class="op-desc-row">
+                        <span class="op-desc">Camera dynamic zoom impulse and micro-shake on detected musical downbeats</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
