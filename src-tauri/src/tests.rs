@@ -3793,6 +3793,7 @@ fn test_time_curve_decoder_freeze() {
         ambiance: None,
         source_fx: vec![],
         audio_mix: None,
+        remap_params: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3849,6 +3850,7 @@ fn test_time_curve_decoder_reverse() {
         ambiance: None,
         source_fx: vec![],
         audio_mix: None,
+        remap_params: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -3968,6 +3970,7 @@ fn test_assembly_end_to_end_benchmark() {
         ambiance: None,
         source_fx: vec![],
         audio_mix: None,
+        remap_params: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -4266,6 +4269,7 @@ fn test_audio_varispeed_pitch_shift() {
         ambiance: None,
         source_fx: vec![],
         audio_mix: None,
+        remap_params: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -4325,6 +4329,7 @@ fn test_audio_freeze_mute() {
         ambiance: None,
         source_fx: vec![],
         audio_mix: None,
+        remap_params: None,
         segments: vec![
             PlanSegment {
                 t0: 0.0,
@@ -4346,6 +4351,141 @@ fn test_audio_freeze_mute() {
     // Audio during freeze must be strictly muted (all 0.0)
     assert_eq!(resampled.len(), sample_rate as usize);
     assert!(resampled.iter().all(|&s| s == 0.0), "Source audio during freeze must be strictly 0.0 (muted)");
+}
+
+#[test]
+fn test_remap_params_override_dumper() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0];
+    let downbeats = vec![1.0, 2.0];
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/video.mp4".to_string(),
+        duration: 3.0,
+        fps: 30.0,
+        cuts: vec![1.0, 2.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 120.0,
+            beats,
+            downbeats,
+        },
+        cut_beat_sync: 0.40,
+        sync_na: false,
+        sync_tolerance_ms: Some(100.0),
+        detected_style: StyleDecision {
+            style_name: "flow".to_string(),
+            sub_style: Some("FLOW (Liquid)".to_string()),
+            archetype: Some(Archetype::FLOW),
+            confidence: 0.40, // Low default shake
+            sync_tolerance_ms: Some(100.0),
+            justifications: vec![],
+        },
+        one_framers: vec![],
+        one_framers_v2: None,
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    // 1. Plan without override uses dumper default
+    let default_plan = generate_remap_plan_from_analysis(&analysis).unwrap();
+    assert!(default_plan.segments[0].effects.shake.a0 < 5.0, "Default smooth shake a0 must be < 5.0");
+
+    // 2. Override with shake_intensity = 0.9 and custom parameters
+    let mut custom_params = RemapParams::default();
+    custom_params.shake_intensity = 0.9;
+    custom_params.punch_in_scale = 1.45;
+
+    let overridden_plan = generate_remap_plan_from_analysis_with_params(&analysis, Some(&custom_params)).unwrap();
+    assert_eq!(overridden_plan.remap_params.as_ref().unwrap().shake_intensity, 0.9);
+    assert!((overridden_plan.segments[0].effects.shake.a0 - 13.5).abs() < 1e-3, "Overridden shake a0 must be 13.5 (0.9 * 15.0), got {}", overridden_plan.segments[0].effects.shake.a0);
+    assert_eq!(overridden_plan.remap_params.as_ref().unwrap().punch_in_scale, 1.45);
+}
+
+#[test]
+fn test_preset_serialization_roundtrip() {
+    let original = get_preset_params("AGGRESSIVE_JUGG");
+
+    // 1. Serialize to JSON
+    let json_str = serde_json::to_string_pretty(&original).expect("Serialization must succeed");
+
+    // 2. Deserialize back
+    let reloaded: RemapParams = serde_json::from_str(&json_str).expect("Deserialization must succeed");
+
+    // 3. Strict 28-field equality check
+    assert_eq!(original.shake_intensity, reloaded.shake_intensity);
+    assert_eq!(original.shake_freq_hz, reloaded.shake_freq_hz);
+    assert_eq!(original.shake_decay_ms, reloaded.shake_decay_ms);
+    assert_eq!(original.shake_direction, reloaded.shake_direction);
+    assert_eq!(original.shake_on_beats_only, reloaded.shake_on_beats_only);
+    assert_eq!(original.shake_roll_deg, reloaded.shake_roll_deg);
+    assert_eq!(original.shake_noise_seed, reloaded.shake_noise_seed);
+
+    assert_eq!(original.punch_in_scale, reloaded.punch_in_scale);
+    assert_eq!(original.punch_in_duration_ms, reloaded.punch_in_duration_ms);
+    assert_eq!(original.punch_in_easing, reloaded.punch_in_easing);
+    assert_eq!(original.zoom_drift_speed, reloaded.zoom_drift_speed);
+    assert_eq!(original.zoom_drift_direction, reloaded.zoom_drift_direction);
+    assert_eq!(original.punch_on_downbeats_only, reloaded.punch_on_downbeats_only);
+    assert_eq!(original.zoom_reset_between_cuts, reloaded.zoom_reset_between_cuts);
+
+    assert_eq!(original.rgb_split_intensity, reloaded.rgb_split_intensity);
+    assert_eq!(original.flash_intensity, reloaded.flash_intensity);
+    assert_eq!(original.glow_threshold, reloaded.glow_threshold);
+    assert_eq!(original.glow_radius_px, reloaded.glow_radius_px);
+    assert_eq!(original.vignette_strength, reloaded.vignette_strength);
+    assert_eq!(original.grain_amount, reloaded.grain_amount);
+    assert_eq!(original.color_shift_hue_deg, reloaded.color_shift_hue_deg);
+
+    assert_eq!(original.transition_type, reloaded.transition_type);
+    assert_eq!(original.transition_duration_ms, reloaded.transition_duration_ms);
+    assert_eq!(original.reverse_cut_probability, reloaded.reverse_cut_probability);
+    assert_eq!(original.freeze_frame_probability, reloaded.freeze_frame_probability);
+    assert_eq!(original.speed_ramp_style, reloaded.speed_ramp_style);
+    assert_eq!(original.ramp_acceleration, reloaded.ramp_acceleration);
+    assert_eq!(original.ramp_deceleration, reloaded.ramp_deceleration);
+
+    assert_eq!(original, reloaded, "Reloaded RemapParams must strictly match original preset");
+}
+
+#[test]
+fn test_project_state_roundtrip() {
+    let temp_dir = std::env::temp_dir().join("cia_t38_test");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let state_file = temp_dir.join("test_project_state.json");
+    let state_path = state_file.to_string_lossy().to_string();
+
+    let mut state = ProjectState::default();
+    state.project_name = Some("Cyberpunk Jugg Anthem".to_string());
+    state.scene_path = Some("C:/media/scene_cut.mp4".to_string());
+    state.drums_path = Some("C:/media/drums.mp3".to_string());
+    state.audio_path = Some("C:/media/master.wav".to_string());
+    state.character_path = Some("C:/media/character.png".to_string());
+
+    let remap_params = get_preset_params("GROOVE_VIBE");
+    state.remap_params = Some(remap_params);
+
+    // Save
+    let saved_path = save_project_state_internal(&state_path, &state).expect("Saving project state must succeed");
+    assert_eq!(saved_path, state_path);
+
+    // Load
+    let loaded = load_project_state_internal(&state_path).expect("Loading project state must succeed");
+
+    // Verify all fields
+    assert_eq!(state.schema_version, loaded.schema_version);
+    assert_eq!(state.project_name, loaded.project_name);
+    assert_eq!(state.scene_path, loaded.scene_path);
+    assert_eq!(state.drums_path, loaded.drums_path);
+    assert_eq!(state.audio_path, loaded.audio_path);
+    assert_eq!(state.character_path, loaded.character_path);
+    assert_eq!(state.remap_params, loaded.remap_params);
+    assert_eq!(state.audio_mix, loaded.audio_mix);
+    assert_eq!(state, loaded, "Loaded project state must exactly match saved state");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 

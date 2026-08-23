@@ -406,6 +406,8 @@ pub struct ProjectPlan {
     pub source_fx: Vec<SourceFxKeyframe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_mix: Option<crate::audio::AudioMixConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remap_params: Option<crate::presets::RemapParams>,
     pub segments: Vec<PlanSegment>,
     #[serde(default)]
     pub export: ExportConfig,
@@ -1087,6 +1089,7 @@ pub fn create_plan_internal(
         ambiance,
         source_fx: vec![],
         audio_mix: Some(crate::audio::AudioMixConfig::default()),
+        remap_params: Some(crate::presets::get_preset_params(&style)),
         segments,
         export: ExportConfig::default(),
     })
