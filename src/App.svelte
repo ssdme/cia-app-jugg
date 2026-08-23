@@ -40,7 +40,7 @@
 
   async function handleSelectBatchDir() {
     try {
-      const selected = prompt('Enter or paste folder path to scan for videos:', 'C:/Users/cia/Videos');
+      const selected = await invoke('pick_directory', { title: 'Select folder to scan for videos' });
       if (selected) {
         batchSourceDir = selected;
       }
@@ -479,7 +479,7 @@
   }
 
   async function handleSaveProject() {
-    const path = prompt('Enter project file path to save:', 'C:/cia_project.json');
+    const path = await invoke('pick_save_file', { defaultName: 'cia_project.json', filterName: 'JSON Project', filterExt: 'json' });
     if (!path) return;
     try {
       const projectState = {
@@ -513,7 +513,7 @@
   }
 
   async function handleLoadProject() {
-    const path = prompt('Enter project file path to load:', 'C:/cia_project.json');
+    const path = await invoke('pick_file', { kind: 'project' });
     if (!path) return;
     try {
       const state = await invoke('load_project_state', { path });
@@ -1123,8 +1123,8 @@
 
   async function handleExportForNLE() {
     try {
-      const defaultDir = 'C:/Users/cia/Downloads';
-      const dir = prompt('Enter output directory for NLE Export ZIP:', defaultDir) || defaultDir;
+      const dir = await invoke('pick_directory', { title: 'Select output directory for NLE Export' });
+      if (!dir) return;
       const projectState = {
         schemaVersion: 2,
         projectName: 'CIA_Jugg_NLE_Export',
@@ -3953,6 +3953,34 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* MONOCHROME RANGE SLIDERS */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: #1c1c20;
+    border-radius: 999px;
+    height: 4px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid #09090c;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.15);
+  }
+  input[type="range"]::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+  }
+  input[type="range"]:focus {
+    outline: none;
+  }
+
   :global(html), :global(body), :global(#app) {
     margin: 0;
     height: 100%;
@@ -4454,11 +4482,12 @@
   }
 
   .meta-pill {
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 8.5px;
     font-weight: 700;
-    color: #4ade80;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.25);
+    color: #a1a1aa;
+    background: #050507;
+    border: 1px solid #27272a;
     border-radius: 3px;
     padding: 0 5px;
     white-space: nowrap;
@@ -6237,9 +6266,9 @@
   }
 
   .btn-apply-project {
-    background: #15803d;
-    color: #ffffff;
-    border: 1px solid #22c55e;
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
     padding: 8px 16px;
     font-size: 10.5px;
     font-weight: 700;
@@ -6247,11 +6276,10 @@
     cursor: pointer;
     letter-spacing: 0.05em;
     transition: all 120ms ease;
-    box-shadow: 0 0 10px rgba(34, 197, 94, 0.2);
   }
   .btn-apply-project:hover {
-    background: #16a34a;
-    box-shadow: 0 0 14px rgba(34, 197, 94, 0.4);
+    background: #e4e4e7;
+    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
     transform: translateY(-1px);
   }
   .btn-apply-project:active {
@@ -6350,22 +6378,22 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    background: #0d0d12;
-    border: 1px solid #1c1c24;
+    background: #0d0d10;
+    border: 1px solid #1c1c20;
     border-radius: 6px;
     padding: 6px 10px;
     transition: all 120ms ease;
   }
   .layer-card:hover {
-    background: #14141c;
-    border-color: #272738;
+    background: #16161a;
+    border-color: #27272a;
   }
 
   .layer-thumb-box {
     width: 44px;
     height: 44px;
     border-radius: 4px;
-    background: #181822;
+    background: #0d0d10;
     border: 1px solid #27272a;
     display: flex;
     align-items: center;
@@ -6416,8 +6444,8 @@
   }
 
   .z-order-badge {
-    background: #181824;
-    border: 1px solid #272738;
+    background: #0d0d10;
+    border: 1px solid #27272a;
     color: #a1a1aa;
     font-size: 8.5px;
     font-weight: 700;
@@ -6430,13 +6458,14 @@
     font-weight: 700;
     padding: 2px 5px;
     border-radius: 3px;
-    background: rgba(113, 113, 122, 0.15);
+    background: #16161a;
     color: #71717a;
+    border: 1px solid #27272a;
   }
   .layer-status-pill.active {
-    background: rgba(74, 222, 128, 0.12);
-    color: #4ade80;
-    border: 1px solid rgba(74, 222, 128, 0.3);
+    background: #ffffff;
+    color: #000000;
+    border: 1px solid #ffffff;
   }
 
   /* ─── LAYERED COMPOSITOR OPS & CONTROLS ─────────────────────────────────── */

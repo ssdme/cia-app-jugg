@@ -296,6 +296,12 @@ pub fn pick_file(kind: String) -> Result<Option<String>, String> {
                 &["png", "jpg", "jpeg", "webp", "mp4", "mkv", "webm", "mov", "avi"],
             );
         }
+        "project" => {
+            dialog = dialog.add_filter(
+                "JSON Project Files (*.json)",
+                &["json"],
+            );
+        }
         _ => {
             dialog = dialog.add_filter(
                 "Media Files",
@@ -306,6 +312,66 @@ pub fn pick_file(kind: String) -> Result<Option<String>, String> {
         }
     }
     let file = dialog.pick_file();
+    Ok(file.map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn pick_directory(title: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(ref t) = title {
+        dialog = dialog.set_title(t);
+    }
+    let dir = dialog.pick_folder();
+    Ok(dir.map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn pick_files(kind: Option<String>) -> Result<Vec<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    match kind.as_deref().unwrap_or("media") {
+        "video" => {
+            dialog = dialog.add_filter(
+                "Video Files (*.mp4, *.mkv, *.webm, *.mov, *.avi)",
+                &["mp4", "mkv", "webm", "mov", "avi"],
+            );
+        }
+        "audio" => {
+            dialog = dialog.add_filter(
+                "Audio Files (*.mp3, *.wav, *.flac, *.m4a, *.ogg)",
+                &["mp3", "wav", "flac", "m4a", "ogg"],
+            );
+        }
+        _ => {
+            dialog = dialog.add_filter(
+                "Media Files",
+                &[
+                    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "flac", "m4a", "ogg", "png", "jpg", "jpeg", "webp",
+                ],
+            );
+        }
+    }
+    let files = dialog.pick_files();
+    Ok(files
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect())
+}
+
+#[tauri::command]
+pub fn pick_save_file(
+    default_name: Option<String>,
+    filter_name: Option<String>,
+    filter_ext: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(ref name) = default_name {
+        dialog = dialog.set_file_name(name);
+    }
+    if let (Some(ref fname), Some(ref fext)) = (filter_name, filter_ext) {
+        dialog = dialog.add_filter(fname, &[fext]);
+    }
+    let file = dialog.save_file();
     Ok(file.map(|path| path.to_string_lossy().to_string()))
 }
 

@@ -38,7 +38,7 @@
   }
 
   async function handleManualImport() {
-    const p = prompt('Enter video or audio file path to import into Media Pool:', 'C:/Videos/footage.mp4');
+    const p = await invoke('pick_file', { kind: 'media_or_image' });
     if (p) {
       await handleImportPaths([p]);
     }
