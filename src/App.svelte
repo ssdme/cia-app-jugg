@@ -890,6 +890,45 @@
     }
   }
 
+  async function handleExportForNLE() {
+    try {
+      const defaultDir = 'C:/Users/cia/Downloads';
+      const dir = prompt('Enter output directory for NLE Export ZIP:', defaultDir) || defaultDir;
+      const projectState = {
+        schemaVersion: 2,
+        projectName: 'CIA_Jugg_NLE_Export',
+        scenePath: scenePath || null,
+        drumsPath: drumsPath || null,
+        audioPath: audioPath || null,
+        characterPath: compCharacterPath || null,
+        backgroundPath: compBackgroundPath || null,
+        plan: planSummary || null,
+        compositionProject: compProject || null,
+        audioMix: {
+          sidechainDucking: sidechainDuckingEnabled,
+          duckingAmountDb: sidechainDuckingDb,
+          attackMs: 5.0,
+          releaseMs: 150.0,
+          varispeedAudio: varispeedAudioEnabled,
+          staccatoCuts: staccatoCutsEnabled,
+          mixSourceAudio: false,
+          sourceVolumeDb: 0.0,
+          targetVolumeDb: 0.0,
+        },
+        remapParams: remapParams,
+      };
+
+      const outPath = await invoke('export_for_nle', {
+        project: projectState,
+        outputDir: dir,
+      });
+
+      showToast(`NLE Package saved to: ${outPath} (Open Create_Jugg_Markers.jsx in After Effects via File > Scripts > Run Script File)`, 'success');
+    } catch (e) {
+      showToast(`Error exporting for NLE: ${e}`, 'error');
+    }
+  }
+
   async function handleOneClickJugg() {
     const vPath = scenePath || dumperVideoPath;
     const aPath = audioPath || drumsPath;
@@ -2158,6 +2197,9 @@
                   </button>
                   <button class="btn-pro-secondary" onclick={handleRunProcess}>
                     RUN PROCESS &gt;
+                  </button>
+                  <button class="btn-pro-secondary btn-nle-export" onclick={handleExportForNLE} type="button">
+                    📦 EXPORT FOR NLE (AE/Premiere)
                   </button>
                   <button class="btn-run-process btn-final-jugg" onclick={handleRenderFinalJugg}>
                     ⚡ RENDER FINAL JUGG
@@ -6296,6 +6338,16 @@
   .job-error-msg {
     font-size: 10px;
     color: #f87171;
+  }
+
+  .btn-nle-export {
+    background: #1e1b4b;
+    border-color: #6366f1;
+    color: #a5b4fc;
+  }
+  .btn-nle-export:hover {
+    background: #4338ca;
+    color: #ffffff;
   }
 </style>
 
