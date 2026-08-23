@@ -86,6 +86,9 @@
   let compPreviewResult = $state(null);
   let compParallaxStrength = $state(0.5);
   let compBeatPunchIntensity = $state(0.6);
+  let compLightWrapIntensity = $state(0.5);
+  let compChromaticAberration = $state(0.3);
+  let compImpactBlurStrength = $state(0.5);
   let compOps = $state([
     {
       id: 'drop_shadow',
@@ -740,6 +743,11 @@
         characterPath: compCharacterPath,
         backgroundPath: compBackgroundPath || null,
         layers: compResult.layers,
+        parallax_strength: compParallaxStrength,
+        beat_punch_intensity: compBeatPunchIntensity,
+        light_wrap_intensity: compLightWrapIntensity,
+        chromatic_aberration: compChromaticAberration,
+        impact_blur_strength: compImpactBlurStrength,
       };
       const savedPath = await invoke('save_composition_project', { project, targetPath: null });
       showToast(`Composition saved to: ${savedPath}`, 'success');
@@ -794,7 +802,10 @@
         audioPath: drumsPath || audioPath || null,
         ops: compOps,
         parallaxStrength: compParallaxStrength,
-        beatPunchIntensity: compBeatPunchIntensity
+        beatPunchIntensity: compBeatPunchIntensity,
+        lightWrapIntensity: compLightWrapIntensity,
+        chromaticAberration: compChromaticAberration,
+        impactBlurStrength: compImpactBlurStrength
       });
       compPreviewResult = {
         outputPath,
@@ -2070,6 +2081,87 @@
                       </div>
                       <div class="op-desc-row">
                         <span class="op-desc">Camera dynamic zoom impulse and micro-shake on detected musical downbeats</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- POST-FX SECTION -->
+                <div class="comp-stack-container" style="margin-top: 14px;">
+                  <div class="comp-stack-header">
+                    <div class="stack-title-row">
+                      <span class="pro-tag">POST-FX</span>
+                      <span class="stack-count mono">LIGHT WRAP + CHROMATIC + IMPACT</span>
+                    </div>
+                  </div>
+
+                  <div class="comp-ops-list">
+                    <div class="comp-op-card active">
+                      <div class="op-card-top">
+                        <div class="op-label-group">
+                          <span class="op-name">Light Wrap Intensity</span>
+                          <span class="op-blend-badge mono">CONTOUR BLEED</span>
+                        </div>
+                        <span class="op-val-display mono">{Math.round(compLightWrapIntensity * 100)}%</span>
+                      </div>
+                      <div class="op-slider-row">
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.05"
+                          bind:value={compLightWrapIntensity}
+                          class="op-slider"
+                        />
+                      </div>
+                      <div class="op-desc-row">
+                        <span class="op-desc">Ambient background light bleeding onto character silhouette edges</span>
+                      </div>
+                    </div>
+
+                    <div class="comp-op-card active">
+                      <div class="op-card-top">
+                        <div class="op-label-group">
+                          <span class="op-name">Chromatic Aberration</span>
+                          <span class="op-blend-badge mono">RADIAL RGB SHIFT</span>
+                        </div>
+                        <span class="op-val-display mono">{Math.round(compChromaticAberration * 100)}%</span>
+                      </div>
+                      <div class="op-slider-row">
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.05"
+                          bind:value={compChromaticAberration}
+                          class="op-slider"
+                        />
+                      </div>
+                      <div class="op-desc-row">
+                        <span class="op-desc">Radial RGB channel displacement with reactive spikes on downbeats</span>
+                      </div>
+                    </div>
+
+                    <div class="comp-op-card active">
+                      <div class="op-card-top">
+                        <div class="op-label-group">
+                          <span class="op-name">Impact Blur Strength</span>
+                          <span class="op-blend-badge mono">BEAT SMEAR</span>
+                        </div>
+                        <span class="op-val-display mono">{Math.round(compImpactBlurStrength * 100)}%</span>
+                      </div>
+                      <div class="op-slider-row">
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.05"
+                          bind:value={compImpactBlurStrength}
+                          class="op-slider"
+                        />
+                      </div>
+                      <div class="op-desc-row">
+                        <span class="op-desc">Directional radial smear triggered momentarily on major impact frames</span>
                       </div>
                     </div>
                   </div>
