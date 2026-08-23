@@ -6,6 +6,7 @@ pub mod composition;
 pub mod dumper;
 pub mod effects;
 pub mod export;
+pub mod nle;
 pub mod plan;
 pub mod presets;
 pub mod preview;
@@ -19,6 +20,7 @@ pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
 pub use export::*;
+pub use nle::*;
 pub use plan::*;
 pub use presets::*;
 pub use preview::*;
@@ -126,6 +128,7 @@ pub fn run() {
             export::cancel_render_job,
             timeline::get_scrub_frame,
             timeline::get_time_curve_velocities,
+            nle::export_for_nle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

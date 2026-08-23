@@ -4774,5 +4774,238 @@ fn test_timecurve_derivative_calculation() {
     assert!((v_slow - 0.5).abs() < 1e-4, "Slowdown velocity must be 0.5, got {}", v_slow);
 }
 
+#[test]
+fn test_nle_export_zip_structure() {
+    let mut project = ProjectState::default();
+    project.project_name = Some("Cyberpunk_Edit".to_string());
+
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 128.0,
+        target_duration: 6.0,
+        video_duration: 12.0,
+        audio_duration: 6.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        remap_params: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.875,
+                s0: 0.0,
+                s1: 1.875,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 1.875,
+                t1: 3.750,
+                s0: 2.0,
+                s1: 2.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 3.750,
+                t1: 6.000,
+                s0: 4.0,
+                s1: 6.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+        ],
+        export: ExportConfig::default(),
+    };
+    project.plan = Some(plan);
+
+    // 1. Generate ZIP
+    let zip_bytes = build_nle_package_zip(&project).expect("ZIP package generation must succeed");
+    assert!(!zip_bytes.is_empty(), "ZIP data must not be empty");
+
+    // 2. Read and parse ZIP entries
+    let entries = read_zip_entries(&zip_bytes).expect("ZIP parsing must succeed");
+
+    // 3. Strict assertion of the 3 required files
+    assert!(entries.contains_key("beat_grid.json"), "ZIP must contain beat_grid.json");
+    assert!(entries.contains_key("time_remap.json"), "ZIP must contain time_remap.json");
+    assert!(entries.contains_key("Create_Jugg_Markers.jsx"), "ZIP must contain Create_Jugg_Markers.jsx");
+
+    assert!(!entries["beat_grid.json"].is_empty());
+    assert!(!entries["time_remap.json"].is_empty());
+    assert!(!entries["Create_Jugg_Markers.jsx"].is_empty());
+}
+
+#[test]
+fn test_jsx_syntax_and_payload() {
+    let mut project = ProjectState::default();
+    project.project_name = Some("Jugg_AE_Export".to_string());
+
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 60,
+        aspect: AspectRatio { w: 1920, h: 1080 },
+        borderless: true,
+        bpm: 140.0,
+        target_duration: 4.0,
+        video_duration: 8.0,
+        audio_duration: 4.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        remap_params: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 2.0,
+                s0: 0.0,
+                s1: 2.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 2.0,
+                t1: 4.0,
+                s0: 2.0,
+                s1: 0.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+        ],
+        export: ExportConfig::default(),
+    };
+    project.plan = Some(plan);
+
+    let zip_bytes = build_nle_package_zip(&project).expect("ZIP package generation must succeed");
+    let entries = read_zip_entries(&zip_bytes).expect("ZIP parsing must succeed");
+
+    let jsx_bytes = entries.get("Create_Jugg_Markers.jsx").expect("JSX must be present");
+    let jsx_str = String::from_utf8(jsx_bytes.clone()).expect("JSX must be valid UTF-8");
+
+    // Check ExtendScript API markers
+    assert!(jsx_str.contains("var juggData ="), "JSX must declare var juggData");
+    assert!(jsx_str.contains("app.project.activeItem"), "JSX must reference app.project.activeItem");
+    assert!(jsx_str.contains("app.beginUndoGroup"), "JSX must use undo groups");
+    assert!(jsx_str.contains("comp.markerProperty.setValueAtTime"), "JSX must add markers");
+    assert!(jsx_str.contains("app.endUndoGroup"), "JSX must close undo group");
+
+    // Extract JSON payload and ensure it parses cleanly
+    let start_needle = "var juggData = ";
+    let start_pos = jsx_str.find(start_needle).unwrap() + start_needle.len();
+    let end_pos = jsx_str[start_pos..].find(";\n\n    var comp =").unwrap() + start_pos;
+    let json_slice = &jsx_str[start_pos..end_pos];
+
+    let parsed: serde_json::Value = serde_json::from_str(json_slice).expect("Embedded JSON in JSX must be valid");
+    assert_eq!(parsed["project_name"], "Jugg_AE_Export");
+    assert_eq!(parsed["bpm"], 140.0);
+    assert_eq!(parsed["fps"], 60);
+    assert!(parsed["beat_grid"].as_array().unwrap().len() > 0);
+}
+
+#[test]
+fn test_beat_grid_json_accuracy() {
+    let mut project = ProjectState::default();
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1080, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 4.0,
+        video_duration: 8.0,
+        audio_duration: 4.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        source_fx: vec![],
+        audio_mix: None,
+        remap_params: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.0,
+                s0: 0.0,
+                s1: 1.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 1.0,
+                t1: 2.5,
+                s0: 1.0,
+                s1: 2.5,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 2.5,
+                t1: 4.0,
+                s0: 2.5,
+                s1: 4.0,
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+        ],
+        export: ExportConfig::default(),
+    };
+    project.plan = Some(plan);
+
+    let zip_bytes = build_nle_package_zip(&project).expect("ZIP package generation must succeed");
+    let entries = read_zip_entries(&zip_bytes).expect("ZIP parsing must succeed");
+
+    let beat_grid_bytes = entries.get("beat_grid.json").expect("beat_grid.json must exist");
+    let markers: Vec<BeatMarkerItem> = serde_json::from_slice(beat_grid_bytes).expect("beat_grid.json must parse");
+
+    // Downbeats at t = 0.0, 1.0, 2.5
+    let downbeats: Vec<&BeatMarkerItem> = markers.iter().filter(|m| m.marker_type == "downbeat").collect();
+    assert!(downbeats.len() >= 3, "Must have at least 3 downbeats matching the segments");
+
+    let has_0 = downbeats.iter().any(|m| (m.time - 0.0).abs() < 0.001);
+    let has_1 = downbeats.iter().any(|m| (m.time - 1.0).abs() < 0.001);
+    let has_2_5 = downbeats.iter().any(|m| (m.time - 2.5).abs() < 0.001);
+
+    assert!(has_0, "Downbeat at t=0.0s must be present with tolerance < 1ms");
+    assert!(has_1, "Downbeat at t=1.0s must be present with tolerance < 1ms");
+    assert!(has_2_5, "Downbeat at t=2.5s must be present with tolerance < 1ms");
+}
+
 
 
