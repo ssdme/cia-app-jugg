@@ -2554,6 +2554,11 @@ fn test_composition_layers_json_schema() {
         background_path: Some("C:/test/bg.mp4".to_string()),
         audio_path: None,
         layers: layers.clone(),
+        parallax_strength: None,
+        beat_punch_intensity: None,
+        light_wrap_intensity: None,
+        chromatic_aberration: None,
+        impact_blur_strength: None,
     };
 
     let serialized = serde_json::to_string(&proj).expect("CompProject must serialize");
@@ -2684,6 +2689,11 @@ fn test_save_composition_project() {
         background_path: Some("C:/test/bg.mp4".to_string()),
         audio_path: None,
         layers,
+        parallax_strength: None,
+        beat_punch_intensity: None,
+        light_wrap_intensity: None,
+        chromatic_aberration: None,
+        impact_blur_strength: None,
     };
 
     let target = std::env::temp_dir().join("test_comp_proj.json");
@@ -3282,6 +3292,243 @@ fn test_mesh_render_benchmark_1080p() {
     }
 
     assert!(ms_per_frame < 25.0, "Performance must be under 25 ms/frame");
+}
+
+#[test]
+fn test_light_wrap_edge_bleed() {
+    let w = 200usize;
+    let h = 200usize;
+    let bg_buf = vec![255u8; w * h * 4]; // Pure white background
+
+    // Black circle with soft edge gradient from radius 35 to 55
+    let mut char_alpha = vec![0.0f32; w * h];
+    let mut composite_buf = bg_buf.clone();
+
+    let cx = 100.0f32;
+    let cy = 100.0f32;
+
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            let a = if dist <= 35.0 {
+                1.0f32
+            } else if dist >= 55.0 {
+                0.0f32
+            } else {
+                ((55.0 - dist) / 20.0).clamp(0.0, 1.0)
+            };
+
+            char_alpha[y * w + x] = a;
+
+            // Character is black [0, 0, 0] over white background [255, 255, 255]
+            let px_val = ((1.0 - a) * 255.0).round() as u8;
+            let idx = (y * w + x) * 4;
+            composite_buf[idx] = px_val;
+            composite_buf[idx + 1] = px_val;
+            composite_buf[idx + 2] = px_val;
+            composite_buf[idx + 3] = 255;
+        }
+    }
+
+    // Inspect initial brightness of a ring of edge pixels at radius ~42
+    let edge_idx = (100 * w + 142) * 4; // x=142, y=100 (radius 42)
+    let initial_edge_val = composite_buf[edge_idx];
+
+    // Apply Light Wrap Post-FX
+    apply_light_wrap_post_fx(&mut composite_buf, &bg_buf, &char_alpha, w, h, 0.8);
+
+    let final_edge_val = composite_buf[edge_idx];
+
+    // Center pixel (x=100, y=100, radius 0)
+    let center_idx = (100 * w + 100) * 4;
+    let center_val = composite_buf[center_idx];
+
+    // Center should remain pitch black (0)
+    assert!(center_val <= 5, "Deep circle center should not be affected by light wrap, got {}", center_val);
+
+    // Edge pixel brightness must strictly increase due to background light wrap bleeding
+    assert!(
+        final_edge_val > initial_edge_val,
+        "Light wrap must increase brightness on circle edges (before: {}, after: {})",
+        initial_edge_val,
+        final_edge_val
+    );
+}
+
+#[test]
+fn test_chromatic_aberration_identity() {
+    let w = 150usize;
+    let h = 150usize;
+    let mut data = vec![0u8; w * h * 4];
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            data[idx] = ((x * 7) % 256) as u8;
+            data[idx + 1] = ((y * 11) % 256) as u8;
+            data[idx + 2] = (((x + y) * 5) % 256) as u8;
+            data[idx + 3] = 255;
+        }
+    }
+
+    let original = data.clone();
+    apply_chromatic_aberration_post_fx(&mut data, w, h, 0.0);
+
+    let mut max_diff = 0i32;
+    for i in 0..data.len() {
+        let diff = (data[i] as i32 - original[i] as i32).abs();
+        if diff > max_diff {
+            max_diff = diff;
+        }
+    }
+
+    assert_eq!(max_diff, 0, "Chromatic aberration at intensity 0.0 must be strictly identical (delta = 0)");
+}
+
+#[test]
+fn test_post_fx_benchmark_1080p() {
+    let w = 1920;
+    let h = 1080;
+
+    let layer_names = [
+        "hair_back", "body", "clothes_lower", "clothes_upper",
+        "face", "mouth", "eyes", "hair_front", "accessories",
+    ];
+
+    let mut layers = Vec::new();
+    let total = layer_names.len();
+    for (i, name) in layer_names.iter().enumerate() {
+        let mut data = vec![0u8; w * h * 4];
+        let y_min = 100 + i * 80;
+        let y_max = (y_min + 300).min(h - 50);
+        let x_min = 400 + i * 50;
+        let x_max = (x_min + 600).min(w - 50);
+
+        for y in y_min..y_max {
+            for x in x_min..x_max {
+                let idx = (y * w + x) * 4;
+                data[idx] = (50 + i * 20) as u8;
+                data[idx + 1] = (80 + i * 15) as u8;
+                data[idx + 2] = (120 + i * 10) as u8;
+                data[idx + 3] = 255;
+            }
+        }
+
+        let raw = RawImage { width: w, height: h, data };
+        let mesh = build_layer_mesh(name, &raw);
+        let z_depth = i as f32 / (total - 1) as f32;
+        layers.push((name.to_string(), raw, mesh, i, z_depth));
+    }
+
+    let mut config = AnimationConfig::default();
+    config.parallax_strength = 0.5;
+    config.beat_punch_intensity = 0.6;
+    config.light_wrap_intensity = 0.5;
+    config.chromatic_aberration = 0.5;
+    config.impact_blur_strength = 0.5;
+
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5];
+    let downbeats = vec![0.5, 2.0];
+    let fps = 30.0;
+
+    let ops = get_default_composition_ops();
+    let bg_frame = RawImage { width: w, height: h, data: vec![30u8; w * h * 4] };
+
+    // Warm up
+    let camera = compute_camera_state(0.0, &beats, &downbeats, &config);
+    let char_frame = render_animated_character_frame(&layers, 0.0, 0, fps, &beats, &downbeats, &config, &camera, w, h);
+    let precomputed = precompute_composition_masks(&char_frame, &ops, w, h);
+    let mut frame_buf = bg_frame.data.clone();
+    composite_frame_fast(&mut frame_buf, &char_frame, &ops, &precomputed, w, h);
+    apply_light_wrap_post_fx(&mut frame_buf, &bg_frame.data, &precomputed.alpha_channel, w, h, config.light_wrap_intensity);
+    apply_impact_motion_blur_post_fx(&mut frame_buf, w, h, config.impact_blur_strength);
+    apply_chromatic_aberration_post_fx(&mut frame_buf, w, h, config.chromatic_aberration);
+
+    // Measure 15 frames with full stack: 9 layers + mesh deformation + 2.5D camera + composite ops + Post-FX
+    let num_frames = 15;
+    let mut dur_char = 0.0;
+    let mut dur_precompute = 0.0;
+    let mut dur_comp = 0.0;
+    let mut dur_lw = 0.0;
+    let mut dur_blur = 0.0;
+    let mut dur_chroma = 0.0;
+
+    let start_time = std::time::Instant::now();
+
+    for f in 0..num_frames {
+        let t = (f as f64) / fps;
+        let cam = compute_camera_state(t, &beats, &downbeats, &config);
+
+        let t0 = std::time::Instant::now();
+        let char_f = render_animated_character_frame(&layers, t, f, fps, &beats, &downbeats, &config, &cam, w, h);
+        dur_char += t0.elapsed().as_secs_f64() * 1000.0;
+
+        let t1 = std::time::Instant::now();
+        let pre_masks = precompute_composition_masks(&char_f, &ops, w, h);
+        dur_precompute += t1.elapsed().as_secs_f64() * 1000.0;
+
+        let t2 = std::time::Instant::now();
+        let mut buf = bg_frame.data.clone();
+        composite_frame_fast(&mut buf, &char_f, &ops, &pre_masks, w, h);
+        dur_comp += t2.elapsed().as_secs_f64() * 1000.0;
+
+        // 1. Light Wrap
+        let t3 = std::time::Instant::now();
+        apply_light_wrap_post_fx(&mut buf, &bg_frame.data, &pre_masks.alpha_channel, w, h, config.light_wrap_intensity);
+        dur_lw += t3.elapsed().as_secs_f64() * 1000.0;
+
+        // 2. Impact Downbeat Pulse
+        let mut chromatic_spike = 0.0f32;
+        let mut impact_blur_spike = 0.0f32;
+        for &db in &downbeats {
+            if t >= db {
+                let dt = (t - db) as f32;
+                if dt < 0.10 {
+                    let decay = (-35.0 * dt).exp();
+                    chromatic_spike += 0.35 * decay;
+                    impact_blur_spike += decay;
+                }
+            }
+        }
+
+        // 3. Impact Motion Blur
+        let t4 = std::time::Instant::now();
+        let total_blur = config.impact_blur_strength * impact_blur_spike;
+        if total_blur > 0.001 {
+            apply_impact_motion_blur_post_fx(&mut buf, w, h, total_blur);
+        }
+        dur_blur += t4.elapsed().as_secs_f64() * 1000.0;
+
+        // 4. Chromatic Aberration
+        let t5 = std::time::Instant::now();
+        let total_chroma = (config.chromatic_aberration + chromatic_spike).clamp(0.0, 1.0);
+        if total_chroma > 0.001 {
+            apply_chromatic_aberration_post_fx(&mut buf, w, h, total_chroma);
+        }
+        dur_chroma += t5.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    let elapsed = start_time.elapsed();
+    let ms_per_frame = (elapsed.as_secs_f64() * 1000.0) / (num_frames as f64);
+
+    println!("\n[BENCHMARK 1080p FULL POST-FX STACK BREAKDOWN]");
+    println!("  Char frame render:       {:.2} ms/frame", dur_char / (num_frames as f64));
+    println!("  Precompute masks (ops):  {:.2} ms/frame", dur_precompute / (num_frames as f64));
+    println!("  Composite frame fast:    {:.2} ms/frame", dur_comp / (num_frames as f64));
+    println!("  Light Wrap Post-FX:      {:.2} ms/frame", dur_lw / (num_frames as f64));
+    println!("  Impact Blur Post-FX:     {:.2} ms/frame", dur_blur / (num_frames as f64));
+    println!("  Chromatic Aberration FX: {:.2} ms/frame", dur_chroma / (num_frames as f64));
+    println!("  --------------------------------------------");
+    println!("  Total Frame Time:        {:.2} ms / frame", ms_per_frame);
+
+    if ms_per_frame > 50.0 {
+        panic!("BENCHMARK FAILED: {:.2} ms/frame exceeds 50 ms/frame hard limit! STOP + plan optimization", ms_per_frame);
+    }
+
+    assert!(ms_per_frame < 35.0, "Performance must be under 35 ms/frame");
 }
 
 

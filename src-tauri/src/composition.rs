@@ -73,6 +73,16 @@ pub struct CompProject {
     #[serde(default)]
     pub audio_path: Option<String>,
     pub layers: Vec<LayerItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallax_strength: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beat_punch_intensity: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_wrap_intensity: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chromatic_aberration: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impact_blur_strength: Option<f32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -201,90 +211,554 @@ pub fn alpha_over_pixel(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
     ]
 }
 
+#[inline(always)]
+pub fn box_blur_1d_h(src: &[f32], out: &mut [f32], w: usize, h: usize, r: usize) {
+    if w == 0 || h == 0 { return; }
+    let r_clamped = r.min(w - 1);
+    let iarr = 1.0 / ((r_clamped + r_clamped + 1) as f32);
+
+    let rows_per_chunk = (h / rayon::current_num_threads().max(1)).max(8);
+    out.par_chunks_mut(w * rows_per_chunk)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let start_y = chunk_idx * rows_per_chunk;
+            let chunk_rows = chunk.len() / w;
+            for cy in 0..chunk_rows {
+                let y = start_y + cy;
+                let row_offset = y * w;
+                let row_out = &mut chunk[cy * w..(cy + 1) * w];
+
+                let fv = src[row_offset];
+                let lv = src[row_offset + w - 1];
+                let mut val = (r_clamped + 1) as f32 * fv;
+                for i in 0..r_clamped {
+                    val += src[row_offset + i];
+                }
+                for i in 0..=r_clamped {
+                    val += src[row_offset + (i + r_clamped).min(w - 1)] - fv;
+                    row_out[i] = val * iarr;
+                }
+                for i in (r_clamped + 1)..(w.saturating_sub(r_clamped)) {
+                    val += src[row_offset + i + r_clamped] - src[row_offset + i - r_clamped - 1];
+                    row_out[i] = val * iarr;
+                }
+                for i in (w.saturating_sub(r_clamped))..w {
+                    val += lv - src[row_offset + i.saturating_sub(r_clamped + 1)];
+                    row_out[i] = val * iarr;
+                }
+            }
+        });
+}
+
+#[inline(always)]
+pub fn box_blur_1d_v(src: &[f32], out: &mut [f32], w: usize, h: usize, r: usize) {
+    if h == 0 || w == 0 { return; }
+    let r_clamped = r.min(h - 1);
+    let iarr = 1.0 / ((r_clamped + r_clamped + 1) as f32);
+
+    let num_threads = rayon::current_num_threads().max(1);
+    let chunk_w = ((w + num_threads - 1) / num_threads).max(16);
+
+    (0..w).into_par_iter().step_by(chunk_w).for_each(|start_x| {
+        let end_x = (start_x + chunk_w).min(w);
+        let out_ptr = out.as_ptr() as *mut f32;
+        unsafe {
+            for x in start_x..end_x {
+                let fv = src[x];
+                let lv = src[(h - 1) * w + x];
+                let mut val = (r_clamped + 1) as f32 * fv;
+                for j in 0..r_clamped {
+                    val += src[j * w + x];
+                }
+                for j in 0..=r_clamped {
+                    val += src[(j + r_clamped).min(h - 1) * w + x] - fv;
+                    *out_ptr.add(j * w + x) = val * iarr;
+                }
+                for j in (r_clamped + 1)..(h.saturating_sub(r_clamped)) {
+                    val += src[(j + r_clamped) * w + x] - src[(j - r_clamped - 1) * w + x];
+                    *out_ptr.add(j * w + x) = val * iarr;
+                }
+                for j in (h.saturating_sub(r_clamped))..h {
+                    val += lv - src[j.saturating_sub(r_clamped + 1) * w + x];
+                    *out_ptr.add(j * w + x) = val * iarr;
+                }
+            }
+        }
+    });
+}
+
+#[inline(always)]
+pub fn downscale_2x_f32(src: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
+    let dw = (w + 1) / 2;
+    let dh = (h + 1) / 2;
+    let mut out = vec![0.0f32; dw * dh];
+
+    out.par_chunks_mut(dw * 8)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let start_dy = chunk_idx * 8;
+            let num_rows = chunk.len() / dw;
+            for c_dy in 0..num_rows {
+                let dy = start_dy + c_dy;
+                let sy0 = (dy * 2).min(h - 1);
+                let sy1 = (dy * 2 + 1).min(h - 1);
+                let r0 = sy0 * w;
+                let r1 = sy1 * w;
+                let row_offset = c_dy * dw;
+                for dx in 0..dw {
+                    let sx0 = (dx * 2).min(w - 1);
+                    let sx1 = (dx * 2 + 1).min(w - 1);
+                    let avg = (src[r0 + sx0] + src[r0 + sx1] + src[r1 + sx0] + src[r1 + sx1]) * 0.25;
+                    chunk[row_offset + dx] = avg;
+                }
+            }
+        });
+
+    (out, dw, dh)
+}
+
+#[inline(always)]
+pub fn downscale_4x_f32(src: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
+    let dw = (w + 3) / 4;
+    let dh = (h + 3) / 4;
+    let mut out = vec![0.0f32; dw * dh];
+
+    out.par_chunks_mut(dw * 8)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let start_dy = chunk_idx * 8;
+            let num_rows = chunk.len() / dw;
+            for c_dy in 0..num_rows {
+                let dy = start_dy + c_dy;
+                let sy_base = dy * 4;
+                let sy0 = sy_base.min(h - 1) * w;
+                let sy1 = (sy_base + 1).min(h - 1) * w;
+                let sy2 = (sy_base + 2).min(h - 1) * w;
+                let sy3 = (sy_base + 3).min(h - 1) * w;
+                let row_offset = c_dy * dw;
+
+                for dx in 0..dw {
+                    let sx_base = dx * 4;
+                    let sx0 = sx_base.min(w - 1);
+                    let sx1 = (sx_base + 1).min(w - 1);
+                    let sx2 = (sx_base + 2).min(w - 1);
+                    let sx3 = (sx_base + 3).min(w - 1);
+
+                    let sum0 = src[sy0 + sx0] + src[sy0 + sx1] + src[sy0 + sx2] + src[sy0 + sx3];
+                    let sum1 = src[sy1 + sx0] + src[sy1 + sx1] + src[sy1 + sx2] + src[sy1 + sx3];
+                    let sum2 = src[sy2 + sx0] + src[sy2 + sx1] + src[sy2 + sx2] + src[sy2 + sx3];
+                    let sum3 = src[sy3 + sx0] + src[sy3 + sx1] + src[sy3 + sx2] + src[sy3 + sx3];
+
+                    chunk[row_offset + dx] = (sum0 + sum1 + sum2 + sum3) * 0.0625;
+                }
+            }
+        });
+
+    (out, dw, dh)
+}
+
+#[inline(always)]
+pub fn upscale_bilinear_2x_f32(src: &[f32], dw: usize, dh: usize, w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h];
+    let x_ratio = if w > 1 { (dw - 1) as f32 / (w - 1) as f32 } else { 0.0 };
+    let y_ratio = if h > 1 { (dh - 1) as f32 / (h - 1) as f32 } else { 0.0 };
+
+    let chunk_rows = 16;
+    out.par_chunks_mut(w * chunk_rows)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let start_y = chunk_idx * chunk_rows;
+            let num_rows = chunk.len() / w;
+            for cy in 0..num_rows {
+                let y = start_y + cy;
+                let sy = y as f32 * y_ratio;
+                let y_low = sy.floor() as usize;
+                let y_high = (y_low + 1).min(dh - 1);
+                let wy = sy - y_low as f32;
+
+                let r_low = y_low * dw;
+                let r_high = y_high * dw;
+                let row_offset = cy * w;
+
+                for x in 0..w {
+                    let sx = x as f32 * x_ratio;
+                    let x_low = sx.floor() as usize;
+                    let x_high = (x_low + 1).min(dw - 1);
+                    let wx = sx - x_low as f32;
+
+                    let top = src[r_low + x_low] * (1.0 - wx) + src[r_low + x_high] * wx;
+                    let bot = src[r_high + x_low] * (1.0 - wx) + src[r_high + x_high] * wx;
+                    chunk[row_offset + x] = top * (1.0 - wy) + bot * wy;
+                }
+            }
+        });
+
+    out
+}
+
+#[inline(always)]
+pub fn upscale_bilinear_4x_f32(src: &[f32], dw: usize, dh: usize, w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h];
+    let x_ratio = if w > 1 { (dw - 1) as f32 / (w - 1) as f32 } else { 0.0 };
+    let y_ratio = if h > 1 { (dh - 1) as f32 / (h - 1) as f32 } else { 0.0 };
+
+    let chunk_rows = 16;
+    out.par_chunks_mut(w * chunk_rows)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let start_y = chunk_idx * chunk_rows;
+            let num_rows = chunk.len() / w;
+            for cy in 0..num_rows {
+                let y = start_y + cy;
+                let sy = y as f32 * y_ratio;
+                let y_low = sy.floor() as usize;
+                let y_high = (y_low + 1).min(dh - 1);
+                let wy = sy - y_low as f32;
+
+                let r_low = y_low * dw;
+                let r_high = y_high * dw;
+                let row_offset = cy * w;
+
+                for x in 0..w {
+                    let sx = x as f32 * x_ratio;
+                    let x_low = sx.floor() as usize;
+                    let x_high = (x_low + 1).min(dw - 1);
+                    let wx = sx - x_low as f32;
+
+                    let top = src[r_low + x_low] * (1.0 - wx) + src[r_low + x_high] * wx;
+                    let bot = src[r_high + x_low] * (1.0 - wx) + src[r_high + x_high] * wx;
+                    chunk[row_offset + x] = top * (1.0 - wy) + bot * wy;
+                }
+            }
+        });
+
+    out
+}
+
 pub fn gaussian_blur_channel(src: &[f32], w: usize, h: usize, radius: f32) -> Vec<f32> {
     if radius <= 0.5 || w == 0 || h == 0 {
         return src.to_vec();
     }
-    let sigma = radius;
-    let k_radius = (sigma * 2.5).ceil() as i32;
-    let mut kernel = Vec::with_capacity((k_radius * 2 + 1) as usize);
-    let mut k_sum = 0.0f32;
-    for i in -k_radius..=k_radius {
-        let val = (-((i * i) as f32) / (2.0 * sigma * sigma)).exp();
-        kernel.push(val);
-        k_sum += val;
+    if radius >= 4.0 && w >= 1280 && h >= 720 {
+        let (down_4x, dw, dh) = downscale_4x_f32(src, w, h);
+        let r = (radius * 0.35).round().max(1.0) as usize;
+        let mut buf_a = down_4x;
+        let mut buf_b = vec![0.0f32; dw * dh];
+        for _ in 0..2 {
+            box_blur_1d_h(&buf_a, &mut buf_b, dw, dh, r);
+            box_blur_1d_v(&buf_b, &mut buf_a, dw, dh, r);
+        }
+        upscale_bilinear_4x_f32(&buf_a, dw, dh, w, h)
+    } else if radius >= 2.0 && w >= 640 && h >= 480 {
+        let (down_src, dw, dh) = downscale_2x_f32(src, w, h);
+        let r = (radius * 0.65).round().max(1.0) as usize;
+        let mut buf_a = down_src;
+        let mut buf_b = vec![0.0f32; dw * dh];
+        for _ in 0..2 {
+            box_blur_1d_h(&buf_a, &mut buf_b, dw, dh, r);
+            box_blur_1d_v(&buf_b, &mut buf_a, dw, dh, r);
+        }
+        upscale_bilinear_2x_f32(&buf_a, dw, dh, w, h)
+    } else {
+        let r = (radius * 0.70).round().max(1.0) as usize;
+        let mut buf_a = src.to_vec();
+        let mut buf_b = vec![0.0f32; w * h];
+        for _ in 0..2 {
+            box_blur_1d_h(&buf_a, &mut buf_b, w, h, r);
+            box_blur_1d_v(&buf_b, &mut buf_a, w, h, r);
+        }
+        buf_a
     }
-    for k in &mut kernel {
-        *k /= k_sum;
+}
+
+pub fn apply_light_wrap_post_fx(
+    composite_buf: &mut [u8],
+    bg_buf: &[u8],
+    char_alpha: &[f32],
+    w: usize,
+    h: usize,
+    intensity: f32,
+) {
+    if intensity <= 1e-4 || w == 0 || h == 0 {
+        return;
     }
 
-    // Horizontal pass
-    let mut temp = vec![0.0f32; w * h];
-    for y in 0..h {
-        let row_offset = y * w;
-        for x in 0..w {
-            let mut acc = 0.0f32;
-            for (idx, &k_val) in kernel.iter().enumerate() {
-                let offset = (idx as i32) - k_radius;
-                let nx = (x as i32 + offset).clamp(0, w as i32 - 1) as usize;
-                acc += src[row_offset + nx] * k_val;
-            }
-            temp[row_offset + x] = acc;
+    if w >= 640 && h >= 480 {
+        let dw = (w + 3) / 4;
+        let dh = (h + 3) / 4;
+        let mut down_inv_alpha = vec![0.0f32; dw * dh];
+
+        // 1. Direct 4x downscale of (1.0 - char_alpha)
+        down_inv_alpha.par_chunks_mut(dw * 8)
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let start_dy = chunk_idx * 8;
+                let num_rows = chunk.len() / dw;
+                for c_dy in 0..num_rows {
+                    let dy = start_dy + c_dy;
+                    let sy_base = dy * 4;
+                    let sy0 = sy_base.min(h - 1) * w;
+                    let sy1 = (sy_base + 1).min(h - 1) * w;
+                    let sy2 = (sy_base + 2).min(h - 1) * w;
+                    let sy3 = (sy_base + 3).min(h - 1) * w;
+                    let row_offset = c_dy * dw;
+
+                    for dx in 0..dw {
+                        let sx_base = dx * 4;
+                        let sx0 = sx_base.min(w - 1);
+                        let sx1 = (sx_base + 1).min(w - 1);
+                        let sx2 = (sx_base + 2).min(w - 1);
+                        let sx3 = (sx_base + 3).min(w - 1);
+
+                        let a0 = char_alpha[sy0 + sx0] + char_alpha[sy0 + sx1] + char_alpha[sy0 + sx2] + char_alpha[sy0 + sx3];
+                        let a1 = char_alpha[sy1 + sx0] + char_alpha[sy1 + sx1] + char_alpha[sy1 + sx2] + char_alpha[sy1 + sx3];
+                        let a2 = char_alpha[sy2 + sx0] + char_alpha[sy2 + sx1] + char_alpha[sy2 + sx2] + char_alpha[sy2 + sx3];
+                        let a3 = char_alpha[sy3 + sx0] + char_alpha[sy3 + sx1] + char_alpha[sy3 + sx2] + char_alpha[sy3 + sx3];
+
+                        let avg_alpha = (a0 + a1 + a2 + a3) * 0.0625;
+                        chunk[row_offset + dx] = (1.0 - avg_alpha).clamp(0.0, 1.0);
+                    }
+                }
+            });
+
+        // 2. Fast 2-pass blur on 480x270 buffer
+        let r = (6.0f32 * 0.35f32).round().max(1.0) as usize;
+        let mut temp = vec![0.0f32; dw * dh];
+        for _ in 0..2 {
+            box_blur_1d_h(&down_inv_alpha, &mut temp, dw, dh, r);
+            box_blur_1d_v(&temp, &mut down_inv_alpha, dw, dh, r);
         }
+
+        // 3. Bleed ambient background light onto character contour with bilinear sampling
+        let x_ratio = if w > 1 { (dw - 1) as f32 / (w - 1) as f32 } else { 0.0 };
+        let y_ratio = if h > 1 { (dh - 1) as f32 / (h - 1) as f32 } else { 0.0 };
+
+        let chunk_rows = 16;
+        composite_buf.par_chunks_mut(w * 4 * chunk_rows)
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let start_y = chunk_idx * chunk_rows;
+                let num_rows = chunk.len() / (w * 4);
+                for cy in 0..num_rows {
+                    let y = start_y + cy;
+                    let sy = y as f32 * y_ratio;
+                    let y_low = sy.floor() as usize;
+                    let y_high = (y_low + 1).min(dh - 1);
+                    let wy = sy - y_low as f32;
+                    let r_low = y_low * dw;
+                    let r_high = y_high * dw;
+
+                    let row_offset = y * w;
+                    let chunk_row_offset = cy * w * 4;
+
+                    for x in 0..w {
+                        let idx = row_offset + x;
+                        let ca = char_alpha[idx];
+                        if ca > 0.001 {
+                            let sx = x as f32 * x_ratio;
+                            let x_low = sx.floor() as usize;
+                            let x_high = (x_low + 1).min(dw - 1);
+                            let wx = sx - x_low as f32;
+
+                            let top = down_inv_alpha[r_low + x_low] * (1.0 - wx) + down_inv_alpha[r_low + x_high] * wx;
+                            let bot = down_inv_alpha[r_high + x_low] * (1.0 - wx) + down_inv_alpha[r_high + x_high] * wx;
+                            let bleed_mask = top * (1.0 - wy) + bot * wy;
+
+                            let bleed = (ca * bleed_mask * intensity).clamp(0.0, 1.0);
+                            if bleed > 0.001 {
+                                let bg_r = bg_buf[idx * 4] as f32;
+                                let bg_g = bg_buf[idx * 4 + 1] as f32;
+                                let bg_b = bg_buf[idx * 4 + 2] as f32;
+
+                                let px_idx = chunk_row_offset + x * 4;
+                                let px_r = chunk[px_idx] as f32;
+                                let px_g = chunk[px_idx + 1] as f32;
+                                let px_b = chunk[px_idx + 2] as f32;
+
+                                let out_r = (px_r + bg_r * bleed).min(255.0);
+                                let out_g = (px_g + bg_g * bleed).min(255.0);
+                                let out_b = (px_b + bg_b * bleed).min(255.0);
+
+                                chunk[px_idx] = out_r.round() as u8;
+                                chunk[px_idx + 1] = out_g.round() as u8;
+                                chunk[px_idx + 2] = out_b.round() as u8;
+                            }
+                        }
+                    }
+                }
+            });
+    } else {
+        let mut inv_alpha = vec![0.0f32; w * h];
+        for i in 0..(w * h) {
+            inv_alpha[i] = (1.0 - char_alpha[i]).clamp(0.0, 1.0);
+        }
+        let blurred_bg_bleed = gaussian_blur_channel(&inv_alpha, w, h, 6.0);
+        for y in 0..h {
+            let row_offset = y * w;
+            for x in 0..w {
+                let idx = row_offset + x;
+                let ca = char_alpha[idx];
+                if ca > 0.001 {
+                    let bleed = (ca * blurred_bg_bleed[idx] * intensity).clamp(0.0, 1.0);
+                    if bleed > 0.001 {
+                        let bg_r = bg_buf[idx * 4] as f32;
+                        let bg_g = bg_buf[idx * 4 + 1] as f32;
+                        let bg_b = bg_buf[idx * 4 + 2] as f32;
+
+                        let px_idx = idx * 4;
+                        let px_r = composite_buf[px_idx] as f32;
+                        let px_g = composite_buf[px_idx + 1] as f32;
+                        let px_b = composite_buf[px_idx + 2] as f32;
+
+                        let out_r = (px_r + bg_r * bleed).min(255.0);
+                        let out_g = (px_g + bg_g * bleed).min(255.0);
+                        let out_b = (px_b + bg_b * bleed).min(255.0);
+
+                        composite_buf[px_idx] = out_r.round() as u8;
+                        composite_buf[px_idx + 1] = out_g.round() as u8;
+                        composite_buf[px_idx + 2] = out_b.round() as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn apply_chromatic_aberration_post_fx(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    intensity: f32,
+) {
+    if intensity <= 1e-4 || w == 0 || h == 0 {
+        return;
     }
 
-    // Vertical pass
-    let mut out = vec![0.0f32; w * h];
-    for y in 0..h {
-        let row_offset = y * w;
-        for x in 0..w {
-            let mut acc = 0.0f32;
-            for (idx, &k_val) in kernel.iter().enumerate() {
-                let offset = (idx as i32) - k_radius;
-                let ny = (y as i32 + offset).clamp(0, h as i32 - 1) as usize;
-                acc += temp[ny * w + x] * k_val;
+    let src = buf.to_vec();
+    let cx = w as f32 * 0.5;
+    let cy = h as f32 * 0.5;
+    let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+    let inv_max_r = (18.0 * intensity) / max_r;
+    let max_x_idx = (w - 1) as f32;
+    let max_y_idx = (h - 1) as f32;
+
+    buf.par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let yf = y as f32;
+            let dy_norm = (yf - cy) * inv_max_r;
+
+            for x in 0..w {
+                let xf = x as f32;
+                let dx_norm = (xf - cx) * inv_max_r;
+
+                let rx = ((xf + dx_norm).max(0.0).min(max_x_idx)) as usize;
+                let ry = ((yf + dy_norm).max(0.0).min(max_y_idx)) as usize;
+                let r_val = src[(ry * w + rx) * 4];
+
+                let g_val = src[(y * w + x) * 4 + 1];
+
+                let bx = ((xf - dx_norm).max(0.0).min(max_x_idx)) as usize;
+                let by = ((yf - dy_norm).max(0.0).min(max_y_idx)) as usize;
+                let b_val = src[(by * w + bx) * 4 + 2];
+
+                row_chunk[x * 4] = r_val;
+                row_chunk[x * 4 + 1] = g_val;
+                row_chunk[x * 4 + 2] = b_val;
             }
-            out[row_offset + x] = acc;
-        }
+        });
+}
+
+pub fn apply_impact_motion_blur_post_fx(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    blur_amount: f32,
+) {
+    if blur_amount <= 1e-4 || w == 0 || h == 0 {
+        return;
     }
-    out
+
+    let src = buf.to_vec();
+    let cx = w as f32 * 0.5;
+    let cy = h as f32 * 0.5;
+
+    // 5-tap radial smear from center
+    const TAPS: [f32; 5] = [-0.020, -0.010, 0.0, 0.010, 0.020];
+
+    buf.par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let yf = y as f32;
+            let dy = yf - cy;
+
+            for x in 0..w {
+                let xf = x as f32;
+                let dx = xf - cx;
+
+                let mut r_acc = 0.0f32;
+                let mut g_acc = 0.0f32;
+                let mut b_acc = 0.0f32;
+                let mut a_acc = 0.0f32;
+
+                for &t_scale in &TAPS {
+                    let factor = 1.0 + t_scale * blur_amount;
+                    let sx = (cx + dx * factor).round().clamp(0.0, (w - 1) as f32) as usize;
+                    let sy = (cy + dy * factor).round().clamp(0.0, (h - 1) as f32) as usize;
+                    let idx = (sy * w + sx) * 4;
+
+                    r_acc += src[idx] as f32;
+                    g_acc += src[idx + 1] as f32;
+                    b_acc += src[idx + 2] as f32;
+                    a_acc += src[idx + 3] as f32;
+                }
+
+                row_chunk[x * 4] = (r_acc * 0.20).round() as u8;
+                row_chunk[x * 4 + 1] = (g_acc * 0.20).round() as u8;
+                row_chunk[x * 4 + 2] = (b_acc * 0.20).round() as u8;
+                row_chunk[x * 4 + 3] = (a_acc * 0.20).round() as u8;
+            }
+        });
 }
 
 pub fn extract_inner_edge_mask(alpha: &[f32], w: usize, h: usize, edge_radius: f32) -> Vec<f32> {
     let blurred = gaussian_blur_channel(alpha, w, h, edge_radius.max(2.0));
     let mut edge = vec![0.0f32; w * h];
-    for i in 0..(w * h) {
-        let a = alpha[i];
-        if a > 0.05 {
-            let diff = (a - blurred[i]).max(0.0);
-            edge[i] = (diff * 2.8 * a).clamp(0.0, 1.0);
-        } else {
-            edge[i] = 0.0;
-        }
-    }
+    edge.par_chunks_mut(w)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let offset = y * w;
+            for x in 0..w {
+                let a = alpha[offset + x];
+                if a > 0.05 {
+                    let diff = (a - blurred[offset + x]).max(0.0);
+                    row_chunk[x] = (diff * 2.8 * a).clamp(0.0, 1.0);
+                }
+            }
+        });
     edge
 }
 
 pub fn extract_contour_rim_mask(alpha: &[f32], w: usize, h: usize) -> Vec<f32> {
     let mut rim = vec![0.0f32; w * h];
-    for y in 0..h {
-        let y_prev = y.saturating_sub(1);
-        let y_next = (y + 1).min(h - 1);
-        for x in 0..w {
-            let x_prev = x.saturating_sub(1);
-            let x_next = (x + 1).min(w - 1);
+    rim.par_chunks_mut(w)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let y_prev = y.saturating_sub(1);
+            let y_next = (y + 1).min(h - 1);
+            for x in 0..w {
+                let x_prev = x.saturating_sub(1);
+                let x_next = (x + 1).min(w - 1);
 
-            let a = alpha[y * w + x];
-            if a > 0.05 {
-                let dx = (alpha[y * w + x_next] - alpha[y * w + x_prev]) * 0.5;
-                let dy = (alpha[y_next * w + x] - alpha[y_prev * w + x]) * 0.5;
-                let mag = (dx * dx + dy * dy).sqrt();
-                rim[y * w + x] = (mag * 3.5 * a).clamp(0.0, 1.0);
-            } else {
-                rim[y * w + x] = 0.0;
+                let a = alpha[y * w + x];
+                if a > 0.05 {
+                    let dx = (alpha[y * w + x_next] - alpha[y * w + x_prev]) * 0.5;
+                    let dy = (alpha[y_next * w + x] - alpha[y_prev * w + x]) * 0.5;
+                    let mag = (dx * dx + dy * dy).sqrt();
+                    row_chunk[x] = (mag * 3.5 * a).clamp(0.0, 1.0);
+                }
             }
-        }
-    }
+        });
     rim
 }
 
@@ -768,9 +1242,14 @@ pub fn precompute_composition_masks(
     h: usize,
 ) -> PrecomputedCompMasks {
     let mut alpha_channel = vec![0.0f32; w * h];
-    for i in 0..(w * h) {
-        alpha_channel[i] = char_raw.data[i * 4 + 3] as f32 / 255.0;
-    }
+    alpha_channel.par_chunks_mut(w)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let row_offset = y * w;
+            for x in 0..w {
+                row_chunk[x] = char_raw.data[(row_offset + x) * 4 + 3] as f32 / 255.0;
+            }
+        });
 
     let mut shadow_mask = None;
     let mut edge_mask = None;
@@ -789,19 +1268,20 @@ pub fn precompute_composition_masks(
                 let mut shifted_alpha = vec![0.0f32; w * h];
                 let dx_i = offset_x.round() as i32;
                 let dy_i = offset_y.round() as i32;
-                for y in 0..h {
-                    let sy = y as i32 - dy_i;
-                    if sy < 0 || sy >= h as i32 {
-                        continue;
-                    }
-                    for x in 0..w {
-                        let sx = x as i32 - dx_i;
-                        if sx < 0 || sx >= w as i32 {
-                            continue;
+                shifted_alpha.par_chunks_mut(w)
+                    .enumerate()
+                    .for_each(|(y, row_chunk)| {
+                        let sy = y as i32 - dy_i;
+                        if sy >= 0 && sy < h as i32 {
+                            let sy_u = sy as usize;
+                            for x in 0..w {
+                                let sx = x as i32 - dx_i;
+                                if sx >= 0 && sx < w as i32 {
+                                    row_chunk[x] = alpha_channel[sy_u * w + sx as usize];
+                                }
+                            }
                         }
-                        shifted_alpha[y * w + x] = alpha_channel[sy as usize * w + sx as usize];
-                    }
-                }
+                    });
                 shadow_mask = Some(gaussian_blur_channel(&shifted_alpha, w, h, blur_radius));
             }
             "light_wrap" => {
@@ -831,146 +1311,155 @@ pub fn composite_frame_fast(
     w: usize,
     h: usize,
 ) {
-    // 1. Drop shadow
-    for op in ops {
-        if op.enabled && op.op_type == "drop_shadow" {
-            if let Some(ref shadow_mask) = masks.shadow_mask {
-                let opacity = op.opacity.clamp(0.0, 1.0);
-                for i in 0..(w * h) {
-                    let s_val = shadow_mask[i] * opacity;
-                    if s_val > 0.001 {
-                        let factor = 1.0 - s_val;
-                        let idx = i * 4;
-                        bg_rgba[idx] = (bg_rgba[idx] as f32 * factor).round().clamp(0.0, 255.0) as u8;
-                        bg_rgba[idx + 1] = (bg_rgba[idx + 1] as f32 * factor).round().clamp(0.0, 255.0) as u8;
-                        bg_rgba[idx + 2] = (bg_rgba[idx + 2] as f32 * factor).round().clamp(0.0, 255.0) as u8;
-                    }
-                }
+    use rayon::prelude::*;
+    let has_shadow = ops.iter().any(|op| op.enabled && op.op_type == "drop_shadow");
+    let shadow_opacity = ops.iter().find(|op| op.enabled && op.op_type == "drop_shadow").map(|op| op.opacity as f32).unwrap_or(0.0);
+
+    let has_tint = ops.iter().any(|op| op.enabled && op.op_type == "tint");
+    let tint_opacity = ops.iter().find(|op| op.enabled && op.op_type == "tint").map(|op| op.opacity as f32).unwrap_or(0.0);
+
+    let has_edge = ops.iter().any(|op| op.enabled && op.op_type == "light_wrap");
+    let edge_opacity = ops.iter().find(|op| op.enabled && op.op_type == "light_wrap").map(|op| op.opacity as f32).unwrap_or(0.0);
+
+    let has_rim = ops.iter().any(|op| op.enabled && op.op_type == "rim_light");
+    let rim_opacity = ops.iter().find(|op| op.enabled && op.op_type == "rim_light").map(|op| op.opacity as f32).unwrap_or(0.0);
+
+    // Compute background ambient color for tint in sub-sampled pass
+    let mut bg_mean = [128.0f32, 128.0f32, 128.0f32];
+    if has_tint {
+        let (mut sum_r, mut sum_g, mut sum_b, mut count) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+        for i in (0..(w * h)).step_by(16) {
+            if masks.alpha_channel[i] < 0.2 {
+                let idx = i * 4;
+                sum_r += bg_rgba[idx] as f64;
+                sum_g += bg_rgba[idx + 1] as f64;
+                sum_b += bg_rgba[idx + 2] as f64;
+                count += 1;
             }
         }
-    }
-
-    // 2. Alpha Over
-    for i in 0..(w * h) {
-        let idx = i * 4;
-        let bg_pix = [bg_rgba[idx], bg_rgba[idx + 1], bg_rgba[idx + 2], bg_rgba[idx + 3]];
-        let fg_pix = [char_raw.data[idx], char_raw.data[idx + 1], char_raw.data[idx + 2], char_raw.data[idx + 3]];
-        let blended = alpha_over_pixel(bg_pix, fg_pix);
-        bg_rgba[idx] = blended[0];
-        bg_rgba[idx + 1] = blended[1];
-        bg_rgba[idx + 2] = blended[2];
-        bg_rgba[idx + 3] = blended[3];
-    }
-
-    // 3. Compute background ambient color for tint
-    let (mut sum_r, mut sum_g, mut count) = (0.0f64, 0.0f64, 0usize);
-    let mut sum_b = 0.0f64;
-    for i in (0..(w * h)).step_by(8) {
-        if masks.alpha_channel[i] < 0.2 {
-            let idx = i * 4;
-            sum_r += bg_rgba[idx] as f64;
-            sum_g += bg_rgba[idx + 1] as f64;
-            sum_b += bg_rgba[idx + 2] as f64;
-            count += 1;
+        if count > 0 {
+            bg_mean = [
+                (sum_r / count as f64) as f32,
+                (sum_g / count as f64) as f32,
+                (sum_b / count as f64) as f32,
+            ];
         }
     }
-    if count == 0 { count = 1; }
-    let bg_mean = [
-        (sum_r / count as f64) as f32,
-        (sum_g / count as f64) as f32,
-        (sum_b / count as f64) as f32,
-    ];
 
-    // 4. Post-ops
-    for op in ops {
-        if !op.enabled {
-            continue;
-        }
-        match op.op_type.as_str() {
-            "tint" => {
-                let opacity = op.opacity.clamp(0.0, 1.0);
-                for i in 0..(w * h) {
-                    let a = masks.alpha_channel[i];
-                    if a > 0.01 {
-                        let idx = i * 4;
-                        let k = opacity * a;
-                        let tr = (bg_rgba[idx] as f32 * (bg_mean[0] / 128.0)).clamp(0.0, 255.0);
-                        let tg = (bg_rgba[idx + 1] as f32 * (bg_mean[1] / 128.0)).clamp(0.0, 255.0);
-                        let tb = (bg_rgba[idx + 2] as f32 * (bg_mean[2] / 128.0)).clamp(0.0, 255.0);
+    let shadow_ref = masks.shadow_mask.as_deref();
+    let edge_ref = masks.edge_mask.as_deref();
+    let rim_ref = masks.rim_mask.as_deref();
+    let char_data = &char_raw.data;
+    let alpha_chan = &masks.alpha_channel;
 
-                        bg_rgba[idx] = (bg_rgba[idx] as f32 * (1.0 - k) + tr * k).round().clamp(0.0, 255.0) as u8;
-                        bg_rgba[idx + 1] = (bg_rgba[idx + 1] as f32 * (1.0 - k) + tg * k).round().clamp(0.0, 255.0) as u8;
-                        bg_rgba[idx + 2] = (bg_rgba[idx + 2] as f32 * (1.0 - k) + tb * k).round().clamp(0.0, 255.0) as u8;
-                    }
-                }
-            }
-            "light_wrap" => {
-                if let Some(ref edge_mask) = masks.edge_mask {
-                    let blur_radius = op.params.get("blurRadius").and_then(|v| v.as_f64()).unwrap_or(20.0) as f32;
-                    let opacity = op.opacity.clamp(0.0, 1.0);
+    // Unified single-pass Rayon scanline parallel compositor
+    bg_rgba.par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row_chunk)| {
+            let row_offset = y * w;
+            for x in 0..w {
+                let idx = row_offset + x;
+                let px_idx = x * 4;
 
-                    let mut bg_r = vec![0.0f32; w * h];
-                    let mut bg_g = vec![0.0f32; w * h];
-                    let mut bg_b = vec![0.0f32; w * h];
-                    for i in 0..(w * h) {
-                        let idx = i * 4;
-                        bg_r[i] = bg_rgba[idx] as f32 / 255.0;
-                        bg_g[i] = bg_rgba[idx + 1] as f32 / 255.0;
-                        bg_b[i] = bg_rgba[idx + 2] as f32 / 255.0;
-                    }
-                    let blur_r = gaussian_blur_channel_downscaled(&bg_r, w, h, blur_radius);
-                    let blur_g = gaussian_blur_channel_downscaled(&bg_g, w, h, blur_radius);
-                    let blur_b = gaussian_blur_channel_downscaled(&bg_b, w, h, blur_radius);
+                let mut bg_r = row_chunk[px_idx] as f32;
+                let mut bg_g = row_chunk[px_idx + 1] as f32;
+                let mut bg_b = row_chunk[px_idx + 2] as f32;
+                let bg_a = row_chunk[px_idx + 3] as f32 / 255.0;
 
-                    for i in 0..(w * h) {
-                        let a = masks.alpha_channel[i];
-                        let m = edge_mask[i];
-                        if a > 0.01 && m > 0.001 {
-                            let k = (opacity * m * a).clamp(0.0, 1.0);
-                            let idx = i * 4;
-                            let cb_r = bg_rgba[idx] as f32 / 255.0;
-                            let cb_g = bg_rgba[idx + 1] as f32 / 255.0;
-                            let cb_b = bg_rgba[idx + 2] as f32 / 255.0;
-
-                            let cs_r = 1.0 - (1.0 - cb_r) * (1.0 - blur_r[i]);
-                            let cs_g = 1.0 - (1.0 - cb_g) * (1.0 - blur_g[i]);
-                            let cs_b = 1.0 - (1.0 - cb_b) * (1.0 - blur_b[i]);
-
-                            bg_rgba[idx] = ((cb_r * (1.0 - k) + cs_r * k) * 255.0).round().clamp(0.0, 255.0) as u8;
-                            bg_rgba[idx + 1] = ((cb_g * (1.0 - k) + cs_g * k) * 255.0).round().clamp(0.0, 255.0) as u8;
-                            bg_rgba[idx + 2] = ((cb_b * (1.0 - k) + cs_b * k) * 255.0).round().clamp(0.0, 255.0) as u8;
+                // 1. Drop shadow on background
+                if has_shadow {
+                    if let Some(shadow) = shadow_ref {
+                        let s_val = shadow[idx] * shadow_opacity;
+                        if s_val > 0.001 {
+                            let factor = 1.0 - s_val;
+                            bg_r *= factor;
+                            bg_g *= factor;
+                            bg_b *= factor;
                         }
                     }
                 }
-            }
-            "rim_light" => {
-                if let Some(ref rim_mask) = masks.rim_mask {
-                    let opacity = op.opacity.clamp(0.0, 1.0);
-                    let rim_color = op.params.get("color")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| [
-                            arr.get(0).and_then(|v| v.as_f64()).unwrap_or(220.0) as f32,
-                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(240.0) as f32,
-                            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(255.0) as f32,
-                        ])
-                        .unwrap_or([220.0, 240.0, 255.0]);
 
-                    for i in 0..(w * h) {
-                        let a = masks.alpha_channel[i];
-                        let m = rim_mask[i];
-                        if a > 0.01 && m > 0.001 {
-                            let k = opacity * m * a;
-                            let idx = i * 4;
-                            bg_rgba[idx] = (bg_rgba[idx] as f32 + rim_color[0] * k).clamp(0.0, 255.0).round() as u8;
-                            bg_rgba[idx + 1] = (bg_rgba[idx + 1] as f32 + rim_color[1] * k).clamp(0.0, 255.0).round() as u8;
-                            bg_rgba[idx + 2] = (bg_rgba[idx + 2] as f32 + rim_color[2] * k).clamp(0.0, 255.0).round() as u8;
+                // 2. Alpha Over character
+                let char_idx = idx * 4;
+                let fg_a = char_data[char_idx + 3] as f32 / 255.0;
+                let (mut out_r, mut out_g, mut out_b, out_a) = if fg_a <= 0.001 {
+                    (bg_r, bg_g, bg_b, bg_a)
+                } else if fg_a >= 0.999 {
+                    (
+                        char_data[char_idx] as f32,
+                        char_data[char_idx + 1] as f32,
+                        char_data[char_idx + 2] as f32,
+                        1.0,
+                    )
+                } else {
+                    let fg_r = char_data[char_idx] as f32;
+                    let fg_g = char_data[char_idx + 1] as f32;
+                    let fg_b = char_data[char_idx + 2] as f32;
+                    let a_out = fg_a + bg_a * (1.0 - fg_a);
+                    if a_out > 0.001 {
+                        let r = (fg_r * fg_a + bg_r * bg_a * (1.0 - fg_a)) / a_out;
+                        let g = (fg_g * fg_a + bg_g * bg_a * (1.0 - fg_a)) / a_out;
+                        let b = (fg_b * fg_a + bg_b * bg_a * (1.0 - fg_a)) / a_out;
+                        (r, g, b, a_out)
+                    } else {
+                        (0.0, 0.0, 0.0, 0.0)
+                    }
+                };
+
+                let char_a = alpha_chan[idx];
+
+                // 3. Tint de raccord
+                if has_tint && char_a > 0.01 {
+                    let k = tint_opacity * char_a;
+                    let tr = (out_r * (bg_mean[0] / 128.0)).min(255.0);
+                    let tg = (out_g * (bg_mean[1] / 128.0)).min(255.0);
+                    let tb = (out_b * (bg_mean[2] / 128.0)).min(255.0);
+                    out_r = out_r * (1.0 - k) + tr * k;
+                    out_g = out_g * (1.0 - k) + tg * k;
+                    out_b = out_b * (1.0 - k) + tb * k;
+                }
+
+                // 4. Layer op light wrap (screen blend on inner edge)
+                if has_edge && char_a > 0.01 {
+                    if let Some(edge) = edge_ref {
+                        let e_val = edge[idx] * edge_opacity;
+                        if e_val > 0.001 {
+                            let cb_r = out_r / 255.0;
+                            let cb_g = out_g / 255.0;
+                            let cb_b = out_b / 255.0;
+                            let bg_norm_r = bg_r / 255.0;
+                            let bg_norm_g = bg_g / 255.0;
+                            let bg_norm_b = bg_b / 255.0;
+
+                            let cs_r = 1.0 - (1.0 - cb_r) * (1.0 - bg_norm_r);
+                            let cs_g = 1.0 - (1.0 - cb_g) * (1.0 - bg_norm_g);
+                            let cs_b = 1.0 - (1.0 - cb_b) * (1.0 - bg_norm_b);
+
+                            out_r = ((cb_r * (1.0 - e_val) + cs_r * e_val) * 255.0).min(255.0);
+                            out_g = ((cb_g * (1.0 - e_val) + cs_g * e_val) * 255.0).min(255.0);
+                            out_b = ((cb_b * (1.0 - e_val) + cs_b * e_val) * 255.0).min(255.0);
                         }
                     }
                 }
+
+                // 5. Rim light op (additive)
+                if has_rim && char_a > 0.01 {
+                    if let Some(rim) = rim_ref {
+                        let r_val = rim[idx] * rim_opacity;
+                        if r_val > 0.001 {
+                            out_r = (out_r + 240.0 * r_val).min(255.0);
+                            out_g = (out_g + 245.0 * r_val).min(255.0);
+                            out_b = (out_b + 255.0 * r_val).min(255.0);
+                        }
+                    }
+                }
+
+                row_chunk[px_idx] = out_r.round().clamp(0.0, 255.0) as u8;
+                row_chunk[px_idx + 1] = out_g.round().clamp(0.0, 255.0) as u8;
+                row_chunk[px_idx + 2] = out_b.round().clamp(0.0, 255.0) as u8;
+                row_chunk[px_idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
             }
-            _ => {}
-        }
-    }
+        });
 }
 
 pub fn composite_frame_with_ops(
@@ -1233,8 +1722,11 @@ pub struct AnimationConfig {
     pub hair_sway_amplitude: f32,
     pub blink_interval_sec: f32,
     pub pump_decay_rate: f32,
-    pub parallax_strength: f32,    // 0.0 to 1.0, default 0.5
-    pub beat_punch_intensity: f32, // 0.0 to 1.0, default 0.6
+    pub parallax_strength: f32,       // 0.0 to 1.0, default 0.5
+    pub beat_punch_intensity: f32,    // 0.0 to 1.0, default 0.6
+    pub light_wrap_intensity: f32,    // 0.0 to 1.0, default 0.5
+    pub chromatic_aberration: f32,    // 0.0 to 1.0, default 0.3
+    pub impact_blur_strength: f32,    // 0.0 to 1.0, default 0.5
 }
 
 impl Default for AnimationConfig {
@@ -1248,6 +1740,9 @@ impl Default for AnimationConfig {
             pump_decay_rate: 6.0,
             parallax_strength: 0.5,
             beat_punch_intensity: 0.6,
+            light_wrap_intensity: 0.5,
+            chromatic_aberration: 0.3,
+            impact_blur_strength: 0.5,
         }
     }
 }
@@ -1862,6 +2357,9 @@ pub fn render_mesh_preview_internal(
     ops: Option<Vec<CompositionOp>>,
     parallax_strength: Option<f32>,
     beat_punch_intensity: Option<f32>,
+    light_wrap_intensity: Option<f32>,
+    chromatic_aberration: Option<f32>,
+    impact_blur_strength: Option<f32>,
     duration_sec: Option<f64>,
     ffmpeg_bin_opt: Option<&Path>,
 ) -> Result<String, String> {
@@ -1929,6 +2427,15 @@ pub fn render_mesh_preview_internal(
     }
     if let Some(bpi) = beat_punch_intensity {
         anim_config.beat_punch_intensity = bpi.clamp(0.0, 1.0);
+    }
+    if let Some(lwi) = light_wrap_intensity {
+        anim_config.light_wrap_intensity = lwi.clamp(0.0, 1.0);
+    }
+    if let Some(ca) = chromatic_aberration {
+        anim_config.chromatic_aberration = ca.clamp(0.0, 1.0);
+    }
+    if let Some(ibs) = impact_blur_strength {
+        anim_config.impact_blur_strength = ibs.clamp(0.0, 1.0);
     }
 
     let fps = 30.0f64;
@@ -2039,6 +2546,45 @@ pub fn render_mesh_preview_internal(
 
         composite_frame_fast(&mut frame_buf, &char_frame, &active_ops, &precomputed_masks, w, h);
 
+        // --- POST-FX STACK ---
+        // 1. Light Wrap
+        if anim_config.light_wrap_intensity > 0.001 {
+            apply_light_wrap_post_fx(
+                &mut frame_buf,
+                &bg_frame.data,
+                &precomputed_masks.alpha_channel,
+                w,
+                h,
+                anim_config.light_wrap_intensity,
+            );
+        }
+
+        // 2. Impact Downbeat Pulse for Chromatic & Motion Blur
+        let mut chromatic_spike = 0.0f32;
+        let mut impact_blur_spike = 0.0f32;
+        for &db in &downbeats {
+            if t >= db {
+                let dt = (t - db) as f32;
+                if dt < 0.10 { // 2 to 3 frames max (<0.10s)
+                    let decay = (-35.0 * dt).exp();
+                    chromatic_spike += 0.35 * decay;
+                    impact_blur_spike += decay;
+                }
+            }
+        }
+
+        // 3. Impact Motion Blur
+        let total_blur = anim_config.impact_blur_strength * impact_blur_spike;
+        if total_blur > 0.001 {
+            apply_impact_motion_blur_post_fx(&mut frame_buf, w, h, total_blur);
+        }
+
+        // 4. Chromatic Aberration
+        let total_chroma = (anim_config.chromatic_aberration + chromatic_spike).clamp(0.0, 1.0);
+        if total_chroma > 0.001 {
+            apply_chromatic_aberration_post_fx(&mut frame_buf, w, h, total_chroma);
+        }
+
         if encode_stdin.write_all(&frame_buf).is_err() {
             break;
         }
@@ -2139,6 +2685,9 @@ pub fn render_mesh_preview(
     ops: Option<Vec<CompositionOp>>,
     parallax_strength: Option<f32>,
     beat_punch_intensity: Option<f32>,
+    light_wrap_intensity: Option<f32>,
+    chromatic_aberration: Option<f32>,
+    impact_blur_strength: Option<f32>,
 ) -> Result<String, String> {
     render_mesh_preview_internal(
         Some(&app),
@@ -2148,6 +2697,9 @@ pub fn render_mesh_preview(
         ops,
         parallax_strength,
         beat_punch_intensity,
+        light_wrap_intensity,
+        chromatic_aberration,
+        impact_blur_strength,
         Some(3.0),
         None,
     )
