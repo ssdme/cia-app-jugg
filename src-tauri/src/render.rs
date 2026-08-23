@@ -2,6 +2,12 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
+use crate::composition::{
+    apply_chromatic_aberration_post_fx, apply_light_wrap_post_fx,
+    build_layer_mesh, composite_frame_fast, compute_camera_state, get_default_composition_ops,
+    precompute_composition_masks, render_animated_character_frame, AnimationConfig,
+    CompProject,
+};
 use crate::effects::{
     apply_ambiance_effects, apply_one_framer, apply_slide_shake,
     apply_transform_stack_cropped, apply_warp_bubble, apply_wave_warp,
@@ -81,6 +87,112 @@ impl<'a> CachedFrameReader<'a> {
             self.order.push_back(frame_idx);
         }
         Ok(())
+    }
+}
+
+pub fn compute_source_time_for_target_time(plan: &ProjectPlan, t: f64) -> (f64, usize) {
+    if plan.segments.is_empty() {
+        return (t, 0);
+    }
+    let seg_idx = plan.segments.iter().position(|s| t >= s.t0 - 1e-6 && t < s.t1 - 1e-6)
+        .unwrap_or(plan.segments.len().saturating_sub(1));
+    let seg = &plan.segments[seg_idx];
+    let dt = (seg.t1 - seg.t0).max(1e-6);
+    let u = ((t - seg.t0) / dt).clamp(0.0, 1.0);
+    let s_norm = evaluate_curve(&seg.curve, u);
+    let s_time = seg.s0 + s_norm * (seg.s1 - seg.s0);
+    (s_time, seg_idx)
+}
+
+pub struct FrameFetcher<'a> {
+    pub reader: CachedFrameReader<'a>,
+    pub src_fps: f64,
+    pub total_src_frames: u64,
+    pub width: usize,
+    pub height: usize,
+}
+
+impl<'a> FrameFetcher<'a> {
+    pub fn new(
+        file: &'a mut std::fs::File,
+        frame_bytes: usize,
+        src_fps: f64,
+        total_src_frames: u64,
+        width: usize,
+        height: usize,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            reader: CachedFrameReader::new(file, frame_bytes, capacity),
+            src_fps,
+            total_src_frames,
+            width,
+            height,
+        }
+    }
+
+    pub fn fetch_frame_for_target_time(
+        &mut self,
+        plan: &ProjectPlan,
+        target_t: f64,
+        buf: &mut [u8],
+    ) -> Result<u64, String> {
+        let (s_time, _) = compute_source_time_for_target_time(plan, target_t);
+        let src_frame_idx = (s_time * self.src_fps).round().max(0.0) as u64;
+        let clamped_src_idx = src_frame_idx.min(self.total_src_frames.saturating_sub(1));
+        self.reader.get_frame(clamped_src_idx, buf)?;
+        Ok(clamped_src_idx)
+    }
+}
+
+pub struct MemoryFrameFetcher {
+    pub frames: Vec<Vec<u8>>,
+    pub src_fps: f64,
+    pub cache: std::collections::HashMap<u64, Vec<u8>>,
+    pub order: std::collections::VecDeque<u64>,
+    pub capacity: usize,
+}
+
+impl MemoryFrameFetcher {
+    pub fn new(frames: Vec<Vec<u8>>, src_fps: f64, capacity: usize) -> Self {
+        Self {
+            frames,
+            src_fps,
+            cache: std::collections::HashMap::with_capacity(capacity),
+            order: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn fetch_frame_for_target_time(
+        &mut self,
+        plan: &ProjectPlan,
+        target_t: f64,
+    ) -> (u64, Vec<u8>) {
+        let (s_time, _) = compute_source_time_for_target_time(plan, target_t);
+        let src_frame_idx = (s_time * self.src_fps).round().max(0.0) as u64;
+        let clamped_src_idx = (src_frame_idx as usize).min(self.frames.len().saturating_sub(1)) as u64;
+
+        if let Some(cached) = self.cache.get(&clamped_src_idx) {
+            return (clamped_src_idx, cached.clone());
+        }
+
+        let frame_data = if (clamped_src_idx as usize) < self.frames.len() {
+            self.frames[clamped_src_idx as usize].clone()
+        } else {
+            vec![]
+        };
+
+        if self.capacity > 0 {
+            if self.cache.len() >= self.capacity {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.cache.remove(&oldest);
+                }
+            }
+            self.cache.insert(clamped_src_idx, frame_data.clone());
+            self.order.push_back(clamped_src_idx);
+        }
+        (clamped_src_idx, frame_data)
     }
 }
 
@@ -655,4 +767,344 @@ pub async fn run_render_pipeline(
     });
 
     Ok(stats)
+}
+
+pub fn render_final_jugg_internal(
+    app: Option<&tauri::AppHandle>,
+    plan_json: &str,
+    scene_path: &str,
+    audio_path: &str,
+    character_project_path: Option<&str>,
+    output_path: Option<&str>,
+) -> Result<RenderStats, String> {
+    RENDER_CANCEL.store(false, Ordering::SeqCst);
+    let start_time = std::time::Instant::now();
+
+    let plan: ProjectPlan = serde_json::from_str(plan_json)
+        .map_err(|e| format!("Invalid plan JSON: {e}"))?;
+
+    let ffmpeg_bin = if let Some(a) = app {
+        get_ffmpeg_binary(a)?
+    } else {
+        std::path::PathBuf::from("ffmpeg")
+    };
+
+    // Probe scene info
+    let scene_info = if let Some(a) = app {
+        probe_media(a.clone(), scene_path.to_string())?
+    } else {
+        crate::probe::probe_media_internal(scene_path, None)?
+    };
+
+    if scene_info.width == 0 || scene_info.height == 0 {
+        return Err("Invalid scene dimensions for rendering".to_string());
+    }
+
+    let src_w = scene_info.width;
+    let src_h = scene_info.height;
+    let src_fps = if scene_info.fps > 0.0 { scene_info.fps } else { 30.0 };
+    let frame_bytes = (src_w * src_h * 3) as usize;
+    let estimated_frames = (scene_info.duration * src_fps).ceil() as u64;
+
+    let cache_dir = if let Some(a) = app {
+        a.path().app_cache_dir().unwrap_or_else(|_| std::env::temp_dir())
+    } else {
+        std::env::temp_dir()
+    };
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+    let raw_cache_file = cache_dir.join(format!("frames_final_{}.raw", std::process::id()));
+
+    if let Some(a) = app {
+        let _ = a.emit("render-progress", RenderProgressPayload {
+            phase: "DECODING".to_string(),
+            percent: 0,
+            current_frame: 0,
+            total_frames: estimated_frames as u32,
+            message: "Decoding source video frames for final assembly...".to_string(),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    // Decode source video into raw cache
+    let mut decode_child = {
+        let mut cmd = std::process::Command::new(&ffmpeg_bin);
+        cmd.args(["-y", "-i", scene_path]);
+        cmd.args([
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-an",
+            &raw_cache_file.to_string_lossy(),
+        ]);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn()
+            .map_err(|e| format!("Failed to spawn ffmpeg decoder: {e}"))?
+    };
+
+    let decode_status = decode_child.wait()
+        .map_err(|e| format!("Failed to wait for decoder: {e}"))?;
+    if !decode_status.success() {
+        let _ = std::fs::remove_file(&raw_cache_file);
+        return Err("FFmpeg decoding failed".to_string());
+    }
+
+    let total_cached_bytes = std::fs::metadata(&raw_cache_file)
+        .map_err(|e| format!("Failed to check decoded cache file: {e}"))?
+        .len();
+    let total_source_frames = (total_cached_bytes / (frame_bytes as u64)) as usize;
+    if total_source_frames == 0 {
+        let _ = std::fs::remove_file(&raw_cache_file);
+        return Err("No video frames were decoded".to_string());
+    }
+
+    let crop = compute_crop_to_fill(src_w, src_h, plan.aspect.w, plan.aspect.h);
+    let output_fps = plan.fps as f64;
+    let total_output_frames = (plan.target_duration * output_fps).round() as usize;
+
+    let out_dir = if let Some(a) = app {
+        a.path().app_data_dir().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default()).join("output")
+    } else {
+        std::env::temp_dir()
+    };
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let export = &plan.export;
+    let codec_lib = match export.codec.to_uppercase().as_str() {
+        "H265" | "HEVC" | "H.265" => "libx265",
+        "VP9"                     => "libvpx-vp9",
+        _                         => "libx264",
+    };
+    let bitrate_str = format!("{}M", export.bitrate_mbps);
+    let file_ext = match export.format.to_uppercase().as_str() {
+        "MKV"  => "mkv",
+        "WEBM" => "webm",
+        _      => "mp4",
+    };
+    let is_webm = export.format.to_uppercase() == "WEBM";
+    let audio_codec = if is_webm { "libopus" } else { "aac" };
+
+    let out_mp4_path = if let Some(p) = output_path {
+        std::path::PathBuf::from(p)
+    } else {
+        resolve_unique_output_path(&out_dir, &format!("cia_final_jugg_{timestamp}"), file_ext)
+    };
+
+    // Load character composition project if provided
+    let mut comp_layers = Vec::new();
+    let mut anim_config = AnimationConfig::default();
+    let comp_ops = get_default_composition_ops();
+    let beats = vec![];
+    let downbeats = vec![];
+
+    if let Some(comp_p) = character_project_path {
+        if std::path::Path::new(comp_p).exists() {
+            if let Ok(content) = std::fs::read_to_string(comp_p) {
+                if let Ok(comp_proj) = serde_json::from_str::<CompProject>(&content) {
+                    anim_config.parallax_strength = comp_proj.parallax_strength.unwrap_or(0.5);
+                    anim_config.beat_punch_intensity = comp_proj.beat_punch_intensity.unwrap_or(0.6);
+                    anim_config.light_wrap_intensity = comp_proj.light_wrap_intensity.unwrap_or(0.5);
+                    anim_config.chromatic_aberration = comp_proj.chromatic_aberration.unwrap_or(0.5);
+                    anim_config.impact_blur_strength = comp_proj.impact_blur_strength.unwrap_or(0.5);
+
+                    for (idx, layer) in comp_proj.layers.iter().enumerate() {
+                        let p_str = layer.full_path.as_deref().unwrap_or(&layer.file);
+                        if let Ok(raw_img) = crate::composition::load_image_rgba(std::path::Path::new(p_str), Some(&ffmpeg_bin)) {
+                            let mesh = build_layer_mesh(&layer.name, &raw_img);
+                            let z_depth = layer.z_depth.unwrap_or(idx as f32 / comp_proj.layers.len().max(1) as f32);
+                            comp_layers.push((layer.name.clone(), raw_img, mesh, idx, z_depth));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
+    encode_cmd.args([
+        "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", &format!("{}x{}", crop.width, crop.height),
+        "-r", &format!("{}", plan.fps),
+        "-i", "-",
+        "-i", audio_path,
+        "-t", &format!("{:.3}", plan.target_duration),
+        "-vf", &format!("scale={}:{}", crop.out_w, crop.out_h),
+        "-c:v", codec_lib,
+        "-b:v", &bitrate_str,
+        "-pix_fmt", "yuv420p",
+        "-c:a", audio_codec,
+        "-shortest",
+        &out_mp4_path.to_string_lossy(),
+    ]);
+    encode_cmd.stdin(std::process::Stdio::piped());
+    encode_cmd.stdout(std::process::Stdio::null());
+    encode_cmd.stderr(std::process::Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    encode_cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut encode_child = encode_cmd.spawn()
+        .map_err(|e| format!("Failed to spawn encoder: {e}"))?;
+
+    let mut encode_stdin = encode_child.stdin.take()
+        .ok_or_else(|| "Failed to open encoder stdin".to_string())?;
+
+    let mut raw_file = std::fs::File::open(&raw_cache_file)
+        .map_err(|e| format!("Failed to open cache file: {e}"))?;
+    let mut frame_fetcher = FrameFetcher::new(
+        &mut raw_file,
+        frame_bytes,
+        src_fps,
+        total_source_frames as u64,
+        src_w as usize,
+        src_h as usize,
+        24,
+    );
+
+    let mut base_raw_buf = vec![0u8; frame_bytes];
+    let mut cropped_buf = vec![0u8; crop.width as usize * crop.height as usize * 3];
+
+    for i in 0..total_output_frames {
+        if RENDER_CANCEL.load(Ordering::SeqCst) {
+            let _ = encode_child.kill();
+            let _ = std::fs::remove_file(&raw_cache_file);
+            return Err("Render cancelled by user".to_string());
+        }
+
+        let target_t = (i as f64) / output_fps;
+        let _ = frame_fetcher.fetch_frame_for_target_time(&plan, target_t, &mut base_raw_buf);
+
+        // Crop base frame
+        for row in 0..crop.height as usize {
+            let src_row = crop.y as usize + row;
+            let src_start = (src_row * src_w as usize + crop.x as usize) * 3;
+            let src_end = src_start + crop.width as usize * 3;
+            let dst_start = row * crop.width as usize * 3;
+            let dst_end = dst_start + crop.width as usize * 3;
+            if src_end <= base_raw_buf.len() && dst_end <= cropped_buf.len() {
+                cropped_buf[dst_start..dst_end].copy_from_slice(&base_raw_buf[src_start..src_end]);
+            }
+        }
+
+        // If composition layers exist, render character at TARGET time target_t
+        if !comp_layers.is_empty() {
+            let camera = compute_camera_state(target_t, &beats, &downbeats, &anim_config);
+            let char_frame = render_animated_character_frame(
+                &comp_layers,
+                target_t,
+                i as u32,
+                output_fps,
+                &beats,
+                &downbeats,
+                &anim_config,
+                &camera,
+                crop.width as usize,
+                crop.height as usize,
+            );
+
+            let precomputed = precompute_composition_masks(&char_frame, &comp_ops, crop.width as usize, crop.height as usize);
+            let mut rgba_buf = vec![0u8; crop.width as usize * crop.height as usize * 4];
+            for (rgb_chunk, rgba_chunk) in cropped_buf.chunks(3).zip(rgba_buf.chunks_mut(4)) {
+                rgba_chunk[0] = rgb_chunk[0];
+                rgba_chunk[1] = rgb_chunk[1];
+                rgba_chunk[2] = rgb_chunk[2];
+                rgba_chunk[3] = 255;
+            }
+
+            composite_frame_fast(&mut rgba_buf, &char_frame, &comp_ops, &precomputed, crop.width as usize, crop.height as usize);
+
+            if anim_config.light_wrap_intensity > 0.001 {
+                let bg_rgba = rgba_buf.clone();
+                apply_light_wrap_post_fx(
+                    &mut rgba_buf,
+                    &bg_rgba,
+                    &precomputed.alpha_channel,
+                    crop.width as usize,
+                    crop.height as usize,
+                    anim_config.light_wrap_intensity,
+                );
+            }
+            if anim_config.chromatic_aberration > 0.001 {
+                apply_chromatic_aberration_post_fx(&mut rgba_buf, crop.width as usize, crop.height as usize, anim_config.chromatic_aberration);
+            }
+
+            for (rgba_chunk, rgb_chunk) in rgba_buf.chunks(4).zip(cropped_buf.chunks_mut(3)) {
+                rgb_chunk[0] = rgba_chunk[0];
+                rgb_chunk[1] = rgba_chunk[1];
+                rgb_chunk[2] = rgba_chunk[2];
+            }
+        }
+
+        encode_stdin.write_all(&cropped_buf)
+            .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
+
+        if let Some(a) = app {
+            if i % 8 == 0 || i == total_output_frames - 1 {
+                let pct = ((i as f64) / (total_output_frames as f64) * 100.0) as u32;
+                let _ = a.emit("render-progress", RenderProgressPayload {
+                    phase: "SAMPLING".to_string(),
+                    percent: pct,
+                    current_frame: (i + 1) as u32,
+                    total_frames: total_output_frames as u32,
+                    message: format!("Stitching & encoding final frame {}/{}", i + 1, total_output_frames),
+                });
+            }
+        }
+    }
+
+    drop(encode_stdin);
+
+    let encode_status = encode_child.wait()
+        .map_err(|e| format!("Encoder wait failed: {e}"))?;
+    let _ = std::fs::remove_file(&raw_cache_file);
+
+    if !encode_status.success() {
+        return Err("FFmpeg final video encoding failed".to_string());
+    }
+
+    let render_time_secs = start_time.elapsed().as_secs_f64();
+    let stats = compute_render_stats(&plan, &out_mp4_path, render_time_secs);
+
+    if let Some(a) = app {
+        let _ = a.emit("render-progress", RenderProgressPayload {
+            phase: "ENCODING".to_string(),
+            percent: 100,
+            current_frame: total_output_frames as u32,
+            total_frames: total_output_frames as u32,
+            message: "Final assembly render completed successfully".to_string(),
+        });
+    }
+
+    Ok(stats)
+}
+
+#[tauri::command]
+pub async fn render_final_jugg(
+    app: tauri::AppHandle,
+    plan_json: String,
+    scene_path: String,
+    audio_path: String,
+    character_project_path: Option<String>,
+    output_path: Option<String>,
+) -> Result<RenderStats, String> {
+    render_final_jugg_internal(
+        Some(&app),
+        &plan_json,
+        &scene_path,
+        &audio_path,
+        character_project_path.as_deref(),
+        output_path.as_deref(),
+    )
 }

@@ -584,6 +584,94 @@
     }
   }
 
+  async function handleRenderFinalJugg() {
+    if (!scenePath || !audioPath) {
+      showToast('Scene video and Audio paths are required for final rendering.', 'error');
+      return;
+    }
+
+    renderState = 'running';
+    renderError = '';
+    renderOutputMp4 = '';
+    renderProgress = {
+      phase: 'DECODING',
+      percent: 0,
+      currentFrame: 0,
+      totalFrames: 0,
+      message: 'Preparing final assembly stitch...'
+    };
+
+    try {
+      let aspectW = 1080;
+      let aspectH = 1080;
+      if (selectedAspectRatio === '16:9') {
+        aspectW = 1920;
+        aspectH = 1080;
+      } else if (selectedAspectRatio === '9:16') {
+        aspectW = 1080;
+        aspectH = 1920;
+      } else if (selectedAspectRatio === '1:1') {
+        aspectW = 1080;
+        aspectH = 1080;
+      } else if (selectedAspectRatio === 'CUSTOM') {
+        aspectW = customWidth;
+        aspectH = customHeight;
+      }
+
+      const planJson = await invoke('generate_plan', {
+        style: selectedStyle,
+        fps: fpsValue,
+        beats: beats || [],
+        downbeats: downbeats || [],
+        videoDuration: sceneInfo?.duration || 10.0,
+        audioDuration: audioInfo?.duration || 10.0,
+        aspectW,
+        aspectH,
+        bpm: bpm || 120.0,
+        fullFx: fullFxEnabled,
+        effectOverrides,
+        customParams: customParams || null,
+        exportConfig: {
+          codec: selectedCodec,
+          bitrateMbps: bitrateValue,
+          format: selectedFormat,
+        },
+      });
+
+      console.log('[FINAL JUGG] Launching Final Assembly Render...');
+      const renderRes = await invoke('render_final_jugg', {
+        planJson,
+        scenePath,
+        audioPath,
+        characterProjectPath: compResult?.layersJsonPath || null,
+        outputPath: null,
+      });
+
+      console.log('[FINAL JUGG] Render completed successfully:', renderRes);
+      renderStats = typeof renderRes === 'object' && renderRes !== null ? renderRes : {
+        outputPath: renderRes,
+        renderTimeSecs: 0,
+        fileSizeMb: 0,
+        targetFps: fpsValue,
+        effectsCount: 0
+      };
+      renderOutputMp4 = renderStats.outputPath;
+      renderState = 'done';
+      showToast('Final Jugg assembly rendered successfully!', 'success');
+    } catch (err) {
+      console.error('Final render process failed:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      if (msg.includes('cancelled') || msg.includes('Cancel')) {
+        renderState = 'idle';
+        showToast('Render cancelled by user', 'info');
+      } else {
+        renderState = 'error';
+        renderError = msg;
+        showToast(`Render failed: ${msg}`, 'error');
+      }
+    }
+  }
+
   async function handleCancelRender() {
     try {
       await invoke('cancel_render');
@@ -1691,8 +1779,11 @@
                   <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
                     &lt; BACK TO SOURCES
                   </button>
-                  <button class="btn-run-process" onclick={handleRunProcess}>
+                  <button class="btn-pro-secondary" onclick={handleRunProcess}>
                     RUN PROCESS &gt;
+                  </button>
+                  <button class="btn-run-process btn-final-jugg" onclick={handleRenderFinalJugg}>
+                    ⚡ RENDER FINAL JUGG
                   </button>
                 </div>
               {/if}
