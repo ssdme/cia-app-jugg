@@ -7,6 +7,7 @@ pub mod composition;
 pub mod dumper;
 pub mod effects;
 pub mod export;
+pub mod media_pool;
 pub mod nle;
 pub mod plan;
 pub mod presets;
@@ -22,6 +23,7 @@ pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
 pub use export::*;
+pub use media_pool::*;
 pub use nle::*;
 pub use plan::*;
 pub use presets::*;
@@ -134,6 +136,10 @@ pub fn run() {
             batch::start_batch_job,
             batch::get_batch_status,
             batch::list_batch_jobs,
+            media_pool::get_media_pool,
+            media_pool::import_media_to_pool,
+            media_pool::remove_media_from_pool,
+            media_pool::get_cached_analysis_for_media,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

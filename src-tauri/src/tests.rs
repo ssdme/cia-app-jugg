@@ -5139,5 +5139,164 @@ fn test_batch_error_resilience() {
     assert!(report.contains("Corrupt video container / EOF reached prematurely"));
 }
 
+#[test]
+fn test_quick_hash_consistency() {
+    let temp_dir = std::env::temp_dir().join(format!("cia_test_quick_hash_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let test_file = temp_dir.join("sample_footage.bin");
+
+    // 1. Create a 200 KB buffer
+    let mut data = vec![0xAAu8; 200 * 1024];
+    // Fill head 64KB with 0x11, tail 64KB with 0x22
+    for b in &mut data[..65536] { *b = 0x11; }
+    let len = data.len();
+    for b in &mut data[len - 65536..] { *b = 0x22; }
+
+    std::fs::write(&test_file, &data).unwrap();
+
+    let hash1 = compute_quick_hash(&test_file).expect("Quick hash calculation must succeed");
+
+    // 2. Modify byte at middle (index 100,000) -> outside head and tail 64KB samples
+    data[100_000] = 0xFF;
+    // Write back and preserve mtime
+    let file = std::fs::OpenOptions::new().write(true).open(&test_file).unwrap();
+    use std::io::Write;
+    let mut writer = std::io::BufWriter::new(file);
+    writer.write_all(&data).unwrap();
+    drop(writer);
+
+    let hash2 = compute_quick_hash(&test_file).expect("Quick hash calculation must succeed");
+    assert_eq!(hash1, hash2, "Quick hash must remain consistent when modifications are outside sample boundaries");
+
+    // 3. Alter file size (append 100 bytes) -> hash MUST change
+    let mut file = std::fs::OpenOptions::new().append(true).open(&test_file).unwrap();
+    file.write_all(&[0x99u8; 100]).unwrap();
+    drop(file);
+
+    let hash3 = compute_quick_hash(&test_file).expect("Quick hash calculation must succeed");
+    assert_ne!(hash1, hash3, "Quick hash must change when file size changes");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_analysis_cache_hit() {
+    let temp_dir = std::env::temp_dir().join(format!("cia_test_cache_hit_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let index_file = temp_dir.join("media_pool_index.json");
+
+    let manager = MediaPoolManager::with_custom_path(index_file);
+
+    let dummy_analysis = DumpAnalysis {
+        schema_version: 2,
+        source: "C:/media/heavy_clip.mp4".to_string(),
+        duration: 12.5,
+        fps: 30.0,
+        cuts: vec![0.0, 3.2, 6.4, 9.6, 12.5],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 126.0,
+            beats: vec![0.0, 0.476, 0.952, 1.428],
+            downbeats: vec![0.0, 1.904, 3.808],
+        },
+        cut_beat_sync: 0.92,
+        sync_na: false,
+        sync_tolerance_ms: Some(50.0),
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            sub_style: None,
+            archetype: None,
+            confidence: 0.98,
+            sync_tolerance_ms: Some(50.0),
+            justifications: vec!["Dense rhythmic cuts on beats".to_string()],
+        },
+        one_framers: vec![3.2],
+        one_framers_v2: None,
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let asset = MediaAsset {
+        quick_hash: "hash_heavy_clip_12345".to_string(),
+        absolute_path: "C:/media/heavy_clip.mp4".to_string(),
+        metadata: MediaMetadata {
+            file_name: "heavy_clip.mp4".to_string(),
+            file_size_bytes: 500_000_000,
+            duration: 12.5,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            codec: "h264".to_string(),
+        },
+        analysis: Some(dummy_analysis.clone()),
+        last_used: 1700000000,
+    };
+
+    manager.insert_asset(asset).unwrap();
+
+    // Measure lookup latency on cache hit
+    let start_time = std::time::Instant::now();
+    let retrieved = manager.get_asset("hash_heavy_clip_12345").expect("Asset must be found");
+    let elapsed = start_time.elapsed();
+
+    println!("[BENCHMARK MEDIA POOL CACHE HIT]");
+    println!("  Cache hit lookup latency: {:.3} ms (Target < 10.0 ms)", elapsed.as_secs_f64() * 1000.0);
+
+    assert!(
+        elapsed.as_millis() < 10,
+        "Cache hit must return within 10ms, got {}ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(retrieved.metadata.file_name, "heavy_clip.mp4");
+    assert_eq!(retrieved.analysis, Some(dummy_analysis));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_pool_persistence() {
+    let temp_dir = std::env::temp_dir().join(format!("cia_test_persistence_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let index_file = temp_dir.join("media_pool_index.json");
+
+    let asset = MediaAsset {
+        quick_hash: "persistent_hash_987".to_string(),
+        absolute_path: "C:/assets/clip_one.mp4".to_string(),
+        metadata: MediaMetadata {
+            file_name: "clip_one.mp4".to_string(),
+            file_size_bytes: 123456,
+            duration: 5.0,
+            width: 1080,
+            height: 1080,
+            fps: 60.0,
+            codec: "hevc".to_string(),
+        },
+        analysis: None,
+        last_used: 1710000000,
+    };
+
+    // 1. Instance 1: write asset
+    {
+        let manager1 = MediaPoolManager::with_custom_path(index_file.clone());
+        manager1.insert_asset(asset.clone()).expect("Insert must succeed");
+    }
+
+    // 2. Instance 2: reload from disk
+    {
+        let manager2 = MediaPoolManager::with_custom_path(index_file.clone());
+        let reloaded = manager2.get_asset("persistent_hash_987").expect("Asset must be loaded from persistent disk index");
+
+        assert_eq!(reloaded.quick_hash, "persistent_hash_987");
+        assert_eq!(reloaded.absolute_path, "C:/assets/clip_one.mp4");
+        assert_eq!(reloaded.metadata.codec, "hevc");
+        assert_eq!(reloaded.metadata.fps, 60.0);
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 
 
