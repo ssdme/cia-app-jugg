@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use rayon::prelude::*;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -67,6 +68,8 @@ pub struct CompProject {
     pub schema_version: String, // "comp_project_v1"
     pub character_path: String,
     pub background_path: Option<String>,
+    #[serde(default)]
+    pub audio_path: Option<String>,
     pub layers: Vec<LayerItem>,
 }
 
@@ -1193,6 +1196,759 @@ pub fn render_composition_internal(
     }
 }
 
+// ─── T28 Mesh Deformation & Procedural Animation ─────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshVertex {
+    pub orig_x: f32,
+    pub orig_y: f32,
+    pub u: f32, // [0, 1] relative to layer bbox
+    pub v: f32, // [0, 1] relative to layer bbox (v=0 at top root, v=1 at bottom tips)
+    pub root_weight: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshTriangle {
+    pub v_indices: [usize; 3],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerMesh {
+    pub layer_name: String,
+    pub grid_w: usize,
+    pub grid_h: usize,
+    pub bbox: [f32; 4], // [min_x, min_y, max_x, max_y]
+    pub vertices: Vec<MeshVertex>,
+    pub triangles: Vec<MeshTriangle>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationConfig {
+    pub entrance_enabled: bool,
+    pub entrance_downbeat: f64,
+    pub breathing_amplitude: f32,
+    pub hair_sway_amplitude: f32,
+    pub blink_interval_sec: f32,
+    pub pump_decay_rate: f32,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            entrance_enabled: true,
+            entrance_downbeat: 0.0,
+            breathing_amplitude: 0.005,
+            hair_sway_amplitude: 1.0,
+            blink_interval_sec: 3.2,
+            pump_decay_rate: 6.0,
+        }
+    }
+}
+
+pub fn compute_layer_bbox(img: &RawImage) -> [f32; 4] {
+    let mut min_x = img.width as f32;
+    let mut max_x = 0.0f32;
+    let mut min_y = img.height as f32;
+    let mut max_y = 0.0f32;
+    let mut has_pixel = false;
+
+    for y in 0..img.height {
+        for x in 0..img.width {
+            let a = img.data[(y * img.width + x) * 4 + 3];
+            if a > 10 {
+                has_pixel = true;
+                let xf = x as f32;
+                let yf = y as f32;
+                if xf < min_x { min_x = xf; }
+                if xf > max_x { max_x = xf; }
+                if yf < min_y { min_y = yf; }
+                if yf > max_y { max_y = yf; }
+            }
+        }
+    }
+
+    if !has_pixel {
+        [0.0, 0.0, img.width as f32, img.height as f32]
+    } else {
+        [
+            min_x.max(0.0),
+            min_y.max(0.0),
+            (max_x + 1.0).min(img.width as f32),
+            (max_y + 1.0).min(img.height as f32),
+        ]
+    }
+}
+
+pub fn build_layer_mesh(layer_name: &str, img: &RawImage) -> LayerMesh {
+    let is_hair = layer_name.contains("hair");
+    let (grid_w, grid_h) = if is_hair {
+        (12, 14) // 12x14 for hair
+    } else {
+        (10, 10) // 10x10 default
+    };
+
+    let bbox = compute_layer_bbox(img);
+    let min_x = bbox[0];
+    let min_y = bbox[1];
+    let max_x = bbox[2];
+    let max_y = bbox[3];
+
+    let bw = (max_x - min_x).max(1.0);
+    let bh = (max_y - min_y).max(1.0);
+
+    let mut vertices = Vec::with_capacity(grid_w * grid_h);
+
+    for j in 0..grid_h {
+        let v = j as f32 / (grid_h - 1) as f32;
+        let y = min_y + v * bh;
+        
+        let root_weight = if is_hair {
+            // Root at top (v=0) has weight 0.0, tip (v=1) has weight 1.0
+            v.powf(1.2)
+        } else {
+            1.0
+        };
+
+        for i in 0..grid_w {
+            let u = i as f32 / (grid_w - 1) as f32;
+            let x = min_x + u * bw;
+
+            vertices.push(MeshVertex {
+                orig_x: x,
+                orig_y: y,
+                u,
+                v,
+                root_weight,
+            });
+        }
+    }
+
+    let mut triangles = Vec::with_capacity((grid_w - 1) * (grid_h - 1) * 2);
+    for j in 0..(grid_h - 1) {
+        for i in 0..(grid_w - 1) {
+            let v00 = j * grid_w + i;
+            let v10 = j * grid_w + (i + 1);
+            let v01 = (j + 1) * grid_w + i;
+            let v11 = (j + 1) * grid_w + (i + 1);
+
+            triangles.push(MeshTriangle {
+                v_indices: [v00, v10, v01],
+            });
+            triangles.push(MeshTriangle {
+                v_indices: [v10, v11, v01],
+            });
+        }
+    }
+
+    LayerMesh {
+        layer_name: layer_name.to_string(),
+        grid_w,
+        grid_h,
+        bbox,
+        vertices,
+        triangles,
+    }
+}
+
+pub fn compute_deformed_vertices(
+    mesh: &LayerMesh,
+    t: f64,
+    _frame_idx: u32,
+    fps: f64,
+    beats: &[f64],
+    downbeats: &[f64],
+    config: &AnimationConfig,
+    layer_z: usize,
+) -> Vec<(f32, f32)> {
+    let is_hair = mesh.layer_name.contains("hair");
+    let is_eyes = mesh.layer_name.contains("eye");
+    let is_body = mesh.layer_name.contains("body") || mesh.layer_name.contains("clothes") || mesh.layer_name.contains("skin");
+    let is_acc = mesh.layer_name.contains("acc");
+    let is_face = mesh.layer_name.contains("face") || mesh.layer_name.contains("mouth");
+
+    let bbox = mesh.bbox;
+    let cx = (bbox[0] + bbox[2]) * 0.5;
+    let cy = (bbox[1] + bbox[3]) * 0.5;
+    let by_bottom = bbox[3];
+
+    // 1. Entrance Stagger & Easing Bounce
+    let stagger_sec = (layer_z as f64) * (2.5 / fps);
+    let entrance_time = t - config.entrance_downbeat - stagger_sec;
+    let entrance_bounce = if config.entrance_enabled && entrance_time < 0.6 {
+        if entrance_time < 0.0 {
+            0.0f32
+        } else {
+            let tau = (entrance_time / 0.6) as f32;
+            (1.0 - (-5.0 * tau).exp() * (2.5 * std::f32::consts::PI * tau).cos() * 0.35).clamp(0.0, 1.05)
+        }
+    } else {
+        1.0f32
+    };
+
+    // 2. Downbeat Pump Decay
+    let mut pump_scale = 0.0f32;
+    for &db in downbeats {
+        if t >= db {
+            let dt = (t - db) as f32;
+            if dt < 0.6 {
+                pump_scale += 0.02 * (-config.pump_decay_rate * dt).exp();
+            }
+        }
+    }
+
+    // 3. Beat Accents for Sway
+    let mut beat_accent = 0.0f32;
+    for &b in beats {
+        if t >= b {
+            let dt = (t - b) as f32;
+            if dt < 0.35 {
+                beat_accent += 4.0 * (8.0 * std::f32::consts::PI * dt).sin() * (-8.0 * dt).exp();
+            }
+        }
+    }
+
+    // 4. Eyes Blink Controller (scaleY -> 0 over 2-4 frames every 2.5-4s)
+    let blink_scale_y = if is_eyes {
+        let period = config.blink_interval_sec.max(1.0);
+        let cycle_t = (t as f32) % period;
+        let blink_duration = 3.0 / fps as f32; // 3 frames
+        if cycle_t < blink_duration {
+            let progress = cycle_t / blink_duration;
+            // Cosine dip: 1.0 -> 0.0 -> 1.0
+            (1.0 - (std::f32::consts::PI * progress).sin()).clamp(0.0, 1.0)
+        } else {
+            1.0f32
+        }
+    } else {
+        1.0f32
+    };
+
+    mesh.vertices.iter().map(|v| {
+        let mut x = v.orig_x;
+        let mut y = v.orig_y;
+
+        if is_hair {
+            // Sway = sum of 2 sines + phase lag proportional to distance from root
+            let phase_lag = 1.6 * v.v;
+            let tf = t as f32;
+            let s1 = 14.0 * (2.2 * std::f32::consts::PI * tf - phase_lag + 0.4).sin();
+            let s2 = 7.0 * (4.4 * std::f32::consts::PI * tf - 1.5 * phase_lag + 1.1).sin();
+            let idle = 0.8 * (1.0 * std::f32::consts::PI * tf).sin();
+            let sway = (s1 + s2 + beat_accent) * config.hair_sway_amplitude;
+
+            let dx = v.root_weight * sway + idle;
+            let dy = v.root_weight * 1.5 * (3.0 * std::f32::consts::PI * tf + 0.5 * phase_lag).sin();
+
+            x += dx;
+            y += dy;
+        } else if is_eyes {
+            // Blink around center of eyes bbox
+            y = cy + (y - cy) * blink_scale_y;
+            // Slight idle micro-motion
+            y += 0.5 * (1.2 * std::f32::consts::PI * t as f32).sin();
+        } else if is_body {
+            // Breathing scale + downbeat pump relative to bottom anchor
+            let breath = 1.0 + config.breathing_amplitude * (1.2 * std::f32::consts::PI * t as f32).sin();
+            let total_scale = breath + pump_scale;
+
+            x = cx + (x - cx) * total_scale;
+            y = by_bottom + (y - by_bottom) * total_scale;
+        } else if is_acc {
+            // Micro-rotation around bbox center
+            let theta = 0.035 * (1.8 * std::f32::consts::PI * t as f32 + 0.8).sin();
+            let rx = x - cx;
+            let ry = y - cy;
+            x = cx + rx * theta.cos() - ry * theta.sin();
+            y = cy + rx * theta.sin() + ry * theta.cos();
+        } else if is_face {
+            // Gentle breath follow
+            y += 1.0 * (1.2 * std::f32::consts::PI * t as f32).sin();
+        }
+
+        // Apply entrance bounce
+        if config.entrance_enabled {
+            x = cx + (x - cx) * entrance_bounce;
+            y = cy + (y - cy) * entrance_bounce;
+        }
+
+        (x, y)
+    }).collect()
+}
+
+#[inline(always)]
+pub fn sample_bilinear_pixel(img: &RawImage, sx: f32, sy: f32) -> [u8; 4] {
+    let w = img.width;
+    let h = img.height;
+
+    if sx < 0.0 || sx >= (w - 1) as f32 || sy < 0.0 || sy >= (h - 1) as f32 {
+        let ix = (sx.round() as usize).clamp(0, w.saturating_sub(1));
+        let iy = (sy.round() as usize).clamp(0, h.saturating_sub(1));
+        let idx = (iy * w + ix) * 4;
+        return [img.data[idx], img.data[idx + 1], img.data[idx + 2], img.data[idx + 3]];
+    }
+
+    let x0 = sx.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y0 = sy.floor() as usize;
+    let y1 = (y0 + 1).min(h - 1);
+
+    let fx = sx - x0 as f32;
+    let fy = sy - y0 as f32;
+
+    let idx00 = (y0 * w + x0) * 4;
+    let idx10 = (y0 * w + x1) * 4;
+    let idx01 = (y1 * w + x0) * 4;
+    let idx11 = (y1 * w + x1) * 4;
+
+    let mut out = [0u8; 4];
+    for c in 0..4 {
+        let p00 = img.data[idx00 + c] as f32;
+        let p10 = img.data[idx10 + c] as f32;
+        let p01 = img.data[idx01 + c] as f32;
+        let p11 = img.data[idx11 + c] as f32;
+
+        let top = p00 * (1.0 - fx) + p10 * fx;
+        let bot = p01 * (1.0 - fx) + p11 * fx;
+        let val = top * (1.0 - fy) + bot * fy;
+
+        out[c] = val.round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+pub fn composite_deformed_mesh_direct(
+    target_canvas: &mut [u8],
+    canvas_w: usize,
+    canvas_h: usize,
+    src_layer: &RawImage,
+    mesh: &LayerMesh,
+    deformed_verts: &[(f32, f32)],
+) {
+    let w = canvas_w;
+    let h = canvas_h;
+    let src_w = src_layer.width;
+    let src_h = src_layer.height;
+
+    struct TriData {
+        v0_dst: (f32, f32),
+        v1_dst: (f32, f32),
+        v2_dst: (f32, f32),
+        v0_src: (f32, f32),
+        v1_src: (f32, f32),
+        v2_src: (f32, f32),
+        min_y: usize,
+        max_y: usize,
+        min_x: usize,
+        max_x: usize,
+        inv_det: f32,
+    }
+
+    let mut tri_list = Vec::with_capacity(mesh.triangles.len());
+
+    for tri in &mesh.triangles {
+        let i0 = tri.v_indices[0];
+        let i1 = tri.v_indices[1];
+        let i2 = tri.v_indices[2];
+
+        let p0 = deformed_verts[i0];
+        let p1 = deformed_verts[i1];
+        let p2 = deformed_verts[i2];
+
+        let det = (p1.0 - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (p1.1 - p0.1);
+        if det.abs() < 1e-6 {
+            continue;
+        }
+
+        let s0 = (mesh.vertices[i0].orig_x, mesh.vertices[i0].orig_y);
+        let s1 = (mesh.vertices[i1].orig_x, mesh.vertices[i1].orig_y);
+        let s2 = (mesh.vertices[i2].orig_x, mesh.vertices[i2].orig_y);
+
+        let src_min_x = (s0.0.min(s1.0).min(s2.0).floor() as i32).clamp(0, src_w as i32 - 1) as usize;
+        let src_max_x = (s0.0.max(s1.0).max(s2.0).ceil() as i32).clamp(0, src_w as i32 - 1) as usize;
+        let src_min_y = (s0.1.min(s1.1).min(s2.1).floor() as i32).clamp(0, src_h as i32 - 1) as usize;
+        let src_max_y = (s0.1.max(s1.1).max(s2.1).ceil() as i32).clamp(0, src_h as i32 - 1) as usize;
+
+        let mut has_opaque = false;
+        'check_opaque: for sy in src_min_y..=src_max_y {
+            let row = sy * src_w * 4;
+            for sx in src_min_x..=src_max_x {
+                if src_layer.data[row + sx * 4 + 3] > 0 {
+                    has_opaque = true;
+                    break 'check_opaque;
+                }
+            }
+        }
+
+        if !has_opaque {
+            continue;
+        }
+
+        let min_x = (p0.0.min(p1.0).min(p2.0).floor() as i32).clamp(0, w as i32 - 1) as usize;
+        let max_x = (p0.0.max(p1.0).max(p2.0).ceil() as i32).clamp(0, w as i32 - 1) as usize;
+        let min_y = (p0.1.min(p1.1).min(p2.1).floor() as i32).clamp(0, h as i32 - 1) as usize;
+        let max_y = (p0.1.max(p1.1).max(p2.1).ceil() as i32).clamp(0, h as i32 - 1) as usize;
+
+        tri_list.push(TriData {
+            v0_dst: p0,
+            v1_dst: p1,
+            v2_dst: p2,
+            v0_src: s0,
+            v1_src: s1,
+            v2_src: s2,
+            min_y,
+            max_y,
+            min_x,
+            max_x,
+            inv_det: 1.0 / det,
+        });
+    }
+
+    let band_height = 32;
+
+    target_canvas.par_chunks_mut(band_height * w * 4)
+        .enumerate()
+        .for_each(|(band_idx, band_chunk)| {
+            let y_start = band_idx * band_height;
+            let y_end = (y_start + band_height).min(h);
+
+            for tri in &tri_list {
+                if tri.max_y < y_start || tri.min_y >= y_end {
+                    continue;
+                }
+
+                let sub_min_y = tri.min_y.max(y_start);
+                let sub_max_y = tri.max_y.min(y_end.saturating_sub(1));
+
+                let p0 = tri.v0_dst;
+                let p1 = tri.v1_dst;
+                let p2 = tri.v2_dst;
+                let s0 = tri.v0_src;
+                let s1 = tri.v1_src;
+                let s2 = tri.v2_src;
+                let inv_det = tri.inv_det;
+
+                for py in sub_min_y..=sub_max_y {
+                    let local_y = py - y_start;
+                    let row_offset = local_y * w * 4;
+                    let pyf = py as f32;
+
+                    for px in tri.min_x..=tri.max_x {
+                        let pxf = px as f32;
+
+                        let w1 = ((pxf - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (pyf - p0.1)) * inv_det;
+                        let w2 = ((p1.0 - p0.0) * (pyf - p0.1) - (pxf - p0.0) * (p1.1 - p0.1)) * inv_det;
+                        let w0 = 1.0 - w1 - w2;
+
+                        if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
+                            let norm = w0 + w1 + w2;
+                            let nw0 = w0 / norm;
+                            let nw1 = w1 / norm;
+                            let nw2 = w2 / norm;
+
+                            let sx = nw0 * s0.0 + nw1 * s1.0 + nw2 * s2.0;
+                            let sy = nw0 * s0.1 + nw1 * s1.1 + nw2 * s2.1;
+
+                            let pixel = sample_bilinear_pixel(src_layer, sx, sy);
+                            if pixel[3] > 0 {
+                                let idx = row_offset + px * 4;
+                                let existing_a = band_chunk[idx + 3];
+                                if existing_a == 0 {
+                                    band_chunk[idx] = pixel[0];
+                                    band_chunk[idx + 1] = pixel[1];
+                                    band_chunk[idx + 2] = pixel[2];
+                                    band_chunk[idx + 3] = pixel[3];
+                                } else {
+                                    let fg_a = pixel[3] as f32 / 255.0;
+                                    let bg_a = existing_a as f32 / 255.0;
+                                    let out_a = fg_a + bg_a * (1.0 - fg_a);
+                                    if out_a > 0.0 {
+                                        band_chunk[idx] = ((pixel[0] as f32 * fg_a + band_chunk[idx] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                                        band_chunk[idx + 1] = ((pixel[1] as f32 * fg_a + band_chunk[idx + 1] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                                        band_chunk[idx + 2] = ((pixel[2] as f32 * fg_a + band_chunk[idx + 2] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                                        band_chunk[idx + 3] = (out_a * 255.0).round() as u8;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+}
+
+pub fn render_deformed_mesh(
+    src_layer: &RawImage,
+    mesh: &LayerMesh,
+    deformed_verts: &[(f32, f32)],
+) -> RawImage {
+    let w = src_layer.width;
+    let h = src_layer.height;
+    let mut out_data = vec![0u8; w * h * 4];
+
+    composite_deformed_mesh_direct(
+        &mut out_data,
+        w,
+        h,
+        src_layer,
+        mesh,
+        deformed_verts,
+    );
+
+    RawImage {
+        width: w,
+        height: h,
+        data: out_data,
+    }
+}
+
+pub fn render_animated_character_frame(
+    layers: &[(String, RawImage, LayerMesh, usize)],
+    t: f64,
+    frame_idx: u32,
+    fps: f64,
+    beats: &[f64],
+    downbeats: &[f64],
+    config: &AnimationConfig,
+    canvas_w: usize,
+    canvas_h: usize,
+) -> RawImage {
+    let mut composite_data = vec![0u8; canvas_w * canvas_h * 4];
+
+    // Layers are ordered by z_order ascending
+    for (_layer_name, raw_img, mesh, z_idx) in layers {
+        let deformed_verts = compute_deformed_vertices(
+            mesh,
+            t,
+            frame_idx,
+            fps,
+            beats,
+            downbeats,
+            config,
+            *z_idx,
+        );
+
+        composite_deformed_mesh_direct(
+            &mut composite_data,
+            canvas_w,
+            canvas_h,
+            raw_img,
+            mesh,
+            &deformed_verts,
+        );
+    }
+
+    RawImage {
+        width: canvas_w,
+        height: canvas_h,
+        data: composite_data,
+    }
+}
+
+pub fn render_mesh_preview_internal(
+    app: Option<&tauri::AppHandle>,
+    character_path: &str,
+    background_path: Option<&str>,
+    audio_path: Option<&str>,
+    ops: Option<Vec<CompositionOp>>,
+    duration_sec: Option<f64>,
+    ffmpeg_bin_opt: Option<&Path>,
+) -> Result<String, String> {
+    let char_path = Path::new(character_path);
+    if !char_path.exists() {
+        return Err(format!("Character image not found at: {character_path}"));
+    }
+
+    let ffmpeg_bin = ffmpeg_bin_opt.map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("ffmpeg"));
+
+    // 1. Ensure semantic layer segmentation is available
+    let seg_res = segment_character_internal(app, character_path, None)
+        .map_err(|e| format!("See-through layer segmentation unavailable. Please run bootstrap_see_through.py to initialize sidecar environment: {e}"))?;
+
+    let output_dir = Path::new(&seg_res.output_dir);
+    let mut loaded_layers = Vec::new();
+
+    // Sort layers by z_order ascending
+    let mut sorted_layers = seg_res.layers.clone();
+    sorted_layers.sort_by_key(|l| l.z_order);
+
+    for (z_idx, layer) in sorted_layers.iter().enumerate() {
+        let layer_file = output_dir.join(&layer.file);
+        if layer_file.exists() && layer.has_content != Some(false) {
+            if let Ok(img) = load_image_rgba(&layer_file, Some(&ffmpeg_bin)) {
+                let mesh = build_layer_mesh(&layer.name, &img);
+                loaded_layers.push((layer.name.clone(), img, mesh, z_idx));
+            }
+        }
+    }
+
+    if loaded_layers.is_empty() {
+        // Fallback to full character image as single body layer
+        let full_img = load_image_rgba(char_path, Some(&ffmpeg_bin))?;
+        let mesh = build_layer_mesh("body", &full_img);
+        loaded_layers.push(("body".to_string(), full_img, mesh, 0));
+    }
+
+    let (w, h) = (loaded_layers[0].1.width, loaded_layers[0].1.height);
+
+    // 2. Audio beat detection
+    let mut beats = Vec::new();
+    let mut downbeats = Vec::new();
+
+    if let Some(audio_file) = audio_path {
+        if Path::new(audio_file).exists() {
+            if let Ok(beat_res) = crate::beat::detect_beats_internal(app, audio_file) {
+                beats = beat_res.beats;
+                downbeats = beat_res.downbeats;
+            }
+        }
+    }
+
+    let anim_config = AnimationConfig::default();
+    let fps = 30.0f64;
+    let duration = duration_sec.unwrap_or(3.0);
+    let total_frames = ((duration * fps).ceil() as u32).max(1);
+
+    let active_ops = ops.unwrap_or_else(get_default_composition_ops);
+
+    let base_out = app
+        .and_then(|a| a.path().app_data_dir().ok())
+        .unwrap_or_else(|| std::env::temp_dir().join("cia_composition"));
+    std::fs::create_dir_all(&base_out).map_err(|e| format!("Failed to create output dir: {e}"))?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(12345);
+
+    let out_mp4 = base_out.join(format!("preview_mesh_{timestamp}.mp4"));
+
+    // 3. Launch FFmpeg encoder
+    let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
+    let mut args = vec![
+        "-y".to_string(),
+        "-f".to_string(), "rawvideo".to_string(),
+        "-pix_fmt".to_string(), "rgba".to_string(),
+        "-s".to_string(), format!("{w}x{h}"),
+        "-r".to_string(), format!("{fps}"),
+        "-i".to_string(), "-".to_string(),
+    ];
+
+    if let Some(aud) = audio_path {
+        if Path::new(aud).exists() {
+            args.extend(["-ss".to_string(), "0".to_string(), "-t".to_string(), format!("{duration}"), "-i".to_string(), aud.to_string(), "-c:a".to_string(), "aac".to_string()]);
+        }
+    }
+
+    args.extend([
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "veryfast".to_string(),
+        "-pix_fmt".to_string(), "yuv420p".to_string(),
+        "-shortest".to_string(),
+        out_mp4.to_string_lossy().to_string(),
+    ]);
+
+    encode_cmd.args(&args);
+    encode_cmd.stdin(std::process::Stdio::piped());
+    encode_cmd.stdout(std::process::Stdio::null());
+    encode_cmd.stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    encode_cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut encode_child = encode_cmd.spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg encoder for mesh preview: {e}"))?;
+
+    let mut encode_stdin = encode_child.stdin.take()
+        .ok_or_else(|| "Failed to open ffmpeg encode stdin".to_string())?;
+
+    // Precompute solid background or load background image
+    let bg_frame = if let Some(bg_p) = background_path {
+        if Path::new(bg_p).exists() {
+            load_image_rgba(Path::new(bg_p), Some(&ffmpeg_bin))
+                .map(|img| resize_bilinear_rgba(&img, w, h))
+                .unwrap_or_else(|_| RawImage { width: w, height: h, data: vec![20u8; w * h * 4] })
+        } else {
+            // Dark solid background
+            let mut bg_data = vec![0u8; w * h * 4];
+            for i in 0..(w * h) {
+                bg_data[i * 4] = 18;
+                bg_data[i * 4 + 1] = 18;
+                bg_data[i * 4 + 2] = 22;
+                bg_data[i * 4 + 3] = 255;
+            }
+            RawImage { width: w, height: h, data: bg_data }
+        }
+    } else {
+        let mut bg_data = vec![0u8; w * h * 4];
+        for i in 0..(w * h) {
+            bg_data[i * 4] = 18;
+            bg_data[i * 4 + 1] = 18;
+            bg_data[i * 4 + 2] = 22;
+            bg_data[i * 4 + 3] = 255;
+        }
+        RawImage { width: w, height: h, data: bg_data }
+    };
+
+    use std::io::Write;
+
+    for frame_idx in 0..total_frames {
+        let t = (frame_idx as f64) / fps;
+
+        let char_frame = render_animated_character_frame(
+            &loaded_layers,
+            t,
+            frame_idx,
+            fps,
+            &beats,
+            &downbeats,
+            &anim_config,
+            w,
+            h,
+        );
+
+        let precomputed_masks = precompute_composition_masks(&char_frame, &active_ops, w, h);
+        let mut frame_buf = bg_frame.data.clone();
+
+        composite_frame_fast(&mut frame_buf, &char_frame, &active_ops, &precomputed_masks, w, h);
+
+        if encode_stdin.write_all(&frame_buf).is_err() {
+            break;
+        }
+
+        if frame_idx % 5 == 0 || frame_idx == total_frames - 1 {
+            let pct = (((frame_idx + 1) as f64 / total_frames as f64) * 100.0).clamp(0.0, 100.0) as u32;
+            if let Some(app_handle) = app {
+                let _ = app_handle.emit("comp-progress", CompositionProgress {
+                    phase: "MESH_ANIM".to_string(),
+                    percent: pct,
+                    current_frame: frame_idx + 1,
+                    total_frames,
+                    message: format!("Deforming & compositing frame {}/{}", frame_idx + 1, total_frames),
+                });
+            }
+        }
+    }
+
+    drop(encode_stdin);
+    let status = encode_child.wait()
+        .map_err(|e| format!("FFmpeg encoder failed: {e}"))?;
+
+    if !status.success() {
+        return Err("FFmpeg preview encoding failed".to_string());
+    }
+
+    if let Some(app_handle) = app {
+        let _ = app_handle.emit("comp-progress", CompositionProgress {
+            phase: "DONE".to_string(),
+            percent: 100,
+            current_frame: total_frames,
+            total_frames,
+            message: "Mesh animation preview complete".to_string(),
+        });
+    }
+
+    Ok(out_mp4.to_string_lossy().to_string())
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -1243,6 +1999,25 @@ pub fn render_composition(
     ops: Option<Vec<CompositionOp>>,
 ) -> Result<String, String> {
     render_composition_internal(Some(&app), &character_path, &background_path, ops, None)
+}
+
+#[tauri::command]
+pub fn render_mesh_preview(
+    app: tauri::AppHandle,
+    character_path: String,
+    background_path: Option<String>,
+    audio_path: Option<String>,
+    ops: Option<Vec<CompositionOp>>,
+) -> Result<String, String> {
+    render_mesh_preview_internal(
+        Some(&app),
+        &character_path,
+        background_path.as_deref(),
+        audio_path.as_deref(),
+        ops,
+        Some(3.0),
+        None,
+    )
 }
 
 #[tauri::command]

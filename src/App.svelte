@@ -81,6 +81,9 @@
   let isRenderingComposition = $state(false);
   let compRenderProgress = $state(null);
   let compRenderResult = $state(null);
+  let isRenderingPreview = $state(false);
+  let compPreviewProgress = $state(null);
+  let compPreviewResult = $state(null);
   let compOps = $state([
     {
       id: 'drop_shadow',
@@ -773,6 +776,36 @@
       showToast(`Composition render failed: ${msg}`, 'error');
     } finally {
       isRenderingComposition = false;
+    }
+  }
+
+  async function runCompositionMeshPreview() {
+    if (!compCharacterPath || isRenderingPreview || isRenderingComposition) return;
+    isRenderingPreview = true;
+    compGpuError = '';
+    compPreviewResult = null;
+    compPreviewProgress = { phase: 'MESH_ANIM', percent: 0, current_frame: 0, total_frames: 90, message: 'Initializing procedural mesh animation...' };
+    try {
+      const outputPath = await invoke('render_mesh_preview', {
+        characterPath: compCharacterPath,
+        backgroundPath: compBackgroundPath || null,
+        audioPath: drumsPath || audioPath || null,
+        ops: compOps
+      });
+      compPreviewResult = {
+        outputPath,
+        isVideo: true,
+        fileName: getFileName(outputPath),
+        timestamp: new Date().toLocaleTimeString()
+      };
+      showToast('3s Mesh animation preview rendered successfully!', 'success');
+    } catch (err) {
+      console.error('Mesh animation render error:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      compGpuError = msg;
+      showToast(`Mesh animation failed: ${msg}`, 'error');
+    } finally {
+      isRenderingPreview = false;
     }
   }
 
@@ -1984,12 +2017,26 @@
                 <div class="comp-actions-row">
                   <button
                     class="btn-render dumper-run-btn"
-                    disabled={!compCharacterPath || !compBackgroundPath || isRenderingComposition}
+                    disabled={!compCharacterPath || isRenderingComposition || isRenderingPreview}
+                    onclick={runCompositionMeshPreview}
+                    type="button"
+                    title="Generate a 3-second procedurally animated mesh preview with sway, breathing and blink"
+                  >
+                    {#if isRenderingPreview}
+                      <span>ANIMATING MESH ({compPreviewProgress ? `${compPreviewProgress.percent}%` : 'RUNNING'})...</span>
+                    {:else}
+                      <span>🎬 RENDER PREVIEW (3s)</span>
+                    {/if}
+                  </button>
+
+                  <button
+                    class="btn-pro-secondary mono comp-sidecar-btn"
+                    disabled={!compCharacterPath || !compBackgroundPath || isRenderingComposition || isRenderingPreview}
                     onclick={runCompositionRender}
                     type="button"
                   >
                     {#if isRenderingComposition}
-                      <span>COMPOSITING LAYERS ({compRenderProgress ? `${compRenderProgress.percent}%` : 'RUNNING'})...</span>
+                      <span>COMPOSITING ({compRenderProgress ? `${compRenderProgress.percent}%` : 'RUNNING'})...</span>
                     {:else}
                       <span>⚡ RENDER COMPOSITION</span>
                     {/if}
@@ -1997,7 +2044,7 @@
 
                   <button
                     class="btn-pro-secondary mono comp-sidecar-btn"
-                    disabled={!compCharacterPath || isSegmenting || isRenderingComposition}
+                    disabled={!compCharacterPath || isSegmenting || isRenderingComposition || isRenderingPreview}
                     onclick={runCompositionSegmentation}
                     type="button"
                   >
@@ -2009,7 +2056,56 @@
                   </button>
                 </div>
 
-                <!-- 3. RENDER PROGRESS BAR -->
+                <!-- 3. MESH PREVIEW PROGRESS BAR -->
+                {#if isRenderingPreview && compPreviewProgress}
+                  <div class="dumper-progress-card">
+                    <div class="dumper-progress-header">
+                      <span class="progress-phase mono">{compPreviewProgress.phase || 'MESH_ANIM'}</span>
+                      <span class="progress-pct mono">{compPreviewProgress.percent}%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" style={`width: ${compPreviewProgress.percent}%`}></div>
+                    </div>
+                    <p class="progress-msg mono">{compPreviewProgress.message || 'Deforming mesh and compositing...'}</p>
+                  </div>
+                {/if}
+
+                <!-- 3B. MESH PREVIEW RESULT CARD -->
+                {#if compPreviewResult}
+                  <div class="dumper-result-card comp-render-card">
+                    <div class="result-header">
+                      <div class="result-title-row">
+                        <span class="zone-tag">ANIMATION PREVIEW</span>
+                        <span class="style-badge mono">3S MESH PREVIEW (MP4)</span>
+                        <span class="pro-dot active"></span>
+                      </div>
+                      <span class="result-timestamp mono">{compPreviewResult.timestamp}</span>
+                    </div>
+
+                    <div class="done-path-box" style="margin: 12px 0;">
+                      <span class="stat-label">OUTPUT FILE:</span>
+                      <span class="saved-path-text mono" title={compPreviewResult.outputPath}>{compPreviewResult.outputPath}</span>
+                    </div>
+
+                    <div class="result-footer-actions">
+                      <button
+                        class="btn-apply-project mono"
+                        onclick={() => handleOpenCompFolder(compPreviewResult.outputPath)}
+                        title="Open folder in Windows Explorer"
+                      >
+                        📂 OPEN FOLDER
+                      </button>
+                      <button
+                        class="btn-zone-action"
+                        onclick={() => { compPreviewResult = null; compPreviewProgress = null; }}
+                      >
+                        PREVIEW AGAIN
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- 3C. FULL COMPOSITION RENDER PROGRESS BAR -->
                 {#if isRenderingComposition && compRenderProgress}
                   <div class="dumper-progress-card">
                     <div class="dumper-progress-header">
