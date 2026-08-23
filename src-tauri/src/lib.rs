@@ -94,6 +94,7 @@ pub fn run() {
             render::cancel_render,
             render::open_target_folder,
             render::run_render_pipeline,
+            render::render_final_jugg,
             preview::get_effect_previews,
             plan::cmd_get_style_defaults,
             dumper::detect_scenes,

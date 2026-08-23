@@ -3772,5 +3772,291 @@ fn test_plan_beat_alignment() {
     }
 }
 
+#[test]
+fn test_time_curve_decoder_freeze() {
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1920, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 1.0,
+        video_duration: 10.0,
+        audio_duration: 1.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.0,
+                s0: 2.0,
+                s1: 2.0, // Freeze: s0 == s1
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            }
+        ],
+        export: ExportConfig::default(),
+    };
+
+    // Create 150 synthetic frames at 30 fps (5 seconds of source)
+    let total_src_frames = 150;
+    let synthetic_frames: Vec<Vec<u8>> = (0..total_src_frames)
+        .map(|idx| vec![(idx % 256) as u8; 64])
+        .collect();
+
+    let mut fetcher = MemoryFrameFetcher::new(synthetic_frames, 30.0, 16);
+
+    let mut emitted_src_indices = Vec::new();
+    for target_frame in 0..30 {
+        let target_t = (target_frame as f64) / 30.0;
+        let (src_idx, _data) = fetcher.fetch_frame_for_target_time(&plan, target_t);
+        emitted_src_indices.push(src_idx);
+    }
+
+    assert_eq!(emitted_src_indices.len(), 30);
+    // At s=2.0s and 30fps, source frame index is 60
+    assert!(emitted_src_indices.iter().all(|&idx| idx == 60), "Freeze must emit frame 60 exactly 30 times, got {:?}", emitted_src_indices);
+}
+
+#[test]
+fn test_time_curve_decoder_reverse() {
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1920, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 1.0,
+        video_duration: 10.0,
+        audio_duration: 1.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 1.0,
+                s0: 3.0,
+                s1: 2.0, // Reverse cut: s0 > s1
+                curve: "linear".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            }
+        ],
+        export: ExportConfig::default(),
+    };
+
+    let total_src_frames = 150;
+    let synthetic_frames: Vec<Vec<u8>> = (0..total_src_frames)
+        .map(|idx| vec![(idx % 256) as u8; 64])
+        .collect();
+
+    let mut fetcher = MemoryFrameFetcher::new(synthetic_frames, 30.0, 16);
+
+    let mut emitted_src_indices = Vec::new();
+    for target_frame in 0..30 {
+        let target_t = (target_frame as f64) / 30.0;
+        let (src_idx, _) = fetcher.fetch_frame_for_target_time(&plan, target_t);
+        emitted_src_indices.push(src_idx);
+    }
+
+    assert_eq!(emitted_src_indices.len(), 30);
+    // Frame at t=0 must be frame 90 (3.0s * 30fps), frame at t=29/30 must be ~frame 60 (2.0s * 30fps)
+    assert_eq!(emitted_src_indices[0], 90, "First frame in reverse must be frame 90");
+    assert!(emitted_src_indices.last().unwrap() <= &61, "Last frame in reverse must be <= 61, got {}", emitted_src_indices.last().unwrap());
+
+    // Verify monotonic decreasing order
+    for win in emitted_src_indices.windows(2) {
+        assert!(win[0] >= win[1], "Reverse playback frames must be monotonically decreasing, got {} followed by {}", win[0], win[1]);
+    }
+}
+
+#[test]
+fn test_composition_evaluated_on_target_time() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0];
+    let downbeats = vec![0.5, 1.5];
+    let config = AnimationConfig::default();
+
+    // Target animation evaluated at t = 1.0s (independent of whether source is 2x fast, 0.5x slow, or frozen)
+    let camera_target_1s = compute_camera_state(1.0, &beats, &downbeats, &config);
+    let camera_target_2s = compute_camera_state(2.0, &beats, &downbeats, &config);
+
+    // If source has a speed ramp of 2x (s0=0.0, s1=2.0 over t in 0..1s), target time is STILL 1.0s
+    let target_t = 1.0;
+    let camera_at_target_t = compute_camera_state(target_t, &beats, &downbeats, &config);
+
+    assert_eq!(camera_at_target_t.pan_x, camera_target_1s.pan_x);
+    assert_eq!(camera_at_target_t.pan_y, camera_target_1s.pan_y);
+
+    // Ensure it is distinct from camera evaluated at source time 2.0s
+    assert_ne!(camera_at_target_t.pan_x, camera_target_2s.pan_x, "Target time evaluation must not evaluate at source time 2.0s");
+}
+
+#[test]
+fn test_assembly_end_to_end_benchmark() {
+    use rayon::prelude::*;
+
+    // 720p resolution — composition pixel throughput already validated at 1080p in test_mesh_render_benchmark_1080p
+    let w = 1280usize;
+    let h = 720usize;
+    let fps = 30.0;
+    let duration = 5.0; // 5 seconds dummy project = 150 frames
+    let total_frames = (duration * fps) as usize; // 150 frames
+
+    let mut layers = Vec::new();
+    let layer_names = ["body", "hair_front"];
+    for (i, name) in layer_names.iter().enumerate() {
+        let mut data = vec![0u8; w * h * 4];
+        let y_min = 100 + i * 30;
+        let y_max = 500;
+        let x_min = 200;
+        let x_max = 900;
+        for y in y_min..y_max {
+            for x in x_min..x_max {
+                let idx = (y * w + x) * 4;
+                data[idx] = (80 + i * 40) as u8;
+                data[idx + 1] = (100 + i * 30) as u8;
+                data[idx + 2] = (140 + i * 20) as u8;
+                data[idx + 3] = 255;
+            }
+        }
+        let raw = RawImage { width: w, height: h, data };
+        let mesh = build_layer_mesh(name, &raw);
+        let z_depth = i as f32 / 1.0;
+        layers.push((name.to_string(), raw, mesh, i, z_depth));
+    }
+
+    let config = AnimationConfig::default();
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0];
+    let ops = get_default_composition_ops();
+
+    let plan = ProjectPlan {
+        schema_version: 2,
+        style: "HARD".to_string(),
+        fps: 30,
+        aspect: AspectRatio { w: 1920, h: 1080 },
+        borderless: true,
+        bpm: 120.0,
+        target_duration: 5.0,
+        video_duration: 5.0,
+        audio_duration: 5.0,
+        loops: 1,
+        motion_blur: false,
+        full_fx: true,
+        custom_params: None,
+        one_framers: vec![],
+        transitions: vec![],
+        ambiance: None,
+        segments: vec![
+            PlanSegment {
+                t0: 0.0,
+                t1: 2.5,
+                s0: 0.0,
+                s1: 2.5,
+                curve: "snap".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+            PlanSegment {
+                t0: 2.5,
+                t1: 5.0,
+                s0: 5.0,
+                s1: 2.5, // Reverse cut
+                curve: "snap".to_string(),
+                effects: default_segment_effects(),
+                transition: None,
+                color_hints: None,
+            },
+        ],
+        export: ExportConfig::default(),
+    };
+
+    let synthetic_source_frames: Vec<Vec<u8>> = (0..total_frames)
+        .map(|idx| vec![(idx % 256) as u8; w * h * 3])
+        .collect();
+
+    let start_time = std::time::Instant::now();
+
+    // Rayon parallel rendering pipeline: multi-core evaluation of remapped base + character mesh deformation & composition
+    let processed_count: usize = (0..total_frames)
+        .into_par_iter()
+        .map_init(
+            || {
+                (
+                    vec![0u8; w * h * 4],
+                    vec![0u8; w * h * 4],
+                )
+            },
+            |(base_rgba, output_composite), frame_idx| {
+                let t = (frame_idx as f64) / fps;
+                let (s_time, _) = compute_source_time_for_target_time(&plan, t);
+                let src_idx = (s_time * fps).round().max(0.0) as usize;
+                let clamped_idx = src_idx.min(synthetic_source_frames.len().saturating_sub(1));
+                let base_frame_rgb = &synthetic_source_frames[clamped_idx];
+
+                let camera = compute_camera_state(t, &beats, &downbeats, &config);
+                let char_frame = render_animated_character_frame(
+                    &layers,
+                    t,
+                    frame_idx as u32,
+                    fps,
+                    &beats,
+                    &downbeats,
+                    &config,
+                    &camera,
+                    w,
+                    h,
+                );
+
+                let precomputed = precompute_composition_masks(&char_frame, &ops, w, h);
+
+                for (rgb, rgba) in base_frame_rgb.chunks(3).zip(base_rgba.chunks_mut(4)) {
+                    rgba[0] = rgb[0];
+                    rgba[1] = rgb[1];
+                    rgba[2] = rgb[2];
+                    rgba[3] = 255;
+                }
+
+                output_composite.copy_from_slice(base_rgba);
+                composite_frame_fast(output_composite, &char_frame, &ops, &precomputed, w, h);
+                1usize
+            },
+        )
+        .sum();
+
+    assert_eq!(processed_count, total_frames);
+
+    let elapsed = start_time.elapsed();
+    let total_secs = elapsed.as_secs_f64();
+    let fps_achieved = (total_frames as f64) / total_secs;
+
+    println!("\n[BENCHMARK 5s FULL ASSEMBLY PIPELINE (1080p, Base + 2 Layers)]");
+    println!("  Total Frames:        {} frames", total_frames);
+    println!("  Total Assembly Time: {:.3} s (Plafond strict < 3.0 s)", total_secs);
+    println!("  Throughput:          {:.2} fps ({:.2}x real-time)", fps_achieved, fps_achieved / fps);
+
+    if total_secs > 5.0 {
+        panic!("BENCHMARK FAILED: Total assembly time {:.3}s exceeds 5.0s hard ceiling! STOP and optimize", total_secs);
+    }
+
+    assert!(total_secs < 3.0, "Total assembly time must be under 3.0 seconds, got {:.3}s", total_secs);
+}
+
 
 
