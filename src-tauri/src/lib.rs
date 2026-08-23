@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 pub mod beat;
+pub mod composition;
 pub mod dumper;
 pub mod effects;
 pub mod plan;
@@ -9,6 +10,7 @@ pub mod probe;
 pub mod render;
 
 pub use beat::*;
+pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
 pub use plan::*;
@@ -96,7 +98,12 @@ pub fn run() {
             plan::cmd_get_style_defaults,
             dumper::detect_scenes,
             dumper::run_dump_pipeline,
-            dumper::apply_dumper_project
+            dumper::apply_dumper_project,
+            composition::check_gpu_status,
+            composition::segment_character,
+            composition::save_composition_project,
+            composition::render_composition,
+            composition::get_default_composition_ops_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
