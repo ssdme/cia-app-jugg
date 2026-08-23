@@ -28,6 +28,75 @@
     scrubbedFrameData = p;
   }
 
+  // T42 Batch Processing State
+  let batchSourceDir = $state('');
+  let batchAction = $state('AnalyzeAndRender'); // 'AnalyzeOnly' | 'AnalyzeAndRender' | 'AnalyzeAndExportNLE'
+  let batchPreset = $state('AGGRESSIVE_JUGG');
+  let batchConcurrency = $state(2);
+  let batchRunning = $state(false);
+  let currentBatchJob = $state(null);
+  let batchPollInterval = null;
+
+  async function handleSelectBatchDir() {
+    try {
+      const selected = prompt('Enter or paste folder path to scan for videos:', 'C:/Users/cia/Videos');
+      if (selected) {
+        batchSourceDir = selected;
+      }
+    } catch (e) {
+      showToast(`Error picking folder: ${e}`, 'error');
+    }
+  }
+
+  async function handleStartBatch() {
+    if (!batchSourceDir) {
+      showToast('Please specify a source directory for batch processing', 'error');
+      return;
+    }
+    try {
+      batchRunning = true;
+      const batchId = await invoke('start_batch_job', {
+        config: {
+          sourceDir: batchSourceDir,
+          fileExtensions: ['mp4', 'mov', 'mkv', 'webm', 'avi'],
+          action: batchAction,
+          presetName: batchPreset,
+          exportSettings: {
+            codec: selectedCodec === 'H.265' ? 'H.265' : selectedCodec === 'VP9' ? 'VP9' : 'H.264',
+            container: selectedFormat,
+            bitrateMbps: bitrateValue,
+            resolutionScale: 'original',
+          },
+          concurrencyLimit: batchConcurrency,
+        }
+      });
+      showToast(`Batch job started: ${batchId}`, 'success');
+      pollBatchStatus(batchId);
+    } catch (e) {
+      batchRunning = false;
+      showToast(`Failed to start batch: ${e}`, 'error');
+    }
+  }
+
+  async function pollBatchStatus(batchId) {
+    if (batchPollInterval) clearInterval(batchPollInterval);
+    batchPollInterval = setInterval(async () => {
+      try {
+        const status = await invoke('get_batch_status', { batchId });
+        if (status) {
+          currentBatchJob = status;
+          if (status.status === 'COMPLETED' || status.status === 'PARTIAL_SUCCESS' || status.status === 'FAILED') {
+            batchRunning = false;
+            clearInterval(batchPollInterval);
+            showToast(`Batch finished with status: ${status.status}`, status.status === 'COMPLETED' ? 'success' : 'info');
+          }
+        }
+      } catch (e) {
+        console.warn('Batch poll error:', e);
+      }
+    }, 500);
+  }
+
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
   let availableUpdate = $state(null);
@@ -1579,6 +1648,7 @@
     <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>DUMPER</button>
     <button class:active={activePage === 'composition'} onclick={() => navigateTo('composition')}>COMPOSITION</button>
     <button class:active={activePage === 'params'} onclick={() => { navigateTo('params'); refreshPresetList(); }}>⚙️ PARAMS</button>
+    <button class:active={activePage === 'batch'} onclick={() => navigateTo('batch')}>📦 BATCH</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -3169,6 +3239,149 @@
                   </div>
                 </div>
               </div>
+            </div>
+          </section>
+
+        {:else if activePage === 'batch'}
+          <section class="batch-page" aria-label="Batch processing page">
+            <div class="batch-container">
+              <div class="batch-header">
+                <div class="batch-title-group">
+                  <span class="settings-kicker">AUTOMATION / WORKFLOW</span>
+                  <h1>BATCH PROCESSOR</h1>
+                </div>
+                <span class="stat-pill" class:running={batchRunning}>
+                  {batchRunning ? '⚡ PROCESSING BATCH' : 'IDLE'}
+                </span>
+              </div>
+
+              <!-- Configuration Card -->
+              <div class="batch-config-card card-cyber">
+                <div class="control-group">
+                  <span class="group-label">SOURCE DIRECTORY</span>
+                  <div class="batch-dir-picker-row">
+                    <input
+                      type="text"
+                      class="batch-dir-input mono"
+                      placeholder="C:/Videos/RawFootage"
+                      bind:value={batchSourceDir}
+                    />
+                    <button class="btn-param-action" onclick={handleSelectBatchDir} type="button">
+                      📁 BROWSE
+                    </button>
+                  </div>
+                </div>
+
+                <div class="control-group">
+                  <span class="group-label">BATCH ACTION</span>
+                  <div class="options-buttons-row">
+                    <button
+                      class="btn-option"
+                      class:active={batchAction === 'AnalyzeOnly'}
+                      onclick={() => batchAction = 'AnalyzeOnly'}
+                      type="button"
+                    >
+                      ANALYZE ONLY
+                    </button>
+                    <button
+                      class="btn-option"
+                      class:active={batchAction === 'AnalyzeAndRender'}
+                      onclick={() => batchAction = 'AnalyzeAndRender'}
+                      type="button"
+                    >
+                      ANALYZE & RENDER
+                    </button>
+                    <button
+                      class="btn-option"
+                      class:active={batchAction === 'AnalyzeAndExportNLE'}
+                      onclick={() => batchAction = 'AnalyzeAndExportNLE'}
+                      type="button"
+                    >
+                      ANALYZE & EXPORT NLE
+                    </button>
+                  </div>
+                </div>
+
+                <div class="batch-params-row">
+                  <div class="control-group">
+                    <span class="group-label">PRESET OVERRIDE</span>
+                    <select class="preset-select" bind:value={batchPreset}>
+                      <option value="AGGRESSIVE_JUGG">AGGRESSIVE_JUGG</option>
+                      <option value="LIQUID_FLOW">LIQUID_FLOW</option>
+                      <option value="GROOVE_VIBE">GROOVE_VIBE</option>
+                    </select>
+                  </div>
+
+                  <div class="control-group">
+                    <span class="group-label">CONCURRENCY WORKERS</span>
+                    <div class="options-buttons-row">
+                      {#each [1, 2, 4] as w}
+                        <button
+                          class="btn-option"
+                          class:active={batchConcurrency === w}
+                          onclick={() => batchConcurrency = w}
+                          type="button"
+                        >
+                          {w} WORKER{w > 1 ? 'S' : ''}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  class="btn-run-process btn-final-jugg btn-start-batch"
+                  onclick={handleStartBatch}
+                  disabled={batchRunning || !batchSourceDir}
+                  type="button"
+                >
+                  {batchRunning ? '⚡ PROCESSING BATCH...' : '🚀 START BATCH PROCESSING'}
+                </button>
+              </div>
+
+              <!-- Active Batch Status Card -->
+              {#if currentBatchJob}
+                <div class="batch-status-card card-cyber">
+                  <div class="batch-status-header">
+                    <div class="batch-status-title-row">
+                      <span class="job-id mono">{currentBatchJob.id}</span>
+                      <span class="job-status-pill" class:running={currentBatchJob.status === 'RUNNING'} class:completed={currentBatchJob.status === 'COMPLETED'} class:failed={currentBatchJob.status === 'FAILED'}>
+                        {currentBatchJob.status}
+                      </span>
+                    </div>
+                    <span class="batch-progress-fraction mono">
+                      {currentBatchJob.completedFiles} / {currentBatchJob.totalFiles} ({Math.round((currentBatchJob.completedFiles / (currentBatchJob.totalFiles || 1)) * 100)}%)
+                    </span>
+                  </div>
+
+                  <div class="progress-bar-container">
+                    <div class="progress-bar-fill" style="width: {Math.round((currentBatchJob.completedFiles / (currentBatchJob.totalFiles || 1)) * 100)}%;"></div>
+                  </div>
+
+                  {#if currentBatchJob.reportPath}
+                    <div class="batch-report-row">
+                      <span class="stat-label">REPORT SAVED:</span>
+                      <span class="report-path mono" title={currentBatchJob.reportPath}>{currentBatchJob.reportPath}</span>
+                    </div>
+                  {/if}
+
+                  <!-- Item list -->
+                  <div class="batch-items-list">
+                    {#each currentBatchJob.items as item}
+                      <div class="batch-item-row">
+                        <span class="batch-item-name mono" title={item.filePath}>{item.fileName}</span>
+                        <span class="job-status-pill" class:running={item.status === 'PROCESSING'} class:completed={item.status === 'SUCCESS'} class:failed={item.status === 'FAILED'}>
+                          {item.status}
+                        </span>
+                        <span class="batch-item-duration mono">{item.durationSecs.toFixed(2)}s</span>
+                        {#if item.errorMessage}
+                          <span class="batch-item-err mono" title={item.errorMessage}>{item.errorMessage}</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
             </div>
           </section>
 
@@ -6348,6 +6561,147 @@
   .btn-nle-export:hover {
     background: #4338ca;
     color: #ffffff;
+  }
+
+  /* T42 Batch Processing Styles */
+  .batch-page {
+    width: 100%;
+  }
+  .batch-container {
+    max-width: 960px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .batch-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .batch-title-group h1 {
+    font-size: 20px;
+    margin: 4px 0 0 0;
+    letter-spacing: 0.05em;
+  }
+
+  .batch-config-card {
+    background: #0c0c14;
+    border: 1px solid #1c1c2b;
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .batch-dir-picker-row {
+    display: flex;
+    gap: 8px;
+  }
+  .batch-dir-input {
+    flex: 1;
+    background: #06060a;
+    border: 1px solid #232336;
+    border-radius: 4px;
+    padding: 8px 12px;
+    color: #e4e4e7;
+    font-size: 11px;
+  }
+  .batch-dir-input:focus {
+    border-color: #3b82f6;
+    outline: none;
+  }
+
+  .batch-params-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .btn-start-batch {
+    margin-top: 6px;
+    padding: 12px;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .batch-status-card {
+    background: #090910;
+    border: 1px solid #1f1f30;
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .batch-status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .batch-status-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .batch-progress-fraction {
+    font-size: 12px;
+    font-weight: 700;
+    color: #a1a1aa;
+  }
+
+  .batch-report-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .report-path {
+    color: #34d399;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .batch-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .batch-item-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: #12121e;
+    border: 1px solid #1a1a28;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .batch-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #e4e4e7;
+  }
+  .batch-item-duration {
+    color: #71717a;
+    font-size: 10px;
+  }
+  .batch-item-err {
+    color: #f87171;
+    font-size: 10px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
 
