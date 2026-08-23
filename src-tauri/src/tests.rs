@@ -1860,12 +1860,17 @@ fn test_dump_analysis_schema_serde() {
         },
         cut_beat_sync: 0.6667,
         sync_na: false,
+        sync_tolerance_ms: Some(60.0),
         detected_style: StyleDecision {
             style_name: "jugg".to_string(),
+            sub_style: Some("JUGG (Standard)".to_string()),
+            archetype: Some(Archetype::JUGG),
             confidence: 0.90,
+            sync_tolerance_ms: Some(60.0),
             justifications: vec!["High shake energy".to_string()],
         },
         one_framers: vec![1.5, 4.2],
+        one_framers_v2: Some(vec![1.5, 4.2]),
         segments: vec![
             DumpSegment {
                 start: 0.0,
@@ -1936,6 +1941,68 @@ fn test_one_framer_detection_synthetic() {
 }
 
 #[test]
+fn test_one_framer_v2_detection() {
+    // Synthetic fixture: 3 frames (Noir - Blanc - Noir)
+    let mad_series = vec![0.0, 100.0, 0.0];
+    let timestamps = vec![0.0, 0.03333, 0.06666];
+
+    let detected = detect_one_framers_v2(&mad_series, &timestamps);
+    assert_eq!(detected.len(), 1, "Must detect exactly 1 one-framer v2 spike");
+    assert!((detected[0] - 0.03333).abs() < 1e-4, "Spike must be at center frame t=0.03333s");
+}
+
+#[test]
+fn test_sync_tolerance_bpm_scaling() {
+    // 60 BPM -> 120ms (max bound)
+    let tol_60 = compute_sync_tolerance_ms(60.0);
+    assert!((tol_60 - 120.0).abs() < 1e-4, "60 BPM must give 120ms tolerance, got {}", tol_60);
+
+    // 100 BPM -> 120ms (12000 / 100 = 120)
+    let tol_100 = compute_sync_tolerance_ms(100.0);
+    assert!((tol_100 - 120.0).abs() < 1e-4, "100 BPM must give 120ms tolerance, got {}", tol_100);
+
+    // 160 BPM -> 75ms (12000 / 160 = 75)
+    let tol_160 = compute_sync_tolerance_ms(160.0);
+    assert!((tol_160 - 75.0).abs() < 1e-4, "160 BPM must give 75ms tolerance, got {}", tol_160);
+
+    // 180 BPM -> ~66.67ms (12000 / 180 = 66.6667)
+    let tol_180 = compute_sync_tolerance_ms(180.0);
+    assert!((tol_180 - 66.6667).abs() < 0.01, "180 BPM must give ~66.67ms tolerance, got {}", tol_180);
+
+    // 200 BPM -> 60ms (12000 / 200 = 60)
+    let tol_200 = compute_sync_tolerance_ms(200.0);
+    assert!((tol_200 - 60.0).abs() < 1e-4, "200 BPM must give 60ms tolerance, got {}", tol_200);
+
+    // 300 BPM -> 40ms (min bound: 12000 / 300 = 40)
+    let tol_300 = compute_sync_tolerance_ms(300.0);
+    assert!((tol_300 - 40.0).abs() < 1e-4, "300 BPM must give 40ms tolerance, got {}", tol_300);
+}
+
+#[test]
+fn test_classifier_flow_signature() {
+    // Simulate "Flow" features: sync > 0.5, low shake, no one-framers, slowdowns present
+    let features = ClassifierFeatures {
+        cuts_count: 4,
+        cut_density: 0.4,
+        shake_energy: 0.008,
+        one_framer_density: 0.0,
+        one_framer_density_v2: 0.0,
+        sync: 0.65,
+        sync_downbeats_only: false,
+        zoom_presence: false,
+        slowdown_presence: true,
+        motion_available: true,
+        bpm: 120.0,
+        sync_tolerance_ms: 100.0,
+    };
+
+    let decision = classify_style(&features);
+    assert_eq!(decision.archetype, Some(Archetype::FLOW));
+    assert_eq!(decision.style_name, "velocity/flow");
+    assert_eq!(decision.sub_style.as_deref(), Some("FLOW (Liquid)"));
+}
+
+#[test]
 fn test_style_classifier_5_archetypes() {
     // 1. basic/clean
     let feat_basic = ClassifierFeatures {
@@ -1943,10 +2010,14 @@ fn test_style_classifier_5_archetypes() {
         cut_density: 0.1,
         shake_energy: 0.005,
         one_framer_density: 0.0,
+        one_framer_density_v2: 0.0,
         sync: 0.0,
+        sync_downbeats_only: false,
         zoom_presence: false,
         slowdown_presence: false,
         motion_available: true,
+        bpm: 120.0,
+        sync_tolerance_ms: 100.0,
     };
     assert_eq!(classify_style(&feat_basic).style_name, "basic/clean");
 
@@ -1956,10 +2027,14 @@ fn test_style_classifier_5_archetypes() {
         cut_density: 0.8,
         shake_energy: 0.020,
         one_framer_density: 0.40,
+        one_framer_density_v2: 0.40,
         sync: 0.65,
+        sync_downbeats_only: false,
         zoom_presence: true,
         slowdown_presence: false,
         motion_available: true,
+        bpm: 140.0,
+        sync_tolerance_ms: 85.7,
     };
     assert_eq!(classify_style(&feat_jugg).style_name, "jugg");
 
@@ -1969,10 +2044,14 @@ fn test_style_classifier_5_archetypes() {
         cut_density: 2.2,
         shake_energy: 0.015,
         one_framer_density: 0.20,
+        one_framer_density_v2: 0.20,
         sync: 0.30,
+        sync_downbeats_only: false,
         zoom_presence: false,
         slowdown_presence: false,
         motion_available: true,
+        bpm: 130.0,
+        sync_tolerance_ms: 92.3,
     };
     assert_eq!(classify_style(&feat_glitch).style_name, "glitch-leaning");
 
@@ -1982,10 +2061,14 @@ fn test_style_classifier_5_archetypes() {
         cut_density: 0.4,
         shake_energy: 0.008,
         one_framer_density: 0.05,
+        one_framer_density_v2: 0.05,
         sync: 0.70,
+        sync_downbeats_only: false,
         zoom_presence: false,
         slowdown_presence: true,
         motion_available: true,
+        bpm: 120.0,
+        sync_tolerance_ms: 100.0,
     };
     assert_eq!(classify_style(&feat_velocity).style_name, "velocity/flow");
 
@@ -1995,10 +2078,14 @@ fn test_style_classifier_5_archetypes() {
         cut_density: 0.5,
         shake_energy: 0.008,
         one_framer_density: 0.05,
+        one_framer_density_v2: 0.05,
         sync: 0.20,
+        sync_downbeats_only: false,
         zoom_presence: false,
         slowdown_presence: false,
         motion_available: true,
+        bpm: 120.0,
+        sync_tolerance_ms: 100.0,
     };
     assert_eq!(classify_style(&feat_hybrid).style_name, "hybrid/unclassified");
 }
@@ -2019,12 +2106,17 @@ fn test_markdown_report_mandatory_sections() {
         beats: BeatResult { bpm: 120.0, beats: vec![1.0, 2.0, 3.0], downbeats: vec![1.0] },
         cut_beat_sync: 0.50,
         sync_na: false,
+        sync_tolerance_ms: Some(100.0),
         detected_style: StyleDecision {
             style_name: "velocity/flow".to_string(),
+            sub_style: Some("FLOW (Liquid)".to_string()),
+            archetype: Some(Archetype::FLOW),
             confidence: 0.85,
+            sync_tolerance_ms: Some(100.0),
             justifications: vec!["Speed ramping detected".to_string()],
         },
         one_framers: vec![1.5],
+        one_framers_v2: Some(vec![1.5]),
         segments: vec![
             DumpSegment {
                 start: 0.0,
@@ -3529,6 +3621,155 @@ fn test_post_fx_benchmark_1080p() {
     }
 
     assert!(ms_per_frame < 35.0, "Performance must be under 35 ms/frame");
+}
+
+#[test]
+fn test_jugg_generates_hard_plan() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/jugg_video.mp4".to_string(),
+        duration: 10.0,
+        fps: 30.0,
+        cuts: vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 140.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0],
+            downbeats: vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5],
+        },
+        cut_beat_sync: 0.85,
+        sync_na: false,
+        sync_tolerance_ms: Some(85.7),
+        detected_style: StyleDecision {
+            style_name: "jugg (strict)".to_string(),
+            sub_style: Some("JUGG (Strict)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.95,
+            sync_tolerance_ms: Some(85.7),
+            justifications: vec!["High shake and tight sync".to_string()],
+        },
+        one_framers: vec![1.0, 2.5, 4.0],
+        one_framers_v2: Some(vec![1.0, 2.5, 4.0]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    assert_eq!(plan.style, "HARD");
+
+    // Must contain at least one reverse cut (reverse == true or s1 < s0)
+    let has_reverse = plan.segments.iter().any(|s| s.effects.reverse || s.s1 < s.s0);
+    assert!(has_reverse, "JUGG analysis must produce at least one reverse cut in HARD plan");
+
+    // Must contain discontinuous velocity slope curves (snap)
+    let has_snap = plan.segments.iter().any(|s| s.curve == "snap");
+    assert!(has_snap, "JUGG analysis must produce snap curves");
+}
+
+#[test]
+fn test_flow_generates_smooth_plan() {
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/flow_video.mp4".to_string(),
+        duration: 12.0,
+        fps: 30.0,
+        cuts: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 110.0,
+            beats: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+            downbeats: vec![2.0, 4.0, 6.0, 8.0, 10.0],
+        },
+        cut_beat_sync: 0.70,
+        sync_na: false,
+        sync_tolerance_ms: Some(109.0),
+        detected_style: StyleDecision {
+            style_name: "velocity/flow".to_string(),
+            sub_style: Some("FLOW (Liquid)".to_string()),
+            archetype: Some(Archetype::FLOW),
+            confidence: 0.90,
+            sync_tolerance_ms: Some(109.0),
+            justifications: vec!["Speed ramping with controlled flow".to_string()],
+        },
+        one_framers: vec![],
+        one_framers_v2: Some(vec![]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    assert_eq!(plan.style, "SMOOTH");
+
+    // Must have ZERO reverse cuts
+    let any_reverse = plan.segments.iter().any(|s| s.effects.reverse || s.s1 < s.s0);
+    assert!(!any_reverse, "FLOW analysis must have 0 reverse cuts in SMOOTH plan");
+
+    // All segments must have smooth continuous derivative curves (saddle / bezier)
+    let all_smooth = plan.segments.iter().all(|s| s.curve == "saddle" || s.curve == "smooth" || s.curve == "bezier");
+    assert!(all_smooth, "FLOW analysis must have continuous derivative curves (saddle/smooth)");
+}
+
+#[test]
+fn test_plan_beat_alignment() {
+    let downbeats = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let analysis = DumpAnalysis {
+        schema_version: 1,
+        source: "C:/test/beat_video.mp4".to_string(),
+        duration: 10.0,
+        fps: 30.0,
+        cuts: vec![1.0, 3.0, 5.0, 7.0, 9.0],
+        scenes: vec![],
+        beats: BeatResult {
+            bpm: 120.0,
+            beats: vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5],
+            downbeats: downbeats.clone(),
+        },
+        cut_beat_sync: 0.90,
+        sync_na: false,
+        sync_tolerance_ms: Some(100.0),
+        detected_style: StyleDecision {
+            style_name: "jugg".to_string(),
+            sub_style: Some("JUGG (Standard)".to_string()),
+            archetype: Some(Archetype::JUGG),
+            confidence: 0.90,
+            sync_tolerance_ms: Some(100.0),
+            justifications: vec!["Rhythmic beat sync".to_string()],
+        },
+        one_framers: vec![1.0, 3.0],
+        one_framers_v2: Some(vec![1.0, 3.0]),
+        segments: vec![],
+        motion_warning: None,
+        json_path: None,
+        report_path: None,
+        reusable_project_path: None,
+    };
+
+    let plan = generate_remap_plan_from_analysis(&analysis).expect("Plan generation must succeed");
+    let dt_frame = 1.0 / (plan.fps as f64);
+
+    let punch_in_segments: Vec<&PlanSegment> = plan.segments.iter()
+        .filter(|s| s.effects.zoom.scale_start > 1.001 || s.effects.zoom.scale_end > 1.001)
+        .collect();
+
+    assert!(!punch_in_segments.is_empty(), "Plan must contain punch-in segments");
+
+    // 100% of punch-in segments must align with a downbeat within ±1 frame
+    for seg in punch_in_segments {
+        let matches_downbeat = downbeats.iter().any(|&db| (seg.t0 - db).abs() <= dt_frame + 1e-4);
+        assert!(
+            matches_downbeat,
+            "Punch-in keyframe at t0={} must align with a downbeat ({:?}) within 1 frame ({:.4}s)",
+            seg.t0,
+            downbeats,
+            dt_frame
+        );
+    }
 }
 
 

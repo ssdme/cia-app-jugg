@@ -623,6 +623,95 @@
     }
   }
 
+  async function handleGenerateEditPlan() {
+    if (!dumperResult) return;
+    try {
+      const plan = await invoke('generate_remap_plan', {
+        analysis: dumperResult,
+        analysisPath: dumperResult.jsonPath || null,
+      });
+      console.log('[DUMPER] Auto-generated remap edit plan:', plan);
+
+      // Save plan to project.json in app_data
+      const planJson = JSON.stringify(plan);
+      const savedPath = await invoke('save_plan', { planJson });
+      console.log('[DUMPER] Saved generated plan to:', savedPath);
+
+      // Set JUGG inputs and options
+      selectedStyle = plan.style;
+      fpsValue = plan.fps;
+      bpm = plan.bpm;
+      if (plan.aspect) {
+        if (plan.aspect.w === 1920 && plan.aspect.h === 1080) {
+          selectedAspectRatio = '16:9';
+        } else if (plan.aspect.w === 1080 && plan.aspect.h === 1920) {
+          selectedAspectRatio = '9:16';
+        } else if (plan.aspect.w === 1080 && plan.aspect.h === 1080) {
+          selectedAspectRatio = '1:1';
+        } else {
+          selectedAspectRatio = 'CUSTOM';
+          customWidth = plan.aspect.w;
+          customHeight = plan.aspect.h;
+        }
+      }
+
+      // Populate file drop zones with the dumped video
+      if (dumperResult.source) {
+        scenePath = dumperResult.source;
+        drumsPath = dumperResult.source;
+        audioPath = dumperResult.source;
+        sceneInfo = {
+          duration: plan.video_duration,
+          fps: plan.fps,
+          width: plan.aspect ? plan.aspect.w : 1080,
+          height: plan.aspect ? plan.aspect.h : 1080,
+        };
+        audioInfo = {
+          duration: plan.audio_duration,
+          sample_rate: 48000,
+          channels: 2,
+        };
+      }
+
+      const hasReverse = plan.segments.some((s) => s.effects && s.effects.reverse);
+      const hasOneFramers = plan.one_framers && plan.one_framers.length > 0;
+      const hasTransitions = (plan.transitions && plan.transitions.length > 0) || plan.segments.some((s) => s.transition);
+      const hasAmbiance = !!plan.ambiance;
+
+      planSummary = {
+        segmentsCount: plan.segments.length,
+        loops: plan.loops || 1,
+        targetDuration: plan.target_duration,
+        savedPath,
+        style: plan.style,
+        fps: plan.fps,
+        aspect: `${plan.aspect.w}x${plan.aspect.h}`,
+        motionBlur: plan.motion_blur,
+        fullFx: plan.full_fx !== false,
+        shakes: true,
+        zoom: true,
+        reverse: hasReverse,
+        oneFramers: hasOneFramers,
+        transitions: hasTransitions,
+        ambiance: hasAmbiance,
+        echoTrail: echoTrailEnabled,
+        export: plan.export || {
+          codec: selectedCodec,
+          bitrateMbps: bitrateValue,
+          format: selectedFormat,
+        },
+      };
+
+      // Navigate to TIME REMAP / JUGG page
+      activePage = 'remap';
+      showToast(`Edit plan generated from Dumper v2: style ${plan.style}, ${plan.fps} FPS, ${plan.segments.length} segments`, 'success');
+    } catch (err) {
+      console.error('Failed to generate edit plan:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      showToast(`Failed to generate edit plan: ${msg}`, 'error');
+    }
+  }
+
   async function handleApplyAsProject() {
     if (!dumperResult || !dumperResult.reusableProjectPath) return;
     try {
@@ -1868,10 +1957,17 @@
                     <div class="result-footer-actions">
                       <button
                         class="btn-apply-project mono"
+                        onclick={handleGenerateEditPlan}
+                        title="Auto-generate remap plan from Dumper v2 analysis and load into timeline"
+                      >
+                        ⚡ GENERATE EDIT PLAN
+                      </button>
+                      <button
+                        class="btn-zone-action mono"
                         onclick={handleApplyAsProject}
                         title="Convert into ProjectPlan and load into JUGG page"
                       >
-                        ⚡ APPLY AS PROJECT
+                        APPLY AS PROJECT
                       </button>
                       <button
                         class="btn-zone-action"
