@@ -1811,6 +1811,7 @@ pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<Proje
         transitions,
         ambiance,
         source_fx: vec![],
+        audio_mix: Some(crate::audio::AudioMixConfig::default()),
         segments: plan_segments,
         export: ExportConfig::default(),
     })
@@ -2063,6 +2064,7 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
         transitions,
         ambiance,
         source_fx,
+        audio_mix: Some(crate::audio::AudioMixConfig::default()),
         segments: plan_segments,
         export: ExportConfig::default(),
     })

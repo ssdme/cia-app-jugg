@@ -63,6 +63,12 @@
   let bitrateValue = $state(12); // min 5, max 50, step 1, default 12
   let selectedFormat = $state('MP4'); // 'MP4' | 'MKV' | 'WEBM'
 
+  // T37 Audio Mix State
+  let sidechainDuckingEnabled = $state(true);
+  let sidechainDuckingDb = $state(-12); // -24 to 0 dB
+  let varispeedAudioEnabled = $state(true);
+  let staccatoCutsEnabled = $state(true);
+
   // DUMPER Page State
   let dumperVideoPath = $state('');
   let dumperVideoError = $state('');
@@ -1703,6 +1709,51 @@
                     {/each}
                   </div>
                 </div>
+
+                <!-- 7. T37 Audio Mix Options -->
+                <div class="control-group">
+                  <span class="group-label">AUDIO MIX & DUCKING</span>
+                  <div class="options-buttons-row">
+                    <button
+                      class="btn-option"
+                      class:active={sidechainDuckingEnabled}
+                      onclick={() => sidechainDuckingEnabled = !sidechainDuckingEnabled}
+                      type="button"
+                    >
+                      SIDECHAIN {sidechainDuckingEnabled ? 'ON' : 'OFF'}
+                    </button>
+                    <button
+                      class="btn-option"
+                      class:active={varispeedAudioEnabled}
+                      onclick={() => varispeedAudioEnabled = !varispeedAudioEnabled}
+                      type="button"
+                    >
+                      VARISPEED {varispeedAudioEnabled ? 'ON' : 'OFF'}
+                    </button>
+                    <button
+                      class="btn-option"
+                      class:active={staccatoCutsEnabled}
+                      onclick={() => staccatoCutsEnabled = !staccatoCutsEnabled}
+                      type="button"
+                    >
+                      STACCATO {staccatoCutsEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+
+                {#if sidechainDuckingEnabled}
+                  <div class="control-group">
+                    <GlowSlider
+                      bind:value={sidechainDuckingDb}
+                      min={-24}
+                      max={0}
+                      step={1}
+                      label="DUCKING LEVEL"
+                      unit=" dB"
+                      precision={0}
+                    />
+                  </div>
+                {/if}
               </div>
 
               <!-- Render Execution Cards (T6) -->
