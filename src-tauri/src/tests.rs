@@ -5298,5 +5298,123 @@ fn test_pool_persistence() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[test]
+fn test_history_stack_limit() {
+    let mut manager = HistoryManager::with_capacity(50);
+
+    // Push 60 states
+    for i in 0..60 {
+        let snapshot = HistorySnapshot {
+            plan: None,
+            remap_params: Some(RemapParams::default()),
+            export_settings: None,
+            audio_mix: None,
+            description: format!("State {}", i),
+            timestamp: 1700000000 + i as u64,
+        };
+        manager.push_state(snapshot);
+    }
+
+    let status = manager.get_status();
+    assert_eq!(status.undo_count, 50, "Undo stack must be capped strictly at 50 items");
+    assert!(status.can_undo, "Must be able to undo");
+    assert!(!status.can_redo, "Redo stack must be empty after push operations");
+
+    // Oldest element in undo stack should be State 9 (since 60 pushed, state 59 is active, states 9..58 in stack)
+    let oldest = manager.undo_stack.front().expect("Front must exist");
+    assert_eq!(oldest.description, "State 9", "FIFO eviction must discard oldest states 0..8");
+}
+
+#[test]
+fn test_undo_redo_roundtrip() {
+    let mut manager = HistoryManager::new();
+
+    let mut params_a = RemapParams::default();
+    params_a.shake_intensity = 0.2;
+    let snapshot_a = HistorySnapshot {
+        plan: None,
+        remap_params: Some(params_a),
+        export_settings: None,
+        audio_mix: None,
+        description: "State A".to_string(),
+        timestamp: 1000,
+    };
+
+    let mut params_b = RemapParams::default();
+    params_b.shake_intensity = 0.8;
+    let snapshot_b = HistorySnapshot {
+        plan: None,
+        remap_params: Some(params_b),
+        export_settings: None,
+        audio_mix: None,
+        description: "State B".to_string(),
+        timestamp: 2000,
+    };
+
+    manager.push_state(snapshot_a);
+    manager.push_state(snapshot_b);
+
+    // Undo -> should restore State A
+    let start_time = std::time::Instant::now();
+    let undone = manager.undo().expect("Undo must return state A");
+    let elapsed = start_time.elapsed();
+
+    println!("[BENCHMARK HISTORY UNDO/REDO LATENCY]");
+    println!("  Undo operation latency: {:.3} ms (Target < 5.0 ms)", elapsed.as_secs_f64() * 1000.0);
+
+    assert!(elapsed.as_millis() < 5, "Undo must complete in < 5ms");
+    assert_eq!(undone.description, "State A");
+    assert_eq!(undone.remap_params.unwrap().shake_intensity, 0.2);
+
+    // Redo -> should restore State B
+    let redone = manager.redo().expect("Redo must return state B");
+    assert_eq!(redone.description, "State B");
+    assert_eq!(redone.remap_params.unwrap().shake_intensity, 0.8);
+}
+
+#[test]
+fn test_redo_invalidated_on_new_action() {
+    let mut manager = HistoryManager::new();
+
+    let snapshot_a = HistorySnapshot {
+        plan: None,
+        remap_params: Some(RemapParams::default()),
+        export_settings: None,
+        audio_mix: None,
+        description: "State A".to_string(),
+        timestamp: 1000,
+    };
+
+    let snapshot_b = HistorySnapshot {
+        plan: None,
+        remap_params: Some(RemapParams::default()),
+        export_settings: None,
+        audio_mix: None,
+        description: "State B".to_string(),
+        timestamp: 2000,
+    };
+
+    let snapshot_c = HistorySnapshot {
+        plan: None,
+        remap_params: Some(RemapParams::default()),
+        export_settings: None,
+        audio_mix: None,
+        description: "State C".to_string(),
+        timestamp: 3000,
+    };
+
+    manager.push_state(snapshot_a);
+    manager.push_state(snapshot_b);
+
+    // Undo to State A -> Redo stack has 1 item
+    manager.undo();
+    assert!(manager.get_status().can_redo, "Must be able to redo after undo");
+
+    // Push State C -> Redo stack MUST be cleared
+    manager.push_state(snapshot_c);
+    assert!(!manager.get_status().can_redo, "Redo stack must be invalidated and cleared upon new push action");
+    assert_eq!(manager.redo_stack.len(), 0);
+}
+
 
 

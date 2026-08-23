@@ -7,6 +7,7 @@ pub mod composition;
 pub mod dumper;
 pub mod effects;
 pub mod export;
+pub mod history;
 pub mod media_pool;
 pub mod nle;
 pub mod plan;
@@ -23,6 +24,7 @@ pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
 pub use export::*;
+pub use history::*;
 pub use media_pool::*;
 pub use nle::*;
 pub use plan::*;
@@ -140,6 +142,10 @@ pub fn run() {
             media_pool::import_media_to_pool,
             media_pool::remove_media_from_pool,
             media_pool::get_cached_analysis_for_media,
+            history::push_history_state,
+            history::undo,
+            history::redo,
+            history::get_history_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");

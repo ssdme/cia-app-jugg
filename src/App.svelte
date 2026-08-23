@@ -124,6 +124,140 @@
     handleOneClickJugg();
   }
 
+  // T44 History & Hotkeys State
+  let canUndo = $state(false);
+  let canRedo = $state(false);
+  let showHotkeysModal = $state(false);
+
+  async function refreshHistoryStatus() {
+    try {
+      const status = await invoke('get_history_status');
+      if (status) {
+        canUndo = status.canUndo;
+        canRedo = status.canRedo;
+      }
+    } catch (e) {
+      console.warn('Failed to get history status:', e);
+    }
+  }
+
+  async function captureHistoryState(description = 'User Edit') {
+    try {
+      const snapshot = {
+        plan: planSummary || null,
+        remapParams: remapParams || null,
+        exportSettings: {
+          codec: selectedCodec === 'H.265' ? 'H.265' : selectedCodec === 'VP9' ? 'VP9' : 'H.264',
+          container: selectedFormat,
+          bitrateMbps: bitrateValue,
+          resolutionScale: 'original',
+        },
+        audioMix: {
+          sidechainDucking: sidechainDuckingEnabled,
+          duckingAmountDb: sidechainDuckingDb,
+          attackMs: 5.0,
+          releaseMs: 150.0,
+          varispeedAudio: varispeedAudioEnabled,
+          staccatoCuts: staccatoCutsEnabled,
+          mixSourceAudio: false,
+          sourceVolumeDb: 0.0,
+          targetVolumeDb: 0.0,
+        },
+        description,
+        timestamp: Date.now(),
+      };
+      const status = await invoke('push_history_state', { snapshot });
+      if (status) {
+        canUndo = status.canUndo;
+        canRedo = status.canRedo;
+      }
+    } catch (e) {
+      console.warn('Failed to capture history state:', e);
+    }
+  }
+
+  async function handleUndo() {
+    try {
+      const state = await invoke('undo');
+      if (state) {
+        if (state.remapParams) {
+          remapParams = { ...remapParams, ...state.remapParams };
+        }
+        if (state.plan) {
+          planSummary = state.plan;
+        }
+        showToast(`↶ Undone: ${state.description || 'Action'}`, 'info');
+      }
+      await refreshHistoryStatus();
+    } catch (e) {
+      showToast(`Undo error: ${e}`, 'error');
+    }
+  }
+
+  async function handleRedo() {
+    try {
+      const state = await invoke('redo');
+      if (state) {
+        if (state.remapParams) {
+          remapParams = { ...remapParams, ...state.remapParams };
+        }
+        if (state.plan) {
+          planSummary = state.plan;
+        }
+        showToast(`↷ Redone: ${state.description || 'Action'}`, 'info');
+      }
+      await refreshHistoryStatus();
+    } catch (e) {
+      showToast(`Redo error: ${e}`, 'error');
+    }
+  }
+
+  function handleGlobalKeydown(e) {
+    const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+    if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+      return;
+    }
+
+    const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+
+    // Ctrl+Z or Cmd+Z -> Undo
+    if (isCtrlOrCmd && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      handleUndo();
+      return;
+    }
+
+    // Ctrl+Shift+Z or Cmd+Shift+Z or Ctrl+Y -> Redo
+    if ((isCtrlOrCmd && e.shiftKey && e.key.toLowerCase() === 'z') || (isCtrlOrCmd && e.key.toLowerCase() === 'y')) {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
+
+    // Navigation hotkeys
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      const btn = document.querySelector('.btn-play-pause');
+      if (btn) btn.click();
+    } else if (e.key.toLowerCase() === 'j') {
+      e.preventDefault();
+      timelineCurrentTime = Math.max(0, timelineCurrentTime - 1.0);
+    } else if (e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      const btn = document.querySelector('.btn-play-pause');
+      if (btn && btn.textContent.includes('PAUSE')) btn.click();
+    } else if (e.key.toLowerCase() === 'l') {
+      e.preventDefault();
+      timelineCurrentTime = Math.min(100.0, timelineCurrentTime + 1.0);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      timelineCurrentTime = Math.max(0, timelineCurrentTime - (1.0 / (fpsValue || 30.0)));
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      timelineCurrentTime = Math.min(100.0, timelineCurrentTime + (1.0 / (fpsValue || 30.0)));
+    }
+  }
+
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
   let availableUpdate = $state(null);
@@ -1642,10 +1776,18 @@
     }
 
     pollRenderQueue();
+    refreshHistoryStatus();
     const queueInterval = setInterval(pollRenderQueue, 500);
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', handleGlobalKeydown);
+    }
 
     return () => {
       if (queueInterval) clearInterval(queueInterval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('keydown', handleGlobalKeydown);
+      }
       if (unlistenProgress) unlistenProgress();
       if (unlistenDump) unlistenDump();
       if (unlistenComp) unlistenComp();
@@ -1660,6 +1802,9 @@
       <span class="titlebar-text">cia app</span>
     </div>
     <div class="titlebar-controls">
+      <button class="titlebar-btn history-btn" onclick={handleUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ UNDO</button>
+      <button class="titlebar-btn history-btn" onclick={handleRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">↷ REDO</button>
+      <button class="titlebar-btn hotkeys-badge" onclick={() => showHotkeysModal = true} title="Keyboard Shortcuts">⌨️ HOTKEYS</button>
       {#if availableUpdate}
         <button class="titlebar-btn update-badge" onclick={() => showUpdateModal = true} aria-label="Update available">
           <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
@@ -3520,6 +3665,59 @@
             <button class="btn-pro-secondary" onclick={() => showUpdateModal = false}>LATER</button>
             <button class="btn-primary-modal" onclick={installAppUpdate}>UPDATE & RELAUNCH</button>
           {/if}
+        </div>
+      </div>
+  {/if}
+
+  <!-- T44 Keyboard Shortcuts (Hotkeys) Modal Overlay -->
+  {#if showHotkeysModal}
+    <div class="modal-backdrop" onclick={() => showHotkeysModal = false} role="presentation">
+      <div class="modal-card hotkeys-modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+        <div class="modal-header">
+          <h2>⌨️ KEYBOARD SHORTCUTS (NLE STANDARDS)</h2>
+          <button class="btn-close-modal" onclick={() => showHotkeysModal = false}>X</button>
+        </div>
+        <div class="modal-body">
+          <div class="hotkeys-table">
+            <div class="hotkeys-category">
+              <span class="hotkeys-cat-title">HISTORY & EDITING</span>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>Ctrl</kbd> + <kbd>Z</kbd></div>
+                <div class="hotkey-desc">Undo last parameter / edit change</div>
+              </div>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> / <kbd>Ctrl</kbd> + <kbd>Y</kbd></div>
+                <div class="hotkey-desc">Redo undone change</div>
+              </div>
+            </div>
+
+            <div class="hotkeys-category">
+              <span class="hotkeys-cat-title">TIMELINE NAVIGATION (J-K-L)</span>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>Space</kbd></div>
+                <div class="hotkey-desc">Play / Pause Timeline playback loop</div>
+              </div>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>J</kbd></div>
+                <div class="hotkey-desc">Rewind (-1.0s)</div>
+              </div>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>K</kbd></div>
+                <div class="hotkey-desc">Pause Timeline</div>
+              </div>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>L</kbd></div>
+                <div class="hotkey-desc">Forward (+1.0s)</div>
+              </div>
+              <div class="hotkey-row">
+                <div class="hotkey-keys"><kbd>←</kbd> / <kbd>→</kbd></div>
+                <div class="hotkey-desc">Step 1 frame backward / forward</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-primary-modal" onclick={() => showHotkeysModal = false}>GOT IT</button>
         </div>
       </div>
     </div>
@@ -6737,6 +6935,95 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* T44 History & Hotkeys Styles */
+  .titlebar-btn.history-btn {
+    font-size: 10px;
+    font-weight: 700;
+    color: #cbd5e1;
+    background: #181826;
+    border: 1px solid #272738;
+    border-radius: 4px;
+    padding: 3px 8px;
+    margin: 0 2px;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .titlebar-btn.history-btn:hover:not(:disabled) {
+    background: #2563eb;
+    border-color: #3b82f6;
+    color: #ffffff;
+  }
+  .titlebar-btn.history-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .titlebar-btn.hotkeys-badge {
+    font-size: 10px;
+    font-weight: 700;
+    color: #a5b4fc;
+    background: #1e1b4b;
+    border: 1px solid #4338ca;
+    border-radius: 4px;
+    padding: 3px 8px;
+    margin: 0 2px;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .titlebar-btn.hotkeys-badge:hover {
+    background: #4f46e5;
+    color: #ffffff;
+  }
+
+  .hotkeys-modal-card {
+    max-width: 540px;
+    width: 90vw;
+  }
+  .hotkeys-table {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .hotkeys-category {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .hotkeys-cat-title {
+    font-size: 10.5px;
+    font-weight: 800;
+    color: #38bdf8;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #1e293b;
+    padding-bottom: 4px;
+  }
+  .hotkey-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    padding: 4px 0;
+  }
+  .hotkey-keys {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #e2e8f0;
+  }
+  .hotkey-keys kbd {
+    background: #1e1e2e;
+    border: 1px solid #33334d;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 10px;
+    color: #f1f5f9;
+    box-shadow: 0 2px 0 #0f0f17;
+  }
+  .hotkey-desc {
+    color: #94a3b8;
   }
 </style>
 
