@@ -1797,32 +1797,36 @@
 </script>
 
 <div class="app-root">
-  <!-- Custom Windows Titlebar -->
+  <!-- Custom Studio Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand">
-      <span class="titlebar-text">cia app</span>
+      <span class="brand-dot"></span>
+      <span class="titlebar-text">CIA RENDER</span>
+      <span class="version-tag">v{appVersion}</span>
     </div>
     <div class="titlebar-controls">
-      <button class="titlebar-btn history-btn" onclick={handleUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ UNDO</button>
-      <button class="titlebar-btn history-btn" onclick={handleRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">↷ REDO</button>
-      <button class="titlebar-btn hotkeys-badge" onclick={() => showHotkeysModal = true} title="Keyboard Shortcuts">⌨️ HOTKEYS</button>
+      <button class="tb-btn" onclick={handleUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
+      <button class="tb-btn" onclick={handleRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
+      <button class="tb-btn tb-hotkeys" onclick={() => showHotkeysModal = true} title="Keyboard Shortcuts">Shortcuts</button>
       {#if availableUpdate}
-        <button class="titlebar-btn update-badge" onclick={() => showUpdateModal = true} aria-label="Update available">
-          <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
+        <button class="tb-btn tb-update" onclick={() => showUpdateModal = true} aria-label="Update available">
+          <span class="pro-dot active"></span> Update v{availableUpdate.version}
         </button>
       {/if}
-      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>-</button>
-      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>X</button>
+      <button class="titlebar-sys-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>−</button>
+      <button class="titlebar-sys-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>✕</button>
     </div>
   </div>
 
   <nav class="tab-bar">
-    <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
-    <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>DUMPER</button>
-    <button class:active={activePage === 'composition'} onclick={() => navigateTo('composition')}>COMPOSITION</button>
-    <button class:active={activePage === 'params'} onclick={() => { navigateTo('params'); refreshPresetList(); }}>⚙️ PARAMS</button>
-    <button class:active={activePage === 'batch'} onclick={() => navigateTo('batch')}>📦 BATCH</button>
-    <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
+    <div class="tab-pill-group">
+      <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>Time Remap</button>
+      <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>Dumper</button>
+      <button class:active={activePage === 'composition'} onclick={() => navigateTo('composition')}>Composition</button>
+      <button class:active={activePage === 'params'} onclick={() => { navigateTo('params'); refreshPresetList(); }}>Parameters</button>
+      <button class:active={activePage === 'batch'} onclick={() => navigateTo('batch')}>Batch</button>
+      <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>About</button>
+    </div>
   </nav>
 
   <!-- Main Content Area -->
@@ -1851,20 +1855,22 @@
                 {#if scenePath}
                   <div class="zone-filled-content">
                     <div class="zone-header">
-                      <span class="zone-tag">VIDEO</span>
+                      <span class="zone-tag">Video Source</span>
                       <span class="pro-dot active"></span>
                     </div>
-                    <div class="zone-title">SCENE</div>
-                    <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
+                    <div class="zone-filename" title={scenePath}>{getFileName(scenePath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REPLACE</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>REMOVE</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>Replace</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>Clear</button>
                     </div>
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG SCENE</p>
-                    <span class="zone-sublabel">VIDEO (MP4, MKV, WEBM, MOV, AVI)</span>
+                    <div class="zone-icon-wrap">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                    </div>
+                    <p class="zone-prompt">Drop Source Video</p>
+                    <span class="zone-sublabel">MP4, MOV, MKV, WEBM, AVI</span>
                     {#if sceneError}
                       <span class="zone-error-msg">{sceneError}</span>
                     {/if}
@@ -1891,20 +1897,22 @@
                 {#if drumsPath}
                   <div class="zone-filled-content">
                     <div class="zone-header">
-                      <span class="zone-tag">AUDIO</span>
+                      <span class="zone-tag">Drums Stem</span>
                       <span class="pro-dot active"></span>
                     </div>
-                    <div class="zone-title">DRUMS</div>
-                    <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
+                    <div class="zone-filename" title={drumsPath}>{getFileName(drumsPath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>REPLACE</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>REMOVE</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>Replace</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>Clear</button>
                     </div>
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG DRUMS</p>
-                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
+                    <div class="zone-icon-wrap">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"></path><path d="M6 6v11"></path><path d="M10 3v18"></path><path d="M14 8v7"></path><path d="M18 5v13"></path><path d="M22 10v3"></path></svg>
+                    </div>
+                    <p class="zone-prompt">Drop Drums Track</p>
+                    <span class="zone-sublabel">WAV, MP3, FLAC, M4A, OGG</span>
                     {#if drumsError}
                       <span class="zone-error-msg">{drumsError}</span>
                     {/if}
@@ -1931,20 +1939,22 @@
                 {#if audioPath}
                   <div class="zone-filled-content">
                     <div class="zone-header">
-                      <span class="zone-tag">AUDIO</span>
+                      <span class="zone-tag">Master Audio</span>
                       <span class="pro-dot active"></span>
                     </div>
-                    <div class="zone-title">AUDIO</div>
-                    <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
+                    <div class="zone-filename" title={audioPath}>{getFileName(audioPath)}</div>
                     <div class="zone-actions">
-                      <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>REPLACE</button>
-                      <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>REMOVE</button>
+                      <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>Replace</button>
+                      <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>Clear</button>
                     </div>
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG AUDIO</p>
-                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
+                    <div class="zone-icon-wrap">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                    </div>
+                    <p class="zone-prompt">Drop Master Audio</p>
+                    <span class="zone-sublabel">WAV, MP3, FLAC, M4A, OGG</span>
                     {#if audioError}
                       <span class="zone-error-msg">{audioError}</span>
                     {/if}
@@ -3269,10 +3279,10 @@
               <!-- Accordion Column -->
               <div class="params-accordions-col">
                 <!-- 1. SHAKES (7) -->
-                <div class="accordion-card card-cyber">
+                <div class="accordion-card">
                   <div class="accordion-header" onclick={() => accordionOpen.shakes = !accordionOpen.shakes}>
-                    <h3>🌪️ 1. SHAKES & DISPLACEMENT ({accordionOpen.shakes ? '▲' : '▼'})</h3>
-                    <span class="badge-tag">7 PARAMS</span>
+                    <h3>1. Shakes & Displacement ({accordionOpen.shakes ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 Params</span>
                   </div>
                   {#if accordionOpen.shakes}
                     <div class="accordion-body">
@@ -3281,7 +3291,7 @@
                       <GlowSlider bind:value={remapParams.shakeDecayMs} min={50} max={500} step={5} label="Decay (ms)" unit=" ms" precision={0} />
                       
                       <div class="control-group">
-                        <span class="group-label">DIRECTION</span>
+                        <span class="group-label">Direction</span>
                         <div class="options-buttons-row">
                           {#each ['x', 'y', 'radial', 'random'] as dir}
                             <button class="btn-option" class:active={remapParams.shakeDirection === dir} onclick={() => remapParams.shakeDirection = dir} type="button">{dir.toUpperCase()}</button>
@@ -3290,9 +3300,9 @@
                       </div>
 
                       <div class="control-group">
-                        <span class="group-label">BEAT SYNC ONLY</span>
+                        <span class="group-label">Beat Sync Only</span>
                         <button class="btn-option" class:active={remapParams.shakeOnBeatsOnly} onclick={() => remapParams.shakeOnBeatsOnly = !remapParams.shakeOnBeatsOnly} type="button">
-                          {remapParams.shakeOnBeatsOnly ? 'ON (ONLY ON BEATS)' : 'OFF (CONTINUOUS)'}
+                          {remapParams.shakeOnBeatsOnly ? 'On (Beats Only)' : 'Off (Continuous)'}
                         </button>
                       </div>
 
@@ -3303,10 +3313,10 @@
                 </div>
 
                 <!-- 2. ZOOM & DRIFT (7) -->
-                <div class="accordion-card card-cyber">
+                <div class="accordion-card">
                   <div class="accordion-header" onclick={() => accordionOpen.zoom = !accordionOpen.zoom}>
-                    <h3>🔍 2. ZOOM & SCALE ({accordionOpen.zoom ? '▲' : '▼'})</h3>
-                    <span class="badge-tag">7 PARAMS</span>
+                    <h3>2. Zoom & Scale ({accordionOpen.zoom ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 Params</span>
                   </div>
                   {#if accordionOpen.zoom}
                     <div class="accordion-body">
@@ -3314,7 +3324,7 @@
                       <GlowSlider bind:value={remapParams.punchInDurationMs} min={50} max={400} step={5} label="Punch Duration" unit=" ms" precision={0} />
                       
                       <div class="control-group">
-                        <span class="group-label">EASING CURVE</span>
+                        <span class="group-label">Easing Curve</span>
                         <div class="options-buttons-row">
                           {#each ['linear', 'easeOut', 'bounce'] as ease}
                             <button class="btn-option" class:active={remapParams.punchInEasing === ease} onclick={() => remapParams.punchInEasing = ease} type="button">{ease.toUpperCase()}</button>
@@ -3325,7 +3335,7 @@
                       <GlowSlider bind:value={remapParams.zoomDriftSpeed} min={0} max={0.02} step={0.001} label="Drift Speed" precision={3} />
                       
                       <div class="control-group">
-                        <span class="group-label">DRIFT DIRECTION</span>
+                        <span class="group-label">Drift Direction</span>
                         <div class="options-buttons-row">
                           {#each ['in', 'out', 'alternate'] as d}
                             <button class="btn-option" class:active={remapParams.zoomDriftDirection === d} onclick={() => remapParams.zoomDriftDirection = d} type="button">{d.toUpperCase()}</button>
@@ -3334,16 +3344,16 @@
                       </div>
 
                       <div class="control-group">
-                        <span class="group-label">DOWNBEATS ONLY</span>
+                        <span class="group-label">Downbeats Only</span>
                         <button class="btn-option" class:active={remapParams.punchOnDownbeatsOnly} onclick={() => remapParams.punchOnDownbeatsOnly = !remapParams.punchOnDownbeatsOnly} type="button">
-                          {remapParams.punchOnDownbeatsOnly ? 'ON (DOWNBEATS)' : 'OFF (ALL CUTS)'}
+                          {remapParams.punchOnDownbeatsOnly ? 'On (Downbeats)' : 'Off (All Cuts)'}
                         </button>
                       </div>
 
                       <div class="control-group">
-                        <span class="group-label">RESET BETWEEN CUTS</span>
+                        <span class="group-label">Reset Between Cuts</span>
                         <button class="btn-option" class:active={remapParams.zoomResetBetweenCuts} onclick={() => remapParams.zoomResetBetweenCuts = !remapParams.zoomResetBetweenCuts} type="button">
-                          {remapParams.zoomResetBetweenCuts ? 'ON' : 'OFF'}
+                          {remapParams.zoomResetBetweenCuts ? 'On' : 'Off'}
                         </button>
                       </div>
                     </div>
@@ -3351,10 +3361,10 @@
                 </div>
 
                 <!-- 3. AMBIANCE & FX (7) -->
-                <div class="accordion-card card-cyber">
+                <div class="accordion-card">
                   <div class="accordion-header" onclick={() => accordionOpen.ambiance = !accordionOpen.ambiance}>
-                    <h3>✨ 3. AMBIANCE & PROCEDURAL FX ({accordionOpen.ambiance ? '▲' : '▼'})</h3>
-                    <span class="badge-tag">7 PARAMS</span>
+                    <h3>3. Ambiance & Procedural FX ({accordionOpen.ambiance ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 Params</span>
                   </div>
                   {#if accordionOpen.ambiance}
                     <div class="accordion-body">
@@ -3370,15 +3380,15 @@
                 </div>
 
                 <!-- 4. TRANSITIONS & CUTS (7) -->
-                <div class="accordion-card card-cyber">
+                <div class="accordion-card">
                   <div class="accordion-header" onclick={() => accordionOpen.transitions = !accordionOpen.transitions}>
-                    <h3>⚡ 4. TRANSITIONS & RHYTHMIC CUTS ({accordionOpen.transitions ? '▲' : '▼'})</h3>
-                    <span class="badge-tag">7 PARAMS</span>
+                    <h3>4. Transitions & Rhythmic Cuts ({accordionOpen.transitions ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 Params</span>
                   </div>
                   {#if accordionOpen.transitions}
                     <div class="accordion-body">
                       <div class="control-group">
-                        <span class="group-label">TRANSITION TYPE</span>
+                        <span class="group-label">Transition Type</span>
                         <div class="options-buttons-row">
                           {#each ['hardCut', 'crossDissolve', 'wipe', 'zoomThrough'] as tt}
                             <button class="btn-option" class:active={remapParams.transitionType === tt} onclick={() => remapParams.transitionType = tt} type="button">{tt.toUpperCase()}</button>
@@ -3391,7 +3401,7 @@
                       <GlowSlider bind:value={remapParams.freezeFrameProbability} min={0} max={1} step={0.05} label="Freeze Frame Probability" precision={2} />
                       
                       <div class="control-group">
-                        <span class="group-label">SPEED RAMP STYLE</span>
+                        <span class="group-label">Speed Ramp Style</span>
                         <div class="options-buttons-row">
                           {#each ['linear', 'bezier', 'exponential'] as sr}
                             <button class="btn-option" class:active={remapParams.speedRampStyle === sr} onclick={() => remapParams.speedRampStyle = sr} type="button">{sr.toUpperCase()}</button>
@@ -3408,15 +3418,15 @@
 
               <!-- Preview Column -->
               <div class="params-preview-col">
-                <div class="card-cyber live-preview-box">
-                  <h3>LIVE 256x256 PREVIEW</h3>
+                <div class="live-preview-box">
+                  <h3>Live Preview (256×256)</h3>
                   <div class="preview-canvas-wrap">
                     <canvas width="256" height="256" class="preview-canvas-box"></canvas>
                   </div>
                   <div class="preview-stats-row">
-                    <span class="stat-pill">FPS: 30</span>
-                    <span class="stat-pill">LATENCY: ~8ms</span>
-                    <span class="stat-pill">BUFFER: OK</span>
+                    <span class="stat-pill">30 FPS</span>
+                    <span class="stat-pill">Latency: 8ms</span>
+                    <span class="stat-pill">Real-time</span>
                   </div>
                 </div>
               </div>
@@ -3918,20 +3928,20 @@
 </div>
 
 <style>
-  /* REFINED INDUSTRIAL DARK SLATE DESIGN SYSTEM */
+  /* REFINED STUDIO DARK SLATE DESIGN SYSTEM */
   *, *::before, *::after {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
-    font-family: 'IBM Plex Sans Variable', 'IBM Plex Sans', -apple-system, sans-serif;
+    font-family: 'IBM Plex Sans Variable', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
 
   :global(html), :global(body), :global(#app) {
     margin: 0;
     height: 100%;
-    background: #050507;
-    color: #e4e4e7;
+    background: #0b0c10;
+    color: #f1f5f9;
     overflow: hidden;
     user-select: none;
   }
@@ -3940,8 +3950,8 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    background: #050507;
-    border: 1px solid #1c1c20;
+    background: #0b0c10;
+    border: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   /* Titlebar */
@@ -3949,82 +3959,144 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    height: 34px;
+    height: 38px;
     padding: 0 12px;
-    background: #08080a;
-    border-bottom: 1px solid #1c1c20;
+    background: #0f1117;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
 
-  .titlebar-brand { display: flex; align-items: center; }
-  .titlebar-text { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #71717a; }
-  .titlebar-controls { display: flex; gap: 2px; }
+  .titlebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .brand-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #3b82f6;
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  }
+  .titlebar-text {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #f1f5f9;
+  }
+  .version-tag {
+    font-size: 10px;
+    font-weight: 500;
+    color: #64748b;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
 
-  .titlebar-btn {
-    width: 32px;
+  .titlebar-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tb-btn {
     height: 24px;
-    border: none;
-    background: transparent;
-    color: #71717a;
+    padding: 0 9px;
+    background: #161822;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 5px;
+    color: #cbd5e1;
+    font-size: 11px;
+    font-weight: 500;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
-    border-radius: 4px;
-    transition: all 0.15s ease;
+    transition: all 0.12s ease;
+  }
+  .tb-btn:hover:not(:disabled) {
+    background: #2563eb;
+    border-color: #3b82f6;
+    color: #ffffff;
+  }
+  .tb-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .tb-btn.tb-hotkeys {
+    color: #94a3b8;
+  }
+  .tb-btn.tb-update {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #34d399;
   }
 
-  .titlebar-btn:hover { background: #1c1c20; color: #ffffff; }
-  .titlebar-btn.close:hover { background: #dc2626; color: #ffffff; }
+  .titlebar-sys-btn {
+    width: 28px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: #94a3b8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    border-radius: 4px;
+    transition: all 0.12s ease;
+  }
+  .titlebar-sys-btn:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; }
+  .titlebar-sys-btn.close:hover { background: #ef4444; color: #ffffff; }
 
   /* Navigation Tabs */
   .tab-bar {
     display: flex;
-    gap: 4px;
-    padding: 8px 12px 0;
-    background: #08080a;
-    border-bottom: 1px solid #1c1c20;
-    min-height: 40px;
+    align-items: center;
+    padding: 8px 16px;
+    background: #0f1117;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
 
-  .tab-bar button {
-    position: relative;
-    z-index: 0;
-    min-height: 32px;
-    padding: 8px 20px;
-    background: #0d0d10;
-    border: 1px solid #1c1c20;
-    border-bottom-color: #1c1c20;
-    border-radius: 6px 6px 0 0;
-    color: #71717a;
+  .tab-pill-group {
+    display: flex;
+    gap: 3px;
+    background: #141720;
+    padding: 3px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .tab-pill-group button {
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #94a3b8;
     cursor: pointer;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    transition: all 120ms ease;
   }
-
-  .tab-bar button:hover { color: #e4e4e7; background: #16161a; }
-  .tab-bar button.active {
-    z-index: 1;
+  .tab-pill-group button:hover {
+    color: #f1f5f9;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .tab-pill-group button.active {
     color: #ffffff;
-    background: #121215;
-    border-color: rgba(255, 255, 255, 0.25);
-    border-bottom: 1px solid #121215;
-  }
-  .tab-bar button:focus-visible {
-    z-index: 2;
-    outline: none;
-    box-shadow: inset 0 0 0 1px #ffffff;
+    background: #2563eb;
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.35);
   }
 
   /* Main Content Area */
   .content-area {
     flex: 1;
     min-height: 0;
-    overflow: hidden;
-    padding: 12px 16px;
-    background: #050507;
+    overflow-y: auto;
+    padding: 16px 20px;
+    background: #0b0c10;
     display: flex;
     flex-direction: column;
   }
@@ -4034,36 +4106,27 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    animation: page-enter 190ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   @keyframes page-enter {
-    from { opacity: 0; transform: translateY(5px); }
+    from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .page-stage { animation: none; }
   }
 
   /* Time Remap Page (3 Drop Zones) */
   .remap-page {
-    width: min(100%, 920px);
-    margin: auto;
+    width: min(100%, 960px);
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 14px;
-    height: 100%;
-    justify-content: center;
   }
 
   .remap-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 12px;
-    flex: 1;
-    max-height: 380px;
   }
 
   .remap-drop-zone {
@@ -4071,33 +4134,32 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 100%;
-    min-height: 320px;
-    padding: 20px 14px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 8px;
-    background: #09090c;
+    min-height: 220px;
+    padding: 20px 16px;
+    border: 1.5px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    background: #111319;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.15s ease;
     position: relative;
     text-align: center;
+    box-sizing: border-box;
   }
 
   .remap-drop-zone:hover,
   .remap-drop-zone.hovering {
-    border-color: rgba(255, 255, 255, 0.4);
-    background: #111116;
-    box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.02);
+    border-color: #3b82f6;
+    background: #141926;
   }
 
   .remap-drop-zone.has-error {
-    border-color: rgba(239, 68, 68, 0.5);
-    background: #0c0707;
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.06);
   }
 
   .remap-drop-zone.filled {
-    border-color: rgba(255, 255, 255, 0.28);
-    background: #0d0d11;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: #151822;
     cursor: default;
   }
 
@@ -4106,38 +4168,40 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
   }
 
+  .zone-icon-wrap {
+    color: #64748b;
+    margin-bottom: 4px;
+    transition: color 120ms ease;
+  }
+  .remap-drop-zone:hover .zone-icon-wrap {
+    color: #3b82f6;
+  }
+
   .zone-prompt {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
+    font-size: 13px;
+    font-weight: 600;
     margin: 0;
-    color: #e4e4e7;
+    color: #f1f5f9;
   }
 
   .zone-sublabel {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: #71717a;
-    line-height: 1.4;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: #64748b;
   }
 
   .zone-error-msg {
-    margin-top: 10px;
-    padding: 6px 10px;
-    background: rgba(127, 29, 29, 0.35);
-    border: 1px solid #7f1d1d;
+    margin-top: 8px;
+    padding: 5px 8px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
     border-radius: 4px;
     color: #fca5a5;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 600;
-    line-height: 1.35;
+    font-size: 10px;
   }
 
   .zone-filled-content {
@@ -4158,121 +4222,98 @@
   }
 
   .zone-tag {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
+    font-size: 10px;
+    font-weight: 600;
+    color: #94a3b8;
+    background: #0d0f14;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
-    padding: 2px 6px;
-  }
-
-  .zone-title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #ffffff;
+    padding: 2px 7px;
   }
 
   .zone-filename {
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
-    color: #f4f4f5;
-    background: #050507;
-    border: 1px solid #1c1c20;
+    color: #f8fafc;
+    background: #0d0f14;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
     padding: 10px 12px;
     width: 100%;
-    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     box-sizing: border-box;
+    text-align: center;
   }
 
   .zone-actions {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
   }
 
   .btn-zone-action {
     flex: 1;
-    padding: 7px 10px;
-    background: #141417;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 6px 10px;
+    background: #1c202c;
+    border: 1px solid rgba(255, 255, 255, 0.09);
     border-radius: 5px;
-    color: #d4d4d8;
+    color: #cbd5e1;
     cursor: pointer;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    transition: all 0.15s ease;
+    font-size: 10.5px;
+    font-weight: 500;
+    transition: all 0.12s ease;
   }
-
   .btn-zone-action:hover {
-    border-color: rgba(255, 255, 255, 0.35);
-    background: #1c1c20;
+    background: #2563eb;
+    border-color: #3b82f6;
     color: #ffffff;
   }
-
   .btn-zone-action.danger:hover {
-    border-color: #7f1d1d;
-    background: #450a0a;
-    color: #fecaca;
+    background: #dc2626;
+    border-color: #ef4444;
+    color: #ffffff;
   }
 
   .continue-row {
     display: flex;
+    gap: 10px;
     justify-content: center;
     width: 100%;
-    animation: page-enter 160ms ease-out both;
+    margin-top: 4px;
   }
 
   .btn-continue {
-    width: 100%;
-    max-width: 400px;
-    padding: 12px 24px;
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    padding: 10px 20px;
     border-radius: 6px;
-    font-weight: 800;
     font-size: 12px;
-    letter-spacing: 0.06em;
+    font-weight: 600;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.15s ease;
   }
-
-  .btn-continue:hover:not(:disabled) {
-    background: #000000;
+  .btn-continue.btn-one-click {
+    background: linear-gradient(135deg, #4f46e5, #3b82f6);
+    border: 1px solid #60a5fa;
     color: #ffffff;
-    border-color: #ffffff;
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.15);
+    box-shadow: 0 2px 10px rgba(79, 70, 229, 0.35);
   }
-
+  .btn-continue.btn-one-click:hover:not(:disabled) {
+    background: linear-gradient(135deg, #4338ca, #2563eb);
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.5);
+  }
+  .btn-continue.btn-manual-continue {
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #cbd5e1;
+  }
+  .btn-continue.btn-manual-continue:hover:not(:disabled) {
+    background: #222736;
+    color: #ffffff;
+  }
   .btn-continue:disabled {
-    opacity: 0.8;
-    cursor: wait;
-  }
-
-  .btn-one-click {
-    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-    color: #000000;
-    border: 1px solid #00f2fe;
-    box-shadow: 0 0 20px rgba(0, 242, 254, 0.35);
-  }
-
-  .btn-one-click:hover:not(:disabled) {
-    background: #000000;
-    color: #00f2fe;
-    border-color: #00f2fe;
-    box-shadow: 0 0 25px rgba(0, 242, 254, 0.6);
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .btn-manual-continue {
@@ -4510,35 +4551,40 @@
     border-color: rgba(255, 255, 255, 0.5);
   }
 
-  /* T19 Export Option Buttons */
+  /* Segmented Controls / Option Button Rows */
   .options-buttons-row {
     display: flex;
-    gap: 6px;
+    gap: 2px;
+    background: #0d0f14;
+    padding: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
   }
 
   .btn-option {
     flex: 1;
-    padding: 5px 8px;
-    background: #050507;
-    border: 1px solid #1c1c20;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
     border-radius: 4px;
-    color: #71717a;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9.5px;
-    font-weight: 700;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.12s ease;
+    text-align: center;
   }
 
   .btn-option:hover {
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 0.25);
+    color: #f1f5f9;
+    background: rgba(255, 255, 255, 0.04);
   }
 
   .btn-option.active {
-    background: #121215;
+    background: #2563eb;
     color: #ffffff;
-    border-color: rgba(255, 255, 255, 0.5);
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3);
   }
 
   .custom-ar-inputs-inline {
@@ -5872,42 +5918,41 @@
   }
 
   .stat-box {
-    background: #0d0d12;
-    border: 1px solid #1c1c24;
-    border-radius: 6px;
-    padding: 10px 12px;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 12px 14px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
   }
 
   .stat-label {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 8.5px;
-    font-weight: 700;
-    color: #71717a;
-    letter-spacing: 0.05em;
+    font-size: 10px;
+    font-weight: 600;
+    color: #64748b;
+    letter-spacing: 0.04em;
   }
 
   .stat-val {
-    font-size: 12px;
-    font-weight: 700;
-    color: #ffffff;
+    font-size: 14px;
+    font-weight: 600;
+    color: #f8fafc;
   }
 
   .highlight-sync {
-    color: #4ade80;
+    color: #34d399;
   }
 
   /* ─── DUMPER SECTION BOXES ─────────────────────────────────────────────── */
   .dumper-section-box {
-    background: #0b0b10;
-    border: 1px solid #1c1c24;
-    border-radius: 6px;
-    padding: 12px 14px;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
   }
 
   .section-box-header {
@@ -5917,20 +5962,19 @@
   }
 
   .section-box-title {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9.5px;
-    font-weight: 700;
-    color: #a1a1aa;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    font-weight: 600;
+    color: #cbd5e1;
+    letter-spacing: 0.03em;
   }
 
   .badge-accent {
-    font-size: 8.5px;
-    font-weight: 700;
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.1);
-    border: 1px solid rgba(74, 222, 128, 0.3);
-    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #34d399;
+    background: rgba(52, 211, 153, 0.12);
+    border: 1px solid rgba(52, 211, 153, 0.25);
+    padding: 2px 7px;
     border-radius: 4px;
   }
 
@@ -5940,37 +5984,38 @@
     margin: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 10px;
-    color: #e4e4e7;
+    gap: 5px;
+    font-size: 11px;
+    color: #cbd5e1;
   }
 
   .bullet-dot {
-    color: #4ade80;
+    color: #34d399;
     font-weight: 700;
   }
 
   /* ─── SEGMENTS DATA TABLE ───────────────────────────────────────────────── */
   .table-container {
-    max-height: 200px;
+    max-height: 220px;
     overflow-y: auto;
-    border: 1px solid #18181e;
-    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    background: #0d0f14;
   }
 
   .dumper-data-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 9px;
+    font-size: 10px;
     text-align: left;
   }
 
   .dumper-data-table th {
-    background: #121218;
-    color: #71717a;
-    padding: 6px 8px;
-    font-weight: 700;
-    border-bottom: 1px solid #27272a;
+    background: #181c26;
+    color: #94a3b8;
+    padding: 8px 10px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     position: sticky;
     top: 0;
     z-index: 1;
@@ -5978,26 +6023,26 @@
   }
 
   .dumper-data-table td {
-    padding: 5px 8px;
-    border-bottom: 1px solid #14141a;
-    color: #d4d4d8;
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: #e2e8f0;
     white-space: nowrap;
   }
 
   .dumper-data-table tr:hover td {
-    background: #14141c;
+    background: #181c26;
   }
 
   .dumper-data-table .col-idx {
-    color: #71717a;
-    font-weight: 700;
+    color: #64748b;
+    font-weight: 600;
   }
 
   .badge-hint {
-    font-size: 8px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
     text-transform: uppercase;
   }
   .badge-hint.snap {
@@ -6016,9 +6061,9 @@
     border: 1px solid rgba(59, 130, 246, 0.3);
   }
   .badge-hint.normal {
-    background: rgba(161, 161, 170, 0.12);
-    color: #d4d4d8;
-    border: 1px solid rgba(161, 161, 170, 0.25);
+    background: rgba(148, 163, 184, 0.12);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.25);
   }
 
   /* ─── TWO-COLUMN GRID ───────────────────────────────────────────────────── */
@@ -6388,19 +6433,19 @@
   }
 
   .comp-op-item {
-    background: #0d0d12;
-    border: 1px solid #1c1c24;
-    border-radius: 6px;
-    padding: 8px 10px;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     transition: all 120ms ease;
   }
   .comp-op-item.disabled {
     opacity: 0.45;
-    background: #08080a;
-    border-color: #141418;
+    background: #0d0e14;
+    border-color: rgba(255, 255, 255, 0.04);
   }
 
   .op-top-row {
@@ -6412,56 +6457,57 @@
   .op-label-toggle {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     cursor: pointer;
   }
 
   .op-checkbox {
     accent-color: #3b82f6;
     cursor: pointer;
+    width: 14px;
+    height: 14px;
   }
 
   .op-title {
-    font-size: 10px;
-    font-weight: 700;
-    color: #ffffff;
-    letter-spacing: 0.04em;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #f8fafc;
   }
 
   .op-blend-badge {
-    background: #181824;
-    border: 1px solid #272738;
-    color: #93c5fd;
-    font-size: 8px;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 3px;
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 7px;
+    border-radius: 4px;
   }
 
   .op-control-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
   }
 
   .op-pct-label {
-    font-size: 8.5px;
-    color: #a1a1aa;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: #94a3b8;
     white-space: nowrap;
-    min-width: 80px;
+    min-width: 75px;
   }
 
   .op-range-slider {
     flex: 1;
-    accent-color: #3b82f6;
     height: 4px;
     cursor: pointer;
   }
 
   .op-desc-row {
-    font-size: 8px;
-    color: #71717a;
-    line-height: 1.3;
+    font-size: 10px;
+    color: #64748b;
+    line-height: 1.35;
   }
 
   .comp-actions-row {
@@ -6476,18 +6522,18 @@
 
   .comp-sidecar-btn {
     flex: 1;
-    padding: 10px 12px;
-    font-size: 9.5px;
-    font-weight: 700;
+    padding: 9px 12px;
+    font-size: 11px;
+    font-weight: 600;
     border-radius: 6px;
-    background: #121218;
-    border: 1px solid #272738;
-    color: #a1a1aa;
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    color: #cbd5e1;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .comp-sidecar-btn:hover:not(:disabled) {
-    background: #181822;
+    background: #2563eb;
     color: #ffffff;
     border-color: #3b82f6;
   }
@@ -6498,6 +6544,98 @@
 
   .comp-render-card {
     margin-top: 4px;
+  }
+
+  .comp-stack-container {
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .comp-stack-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .stack-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pro-tag {
+    font-size: 11px;
+    font-weight: 600;
+    color: #f1f5f9;
+    letter-spacing: 0.03em;
+  }
+
+  .stack-count {
+    font-size: 10px;
+    font-weight: 500;
+    color: #64748b;
+  }
+
+  .comp-ops-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+  }
+
+  .comp-op-card {
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .op-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .op-label-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .op-name {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .op-val-display {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #3b82f6;
+  }
+
+  .op-slider-row {
+    display: flex;
+    align-items: center;
+  }
+
+  .op-slider {
+    width: 100%;
+    height: 4px;
+    cursor: pointer;
+  }
+
+  .op-desc {
+    font-size: 10px;
+    color: #64748b;
+    line-height: 1.3;
   }
 
   /* T38 PARAMS Page Styles */
@@ -6512,9 +6650,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 18px;
-    background: #0d0d14;
-    border: 1px solid #1e1e2d;
+    padding: 10px 16px;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     gap: 16px;
   }
@@ -6523,66 +6661,66 @@
   .project-controls-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
 
   .preset-select {
-    background: #141420;
-    border: 1px solid #2d2d42;
-    color: #e4e4e7;
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #f1f5f9;
     padding: 6px 12px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 11.5px;
     font-family: inherit;
-    font-weight: 600;
+    font-weight: 500;
     outline: none;
     cursor: pointer;
   }
   .preset-select:focus {
-    border-color: #ec4899;
+    border-color: #3b82f6;
   }
 
   .btn-param-action {
-    background: #181826;
-    border: 1px solid #2d2d42;
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     color: #cbd5e1;
-    padding: 6px 14px;
+    padding: 6px 12px;
     border-radius: 6px;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
     transition: all 120ms ease;
   }
   .btn-param-action:hover {
-    background: #242438;
+    background: #232734;
     color: #ffffff;
     border-color: #3b82f6;
   }
   .btn-param-action.reset {
-    color: #f59e0b;
-    border-color: #78350f;
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.3);
   }
   .btn-param-action.reset:hover {
-    background: #78350f33;
-    border-color: #f59e0b;
+    background: rgba(251, 191, 36, 0.15);
+    border-color: #fbbf24;
   }
 
   .params-grid-layout {
     display: grid;
-    grid-template-columns: 1fr 300px;
-    gap: 18px;
+    grid-template-columns: 1fr 290px;
+    gap: 16px;
     align-items: start;
   }
 
   .params-accordions-col {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
   }
 
   .accordion-card {
-    background: #0d0d14;
-    border: 1px solid #1e1e2d;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     overflow: hidden;
   }
@@ -6591,37 +6729,38 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 18px;
-    background: #12121c;
+    padding: 12px 16px;
+    background: #161922;
     cursor: pointer;
     user-select: none;
-    border-bottom: 1px solid #1a1a28;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     transition: background 120ms ease;
   }
   .accordion-header:hover {
-    background: #171724;
+    background: #1a1e28;
   }
   .accordion-header h3 {
     margin: 0;
-    font-size: 13px;
-    font-weight: 700;
-    color: #f4f4f5;
+    font-size: 12px;
+    font-weight: 600;
+    color: #f1f5f9;
+    letter-spacing: 0.02em;
   }
 
   .badge-tag {
     font-size: 10px;
-    font-weight: 700;
-    padding: 3px 8px;
-    background: #27273a;
+    font-weight: 500;
+    padding: 2px 7px;
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 4px;
-    color: #a1a1aa;
+    color: #94a3b8;
   }
 
   .accordion-body {
-    padding: 18px;
+    padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
   }
 
   .params-preview-col {
@@ -6630,8 +6769,8 @@
   }
 
   .live-preview-box {
-    background: #0d0d14;
-    border: 1px solid #1e1e2d;
+    background: #13161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     padding: 14px;
     display: flex;
@@ -6640,17 +6779,18 @@
   }
   .live-preview-box h3 {
     margin: 0;
-    font-size: 12px;
-    font-weight: 700;
-    color: #ec4899;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #f1f5f9;
+    letter-spacing: 0.04em;
   }
 
   .preview-canvas-wrap {
     width: 256px;
     height: 256px;
     margin: 0 auto;
-    background: #000000;
-    border: 1px solid #27273a;
+    background: #090a0d;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 6px;
     overflow: hidden;
   }
@@ -6666,13 +6806,13 @@
     justify-content: center;
   }
   .stat-pill {
-    font-size: 9.5px;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 500;
     padding: 3px 8px;
-    background: #181826;
-    border: 1px solid #272738;
-    border-radius: 4px;
-    color: #10b981;
+    background: #181c26;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    color: #94a3b8;
   }
 
   /* T39 Render Queue Styles */

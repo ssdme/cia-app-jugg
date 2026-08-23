@@ -1,4 +1,4 @@
-﻿<script>
+<script>
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
@@ -28,7 +28,7 @@
     if (!paths || paths.length === 0) return;
     isImporting = true;
     try {
-      const imported = await invoke('import_media_to_pool', { paths });
+      await invoke('import_media_to_pool', { paths });
       await loadMediaPool();
     } catch (e) {
       console.error('Import error:', e);
@@ -38,7 +38,7 @@
   }
 
   async function handleManualImport() {
-    const p = prompt('Enter video/audio file path to import into Media Pool:', 'C:/Videos/footage.mp4');
+    const p = prompt('Enter video or audio file path to import into Media Pool:', 'C:/Videos/footage.mp4');
     if (p) {
       await handleImportPaths([p]);
     }
@@ -95,7 +95,7 @@
 </script>
 
 <div
-  class="media-pool-container card-cyber"
+  class="media-pool-card"
   class:dragging-over={isDraggingOver}
   ondrop={handleDrop}
   ondragover={handleDragOver}
@@ -103,56 +103,64 @@
   role="region"
   aria-label="Media Pool Assets"
 >
-  <div class="media-pool-header">
-    <div class="media-pool-title-row">
-      <span class="group-label">🗄️ MEDIA POOL & SMART CACHE ({assets.length} ASSETS)</span>
-      <span class="pool-drop-hint mono">Drag & Drop files here from Explorer</span>
+  <div class="media-pool-top">
+    <div class="pool-title-group">
+      <span class="pool-title">Media Pool & Smart Cache</span>
+      <span class="pool-counter-badge">{assets.length} {assets.length === 1 ? 'asset' : 'assets'}</span>
     </div>
-    <div class="media-pool-actions">
-      <button class="btn-param-action" onclick={loadMediaPool} type="button">🔄 REFRESH</button>
-      <button class="btn-param-action" onclick={handleManualImport} type="button" disabled={isImporting}>
-        {isImporting ? '⏳ IMPORTING...' : '➕ IMPORT ASSET'}
+    <div class="pool-btn-group">
+      <button class="btn-pool-action" onclick={loadMediaPool} type="button">Refresh</button>
+      <button class="btn-pool-primary" onclick={handleManualImport} type="button" disabled={isImporting}>
+        {isImporting ? 'Importing...' : '+ Import Media'}
       </button>
     </div>
   </div>
 
   {#if assets.length === 0}
-    <div class="media-pool-empty mono">
-      <span>No assets in Media Pool yet. Drag & drop files or click "IMPORT ASSET".</span>
+    <div class="media-pool-empty">
+      <div class="empty-icon-wrap">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <p class="empty-title">Drag & drop media files here from Windows Explorer</p>
+      <span class="empty-sub">MP4, MOV, MKV, MP3, WAV — Files are automatically fingerprinted and cached</span>
     </div>
   {:else}
     <div class="media-pool-grid">
       {#each assets as asset}
-        <div class="media-asset-card">
-          <div class="asset-top-row">
-            <span class="asset-filename mono" title={asset.absolutePath}>{asset.metadata.fileName}</span>
-            <button class="btn-remove-asset" onclick={() => handleRemove(asset.quickHash)} title="Remove from pool" type="button">×</button>
+        <div class="media-item">
+          <div class="media-item-header">
+            <span class="media-item-name" title={asset.absolutePath}>{asset.metadata.fileName}</span>
+            <button class="media-item-del" onclick={() => handleRemove(asset.quickHash)} title="Remove from pool" type="button">×</button>
           </div>
 
-          <div class="asset-meta-row mono">
-            <span class="asset-pill">{formatTime(asset.metadata.duration)}</span>
-            <span class="asset-pill">{asset.metadata.width}x{asset.metadata.height}</span>
-            <span class="asset-pill">{asset.metadata.fps.toFixed(0)}fps</span>
+          <div class="media-meta-row">
+            <span class="meta-tag">{formatTime(asset.metadata.duration)}</span>
+            <span class="meta-tag">{asset.metadata.width}×{asset.metadata.height}</span>
+            <span class="meta-tag">{asset.metadata.fps.toFixed(0)} fps</span>
             {#if asset.analysis}
-              <span class="asset-pill bpm-pill">⚡ {asset.analysis.beats?.bpm?.toFixed(0) || '120'} BPM</span>
-              <span class="asset-pill style-pill">{asset.analysis.detectedStyle?.styleName?.toUpperCase() || 'JUGG'}</span>
+              <span class="meta-tag bpm-tag">{asset.analysis.beats?.bpm?.toFixed(0) || '120'} BPM</span>
+              <span class="meta-tag style-tag">{asset.analysis.detectedStyle?.styleName || 'Jugg'}</span>
             {:else}
-              <span class="asset-pill uncached-pill">NOT ANALYZED</span>
+              <span class="meta-tag uncached-tag">Unanalyzed</span>
             {/if}
           </div>
 
-          <div class="asset-actions-row">
+          <div class="media-actions-row">
             {#if onSelectAsScene}
-              <button class="btn-asset-action" onclick={() => onSelectAsScene(asset.absolutePath)} type="button">🎬 SCENE</button>
+              <button class="btn-assign" onclick={() => onSelectAsScene(asset.absolutePath)} type="button">Scene</button>
             {/if}
             {#if onSelectAsDrums}
-              <button class="btn-asset-action" onclick={() => onSelectAsDrums(asset.absolutePath)} type="button">🥁 DRUMS</button>
+              <button class="btn-assign" onclick={() => onSelectAsDrums(asset.absolutePath)} type="button">Drums</button>
             {/if}
             {#if onSelectAsAudio}
-              <button class="btn-asset-action" onclick={() => onSelectAsAudio(asset.absolutePath)} type="button">🎵 AUDIO</button>
+              <button class="btn-assign" onclick={() => onSelectAsAudio(asset.absolutePath)} type="button">Audio</button>
             {/if}
             {#if onDirectOneClick}
-              <button class="btn-asset-action one-click-action" onclick={() => onDirectOneClick(asset.absolutePath)} type="button">⚡ ONE-CLICK</button>
+              <button class="btn-assign btn-jugg-quick" onclick={() => onDirectOneClick(asset.absolutePath)} type="button">⚡ One-Click</button>
             {/if}
           </div>
         </div>
@@ -162,155 +170,220 @@
 </div>
 
 <style>
-  .media-pool-container {
+  .media-pool-card {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 14px;
-    background: #0b0b12;
-    border: 1px solid #1e1e2d;
-    border-radius: 8px;
-    width: 100%;
+    padding: 14px 16px;
+    background: #111318;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
     box-sizing: border-box;
-    transition: all 150ms ease;
+    transition: border-color 150ms ease, background-color 150ms ease;
+    margin-top: 14px;
   }
-  .media-pool-container.dragging-over {
+  .media-pool-card.dragging-over {
     border-color: #3b82f6;
-    background: #0f172a;
+    background: #131826;
   }
 
-  .media-pool-header {
+  .media-pool-top {
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .media-pool-title-row {
+  .pool-title-group {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
-  .pool-drop-hint {
-    font-size: 10px;
-    color: #71717a;
+  .pool-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #f1f5f9;
+    letter-spacing: 0.02em;
+  }
+  .pool-counter-badge {
+    font-size: 11px;
+    font-weight: 500;
+    color: #94a3b8;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
   }
 
-  .media-pool-actions {
+  .pool-btn-group {
     display: flex;
     gap: 8px;
   }
+  .btn-pool-action {
+    background: #181b22;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #cbd5e1;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .btn-pool-action:hover {
+    background: #232732;
+    color: #ffffff;
+  }
+  .btn-pool-primary {
+    background: #2563eb;
+    border: 1px solid #3b82f6;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .btn-pool-primary:hover:not(:disabled) {
+    background: #1d4ed8;
+  }
+  .btn-pool-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 
   .media-pool-empty {
-    padding: 24px;
-    text-align: center;
-    color: #52525b;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 24px 16px;
+    background: #0d0f13;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+  }
+  .empty-icon-wrap {
+    color: #64748b;
+    margin-bottom: 2px;
+  }
+  .empty-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: #cbd5e1;
+    margin: 0;
+  }
+  .empty-sub {
     font-size: 11px;
-    background: #08080d;
-    border: 1px dashed #232336;
-    border-radius: 6px;
+    color: #64748b;
   }
 
   .media-pool-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 10px;
   }
 
-  .media-asset-card {
+  .media-item {
     display: flex;
     flex-direction: column;
     gap: 8px;
     padding: 10px 12px;
-    background: #11111c;
-    border: 1px solid #1c1c2e;
-    border-radius: 6px;
+    background: #161820;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
     transition: border-color 120ms ease;
   }
-  .media-asset-card:hover {
-    border-color: #2e2e48;
+  .media-item:hover {
+    border-color: rgba(255, 255, 255, 0.16);
   }
 
-  .asset-top-row {
+  .media-item-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
-  .asset-filename {
-    font-size: 11px;
-    font-weight: 700;
-    color: #e4e4e7;
+  .media-item-name {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #e2e8f0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .btn-remove-asset {
+  .media-item-del {
     background: transparent;
     border: none;
-    color: #71717a;
-    font-size: 14px;
+    color: #64748b;
+    font-size: 15px;
+    line-height: 1;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 0 3px;
   }
-  .btn-remove-asset:hover {
-    color: #f87171;
+  .media-item-del:hover {
+    color: #ef4444;
   }
 
-  .asset-meta-row {
+  .media-meta-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
   }
-  .asset-pill {
-    font-size: 9.5px;
-    font-weight: 700;
+  .meta-tag {
+    font-size: 10px;
+    font-weight: 500;
     padding: 2px 6px;
-    background: #181826;
-    border: 1px solid #272738;
+    background: #0d0f13;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
-    color: #a1a1aa;
+    color: #94a3b8;
   }
-  .asset-pill.bpm-pill {
+  .meta-tag.bpm-tag {
     color: #38bdf8;
-    border-color: #0369a1;
+    background: rgba(56, 189, 248, 0.08);
+    border-color: rgba(56, 189, 248, 0.2);
   }
-  .asset-pill.style-pill {
+  .meta-tag.style-tag {
     color: #34d399;
-    border-color: #065f46;
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.2);
+    text-transform: capitalize;
   }
-  .asset-pill.uncached-pill {
+  .meta-tag.uncached-tag {
     color: #fbbf24;
-    border-color: #78350f;
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.2);
   }
 
-  .asset-actions-row {
+  .media-actions-row {
     display: flex;
-    gap: 6px;
+    gap: 5px;
     margin-top: 2px;
   }
-  .btn-asset-action {
+  .btn-assign {
     flex: 1;
-    background: #181826;
-    border: 1px solid #2e2e42;
+    background: #1c202a;
+    border: 1px solid rgba(255, 255, 255, 0.09);
     color: #cbd5e1;
-    padding: 4px 6px;
-    border-radius: 4px;
-    font-size: 9.5px;
-    font-weight: 700;
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 500;
     cursor: pointer;
     transition: all 120ms ease;
   }
-  .btn-asset-action:hover {
+  .btn-assign:hover {
     background: #2563eb;
     border-color: #3b82f6;
     color: #ffffff;
   }
-  .btn-asset-action.one-click-action {
-    background: #1e1b4b;
-    border-color: #6366f1;
-    color: #a5b4fc;
+  .btn-assign.btn-jugg-quick {
+    background: #312e81;
+    border-color: #4f46e5;
+    color: #c7d2fe;
   }
-  .btn-asset-action.one-click-action:hover {
-    background: #4f46e5;
+  .btn-assign.btn-jugg-quick:hover {
+    background: #4338ca;
     color: #ffffff;
   }
 </style>

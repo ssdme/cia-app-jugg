@@ -129,21 +129,20 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
   .slider-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #888888;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: #94a3b8;
   }
 
   .slider-val {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
-    font-weight: 700;
-    color: #ffffff;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #f1f5f9;
     font-variant-numeric: tabular-nums;
   }
 
@@ -175,23 +174,22 @@
     left: 0;
     width: 100%;
     height: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 2px;
+    background: #1e222e;
+    border-radius: 999px;
   }
 
-  /* 5. Progress Fill & Multi-layer Neon Glow */
+  /* Progress Fill Track */
   .track-fill {
     position: absolute;
     left: 0;
-    height: 3px;
-    background: #ffffff;
-    border-radius: 2px;
+    height: 4px;
+    background: #3b82f6;
+    border-radius: 999px;
     pointer-events: none;
     z-index: 2;
   }
 
-  /* 6. Grab Circle */
+  /* Grab Circle */
   .grab-circle {
     position: absolute;
     top: 50%;
@@ -206,19 +204,20 @@
   }
 
   .grab-dot {
-    width: 8px;
-    height: 8px;
+    width: 12px;
+    height: 12px;
     background: #ffffff;
+    border: 2.5px solid #3b82f6;
     border-radius: 50%;
-    box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    transition: transform 0.1s ease;
+  }
+
+  .slider-track-wrap:hover .grab-dot {
+    transform: scale(1.15);
   }
 
   .grab-ring {
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 1.5px solid transparent;
-    transition: transform 0.1s ease;
+    display: none;
   }
 </style>
