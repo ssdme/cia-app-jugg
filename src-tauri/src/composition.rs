@@ -48,6 +48,8 @@ pub struct LayerItem {
     pub full_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub z_depth: Option<f32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -1222,7 +1224,8 @@ pub struct LayerMesh {
     pub triangles: Vec<MeshTriangle>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnimationConfig {
     pub entrance_enabled: bool,
     pub entrance_downbeat: f64,
@@ -1230,6 +1233,8 @@ pub struct AnimationConfig {
     pub hair_sway_amplitude: f32,
     pub blink_interval_sec: f32,
     pub pump_decay_rate: f32,
+    pub parallax_strength: f32,    // 0.0 to 1.0, default 0.5
+    pub beat_punch_intensity: f32, // 0.0 to 1.0, default 0.6
 }
 
 impl Default for AnimationConfig {
@@ -1241,7 +1246,76 @@ impl Default for AnimationConfig {
             hair_sway_amplitude: 1.0,
             blink_interval_sec: 3.2,
             pump_decay_rate: 6.0,
+            parallax_strength: 0.5,
+            beat_punch_intensity: 0.6,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraState {
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub zoom: f32,
+    pub roll: f32,
+}
+
+impl Default for CameraState {
+    fn default() -> Self {
+        Self {
+            pan_x: 0.0,
+            pan_y: 0.0,
+            zoom: 1.0,
+            roll: 0.0,
+        }
+    }
+}
+
+pub fn compute_camera_state(
+    t: f64,
+    beats: &[f64],
+    downbeats: &[f64],
+    config: &AnimationConfig,
+) -> CameraState {
+    // 1. Procedural Ambient Drift (sinusoidal, max amplitude 1% of screen on 4 seconds)
+    let drift_phase = (2.0 * std::f64::consts::PI * t / 4.0) as f32;
+    let mut pan_x = 0.01 * drift_phase.sin();
+    let mut pan_y = 0.006 * (drift_phase + 0.5 * std::f32::consts::PI).cos();
+    let mut zoom = 1.0f32;
+    let roll = 0.003 * (drift_phase * 0.5).sin();
+
+    // 2. Downbeat Beat Punch & Decay (returns to ±0.001 of 1.0 within 200 ms)
+    for &db in downbeats {
+        if t >= db {
+            let dt = (t - db) as f32;
+            if dt < 0.25 {
+                let punch = config.beat_punch_intensity * 0.05 * (-35.0 * dt).exp();
+                zoom += punch;
+            }
+        }
+    }
+
+    // 3. Beat Shake Micro-offset (seeded by beat number, ±2px normalized over 100ms)
+    for (beat_idx, &b) in beats.iter().enumerate() {
+        if t >= b {
+            let dt = (t - b) as f32;
+            if dt < 0.15 {
+                let seed = (beat_idx as u32).wrapping_mul(2654435761);
+                let angle = (seed % 360) as f32 * std::f32::consts::PI / 180.0;
+                let shake_decay = (-35.0 * dt).exp();
+                let amp = (2.0 / 1080.0) * shake_decay;
+                pan_x += amp * angle.cos();
+                pan_y += amp * angle.sin();
+            }
+        }
+    }
+
+    CameraState {
+        pan_x,
+        pan_y,
+        zoom,
+        roll,
     }
 }
 
@@ -1359,6 +1433,10 @@ pub fn compute_deformed_vertices(
     downbeats: &[f64],
     config: &AnimationConfig,
     layer_z: usize,
+    layer_z_depth: f32,
+    camera: &CameraState,
+    canvas_w: usize,
+    canvas_h: usize,
 ) -> Vec<(f32, f32)> {
     let is_hair = mesh.layer_name.contains("hair");
     let is_eyes = mesh.layer_name.contains("eye");
@@ -1423,6 +1501,26 @@ pub fn compute_deformed_vertices(
         1.0f32
     };
 
+    // 2.5D Orthographic Parallax Math & Perspective Scale Factor
+    let z_centered = layer_z_depth - 0.5; // [-0.5, 0.5]
+    let parallax_strength = config.parallax_strength;
+
+    // offset_x = (layer.z - 0.5) * camera.pan_x * parallax_strength * viewport_width
+    // offset_y = (layer.z - 0.5) * camera.pan_y * parallax_strength * viewport_height
+    let offset_x = z_centered * camera.pan_x * parallax_strength * (canvas_w as f32);
+    let offset_y = z_centered * camera.pan_y * parallax_strength * (canvas_h as f32);
+
+    // layer_scale_factor = 1.0 + ((layer.z - 0.5) * camera.zoom_effect)
+    let zoom_effect = (camera.zoom - 1.0) * parallax_strength;
+    let layer_scale_factor = 1.0 + z_centered * zoom_effect;
+    let total_zoom = camera.zoom * layer_scale_factor;
+
+    let cam_cx = canvas_w as f32 * 0.5;
+    let cam_cy = canvas_h as f32 * 0.5;
+
+    let cos_r = camera.roll.cos();
+    let sin_r = camera.roll.sin();
+
     mesh.vertices.iter().map(|v| {
         let mut x = v.orig_x;
         let mut y = v.orig_y;
@@ -1471,7 +1569,14 @@ pub fn compute_deformed_vertices(
             y = cy + (y - cy) * entrance_bounce;
         }
 
-        (x, y)
+        // Fused Camera Transformation & 2.5D Parallax in a single pass (Rayon-accelerated)
+        let rx = x - cam_cx;
+        let ry = y - cam_cy;
+
+        let final_x = cam_cx + (rx * cos_r - ry * sin_r) * total_zoom + offset_x;
+        let final_y = cam_cy + (rx * sin_r + ry * cos_r) * total_zoom + offset_y;
+
+        (final_x, final_y)
     }).collect()
 }
 
@@ -1702,20 +1807,21 @@ pub fn render_deformed_mesh(
 }
 
 pub fn render_animated_character_frame(
-    layers: &[(String, RawImage, LayerMesh, usize)],
+    layers: &[(String, RawImage, LayerMesh, usize, f32)],
     t: f64,
     frame_idx: u32,
     fps: f64,
     beats: &[f64],
     downbeats: &[f64],
     config: &AnimationConfig,
+    camera: &CameraState,
     canvas_w: usize,
     canvas_h: usize,
 ) -> RawImage {
     let mut composite_data = vec![0u8; canvas_w * canvas_h * 4];
 
     // Layers are ordered by z_order ascending
-    for (_layer_name, raw_img, mesh, z_idx) in layers {
+    for (_layer_name, raw_img, mesh, z_idx, z_depth) in layers {
         let deformed_verts = compute_deformed_vertices(
             mesh,
             t,
@@ -1725,6 +1831,10 @@ pub fn render_animated_character_frame(
             downbeats,
             config,
             *z_idx,
+            *z_depth,
+            camera,
+            canvas_w,
+            canvas_h,
         );
 
         composite_deformed_mesh_direct(
@@ -1750,6 +1860,8 @@ pub fn render_mesh_preview_internal(
     background_path: Option<&str>,
     audio_path: Option<&str>,
     ops: Option<Vec<CompositionOp>>,
+    parallax_strength: Option<f32>,
+    beat_punch_intensity: Option<f32>,
     duration_sec: Option<f64>,
     ffmpeg_bin_opt: Option<&Path>,
 ) -> Result<String, String> {
@@ -1771,12 +1883,20 @@ pub fn render_mesh_preview_internal(
     let mut sorted_layers = seg_res.layers.clone();
     sorted_layers.sort_by_key(|l| l.z_order);
 
+    let total_layers = sorted_layers.len().max(1);
     for (z_idx, layer) in sorted_layers.iter().enumerate() {
         let layer_file = output_dir.join(&layer.file);
         if layer_file.exists() && layer.has_content != Some(false) {
             if let Ok(img) = load_image_rgba(&layer_file, Some(&ffmpeg_bin)) {
                 let mesh = build_layer_mesh(&layer.name, &img);
-                loaded_layers.push((layer.name.clone(), img, mesh, z_idx));
+                let z_depth = layer.z_depth.unwrap_or_else(|| {
+                    if total_layers > 1 {
+                        z_idx as f32 / (total_layers - 1) as f32
+                    } else {
+                        0.5
+                    }
+                });
+                loaded_layers.push((layer.name.clone(), img, mesh, z_idx, z_depth));
             }
         }
     }
@@ -1785,7 +1905,7 @@ pub fn render_mesh_preview_internal(
         // Fallback to full character image as single body layer
         let full_img = load_image_rgba(char_path, Some(&ffmpeg_bin))?;
         let mesh = build_layer_mesh("body", &full_img);
-        loaded_layers.push(("body".to_string(), full_img, mesh, 0));
+        loaded_layers.push(("body".to_string(), full_img, mesh, 0, 0.5));
     }
 
     let (w, h) = (loaded_layers[0].1.width, loaded_layers[0].1.height);
@@ -1803,7 +1923,14 @@ pub fn render_mesh_preview_internal(
         }
     }
 
-    let anim_config = AnimationConfig::default();
+    let mut anim_config = AnimationConfig::default();
+    if let Some(ps) = parallax_strength {
+        anim_config.parallax_strength = ps.clamp(0.0, 1.0);
+    }
+    if let Some(bpi) = beat_punch_intensity {
+        anim_config.beat_punch_intensity = bpi.clamp(0.0, 1.0);
+    }
+
     let fps = 30.0f64;
     let duration = duration_sec.unwrap_or(3.0);
     let total_frames = ((duration * fps).ceil() as u32).max(1);
@@ -1892,6 +2019,7 @@ pub fn render_mesh_preview_internal(
 
     for frame_idx in 0..total_frames {
         let t = (frame_idx as f64) / fps;
+        let camera = compute_camera_state(t, &beats, &downbeats, &anim_config);
 
         let char_frame = render_animated_character_frame(
             &loaded_layers,
@@ -1901,6 +2029,7 @@ pub fn render_mesh_preview_internal(
             &beats,
             &downbeats,
             &anim_config,
+            &camera,
             w,
             h,
         );
@@ -2008,6 +2137,8 @@ pub fn render_mesh_preview(
     background_path: Option<String>,
     audio_path: Option<String>,
     ops: Option<Vec<CompositionOp>>,
+    parallax_strength: Option<f32>,
+    beat_punch_intensity: Option<f32>,
 ) -> Result<String, String> {
     render_mesh_preview_internal(
         Some(&app),
@@ -2015,6 +2146,8 @@ pub fn render_mesh_preview(
         background_path.as_deref(),
         audio_path.as_deref(),
         ops,
+        parallax_strength,
+        beat_punch_intensity,
         Some(3.0),
         None,
     )
