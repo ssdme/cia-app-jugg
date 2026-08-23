@@ -14,6 +14,7 @@ use crate::plan::{
     generate_one_framers, generate_transitions, get_style_defaults, ColorHints, ExportConfig,
     PlanSegment, ProjectPlan, SourceFxKeyframe, SourceFxType,
 };
+use crate::presets::RemapParams;
 use crate::probe::probe_media_internal;
 
 #[cfg(target_os = "windows")]
@@ -1812,6 +1813,7 @@ pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<Proje
         ambiance,
         source_fx: vec![],
         audio_mix: Some(crate::audio::AudioMixConfig::default()),
+        remap_params: Some(crate::presets::get_preset_params(mapped_style)),
         segments: plan_segments,
         export: ExportConfig::default(),
     })
@@ -1820,12 +1822,21 @@ pub fn convert_dumper_project_to_plan(project: &ReusableProject) -> Result<Proje
 pub type EditPlan = ProjectPlan;
 
 pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<ProjectPlan, String> {
+    generate_remap_plan_from_analysis_with_params(analysis, None)
+}
+
+pub fn generate_remap_plan_from_analysis_with_params(
+    analysis: &DumpAnalysis,
+    user_params: Option<&RemapParams>,
+) -> Result<ProjectPlan, String> {
     let mapped_style = match analysis.detected_style.archetype {
         Some(Archetype::JUGG) | Some(Archetype::GLITCH) => "HARD",
         Some(Archetype::FLOW) | Some(Archetype::CLEAN) => "SMOOTH",
         Some(Archetype::VIBE) | Some(Archetype::HYBRID) => "HYBRID",
         None => map_dumper_style_to_jugg_style(&analysis.detected_style.style_name),
     };
+
+    let params = user_params.cloned().unwrap_or_else(|| crate::presets::get_preset_params(mapped_style));
 
     let fps = clamp_dumper_fps(analysis.fps);
     let bpm = if analysis.beats.bpm > 0.0 { analysis.beats.bpm } else { 120.0 };
@@ -1865,19 +1876,29 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
         filtered_bounds.push(target_duration);
     }
 
-    // 2. Punch-in amplitude based on sync_score
+    // 2. Punch-in amplitude based on sync_score or user_params
     let sync_score = if analysis.sync_na { 0.50 } else { analysis.cut_beat_sync.clamp(0.0, 1.0) };
-    let punch_amp_hard = 1.10 + 0.15 * sync_score;
-    let punch_amp_smooth = 1.04 + 0.04 * sync_score;
-    let punch_amp_hybrid = 1.07 + 0.08 * sync_score;
-
-    let (default_a0, default_omega, default_k) = match mapped_style {
-        "HARD" => {
-            let conf_factor = (analysis.detected_style.confidence - 0.5).max(0.0);
-            (8.0 * (1.0 + conf_factor), 20.0, 3.0)
+    let punch_amp = if user_params.is_some() {
+        params.punch_in_scale as f64
+    } else {
+        match mapped_style {
+            "HARD" => 1.10 + 0.15 * sync_score,
+            "SMOOTH" => 1.04 + 0.04 * sync_score,
+            _ => 1.07 + 0.08 * sync_score,
         }
-        "SMOOTH" => (2.5, 7.0, 1.8),
-        _ => (5.0, 12.0, 2.2), // HYBRID
+    };
+
+    let (default_a0, default_omega, default_k) = if user_params.is_some() {
+        ((params.shake_intensity * 15.0) as f64, params.shake_freq_hz as f64, (1000.0 / params.shake_decay_ms.max(1.0)) as f64)
+    } else {
+        match mapped_style {
+            "HARD" => {
+                let conf_factor = (analysis.detected_style.confidence - 0.5).max(0.0);
+                (8.0 * (1.0 + conf_factor), 20.0, 3.0)
+            }
+            "SMOOTH" => (2.5, 7.0, 1.8),
+            _ => (5.0, 12.0, 2.2), // HYBRID
+        }
     };
 
     let mut plan_segments = Vec::new();
@@ -1895,24 +1916,29 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
 
         if is_on_downbeat {
             downbeat_count += 1;
-            match mapped_style {
-                "HARD" => {
-                    scale_start = punch_amp_hard;
-                    scale_end = 1.0;
-                    if downbeat_count % 3 == 1 || downbeat_count == 1 {
+            scale_start = punch_amp;
+            scale_end = 1.0;
+            if user_params.is_some() {
+                if params.reverse_cut_probability > 0.0 {
+                    let seed = ((idx as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
+                    if ((seed % 100) as f32 / 100.0) < params.reverse_cut_probability {
                         reverse_this_segment = true;
                     }
                 }
-                "SMOOTH" => {
-                    scale_start = punch_amp_smooth;
-                    scale_end = 1.0;
-                    reverse_this_segment = false; // Zero reverse cut in smooth
-                }
-                _ => {
-                    scale_start = punch_amp_hybrid;
-                    scale_end = 1.0;
-                    if downbeat_count % 5 == 1 {
-                        reverse_this_segment = true;
+            } else {
+                match mapped_style {
+                    "HARD" => {
+                        if downbeat_count % 3 == 1 || downbeat_count == 1 {
+                            reverse_this_segment = true;
+                        }
+                    }
+                    "SMOOTH" => {
+                        reverse_this_segment = false;
+                    }
+                    _ => {
+                        if downbeat_count % 5 == 1 {
+                            reverse_this_segment = true;
+                        }
                     }
                 }
             }
@@ -1931,9 +1957,9 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
         };
 
         let (s0, s1) = if reverse_this_segment {
-            (s_dur, 0.0) // Negative slope / reverse
+            (s_dur, 0.0)
         } else {
-            (0.0, s_dur) // Forward slope
+            (0.0, s_dur)
         };
 
         let seed = ((idx as u32).wrapping_mul(1664525).wrapping_add(1013904223)) ^ 0x5bf03635;
@@ -1982,8 +2008,10 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
     let transitions = generate_transitions(mapped_style, &mut plan_segments, &[], fps, None);
     let ambiance = Some(default_ambiance(mapped_style, downbeats));
 
-    // Procedural Source FX Generation (T36)
-    let shake_intensity = if let Some(Archetype::JUGG) | Some(Archetype::GLITCH) = analysis.detected_style.archetype {
+    // Procedural Source FX Generation (T36 & T38)
+    let shake_intensity = if user_params.is_some() {
+        params.shake_intensity
+    } else if let Some(Archetype::JUGG) | Some(Archetype::GLITCH) = analysis.detected_style.archetype {
         (analysis.detected_style.confidence as f32).max(0.8)
     } else if let Some(Archetype::HYBRID) = analysis.detected_style.archetype {
         0.6f32
@@ -2001,21 +2029,23 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
 
     let mut source_fx: Vec<SourceFxKeyframe> = Vec::new();
 
-    // 1. If shake_intensity > 0.5 -> Inject RGB Split / Chromatic Aberration on each beat/snare
+    // 1. If shake_intensity > 0.5 -> Inject RGB Split
     if shake_intensity > 0.5 {
+        let rgb_intensity = if user_params.is_some() { params.rgb_split_intensity } else { shake_intensity };
         for &b in &analysis.beats.beats {
             if b >= 0.0 && b < target_duration {
                 source_fx.push(SourceFxKeyframe {
                     timestamp: b,
                     duration: (3.0 * dt_frame).min(0.12),
                     fx_type: SourceFxType::RgbSplit,
-                    intensity: shake_intensity,
+                    intensity: rgb_intensity,
                 });
             }
         }
     }
 
-    // 2. If one_framer_density > 0.2 (or one_framers present) -> Inject 1-frame Flashes on downbeats
+    // 2. If one_framer_density > 0.2 -> Inject Flashes
+    let flash_intensity = if user_params.is_some() { params.flash_intensity } else { 0.9 };
     if one_framer_density > 0.2 || analysis.one_framers_v2.as_ref().map_or(false, |v| !v.is_empty()) || !analysis.one_framers.is_empty() {
         for &db in downbeats {
             if db >= 0.0 && db < target_duration {
@@ -2023,7 +2053,7 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
                     timestamp: db,
                     duration: dt_frame,
                     fx_type: SourceFxType::Flash,
-                    intensity: 0.9,
+                    intensity: flash_intensity,
                 });
             }
         }
@@ -2065,6 +2095,7 @@ pub fn generate_remap_plan_from_analysis(analysis: &DumpAnalysis) -> Result<Proj
         ambiance,
         source_fx,
         audio_mix: Some(crate::audio::AudioMixConfig::default()),
+        remap_params: Some(params),
         segments: plan_segments,
         export: ExportConfig::default(),
     })

@@ -135,8 +135,171 @@
       mask_by_alpha: true,
       enabled: true,
       params: { color: [220.0, 240.0, 255.0] }
-    }
   ]);
+
+  // T38 Fine Parameters (28 controls) State
+  let remapParams = $state({
+    // SHAKES (7)
+    shakeIntensity: 0.9,
+    shakeFreqHz: 22.0,
+    shakeDecayMs: 120.0,
+    shakeDirection: 'radial',
+    shakeOnBeatsOnly: true,
+    shakeRollDeg: 8.0,
+    shakeNoiseSeed: 1337,
+
+    // ZOOM (7)
+    punchInScale: 1.35,
+    punchInDurationMs: 100.0,
+    punchInEasing: 'bounce',
+    zoomDriftSpeed: 0.01,
+    zoomDriftDirection: 'in',
+    punchOnDownbeatsOnly: true,
+    zoomResetBetweenCuts: true,
+
+    // AMBIANCE (7)
+    rgbSplitIntensity: 0.8,
+    flashIntensity: 0.9,
+    glowThreshold: 0.6,
+    glowRadiusPx: 10.0,
+    vignetteStrength: 0.5,
+    grainAmount: 0.2,
+    colorShiftHueDeg: 0.0,
+
+    // TRANSITIONS (7)
+    transitionType: 'hardCut',
+    transitionDurationMs: 50.0,
+    reverseCutProbability: 0.45,
+    freezeFrameProbability: 0.15,
+    speedRampStyle: 'exponential',
+    rampAcceleration: 2.5,
+    rampDeceleration: 2.5,
+  });
+
+  let selectedPresetName = $state('AGGRESSIVE_JUGG');
+  let presetList = $state(['AGGRESSIVE_JUGG', 'LIQUID_FLOW', 'GROOVE_VIBE']);
+  let accordionOpen = $state({
+    shakes: true,
+    zoom: true,
+    ambiance: true,
+    transitions: true,
+  });
+
+  async function refreshPresetList() {
+    try {
+      const list = await invoke('list_presets');
+      if (Array.isArray(list)) {
+        presetList = list;
+      }
+    } catch (e) {
+      console.warn('Failed to list presets:', e);
+    }
+  }
+
+  async function handleSelectPreset(name) {
+    selectedPresetName = name;
+    try {
+      const p = await invoke('load_preset', { name });
+      if (p) {
+        remapParams = { ...p };
+        showToast(`Loaded preset: ${name}`, 'success');
+      }
+    } catch (e) {
+      showToast(`Error loading preset: ${e}`, 'error');
+    }
+  }
+
+  async function handleSavePreset() {
+    const name = prompt('Enter preset name:', selectedPresetName || 'MY_PRESET');
+    if (!name) return;
+    try {
+      await invoke('save_preset', { name, params: remapParams });
+      await refreshPresetList();
+      selectedPresetName = name;
+      showToast(`Preset "${name}" saved!`, 'success');
+    } catch (e) {
+      showToast(`Error saving preset: ${e}`, 'error');
+    }
+  }
+
+  function handleResetToDumperValues() {
+    if (dumperResult && dumperResult.detectedStyle) {
+      const archetype = dumperResult.detectedStyle.archetype;
+      if (archetype === 'FLOW' || archetype === 'CLEAN') {
+        handleSelectPreset('LIQUID_FLOW');
+      } else if (archetype === 'VIBE' || archetype === 'HYBRID') {
+        handleSelectPreset('GROOVE_VIBE');
+      } else {
+        handleSelectPreset('AGGRESSIVE_JUGG');
+      }
+    } else {
+      handleSelectPreset('AGGRESSIVE_JUGG');
+    }
+    showToast('Reset to Dumper archetype values', 'info');
+  }
+
+  async function handleSaveProject() {
+    const path = prompt('Enter project file path to save:', 'C:/cia_project.json');
+    if (!path) return;
+    try {
+      const projectState = {
+        schemaVersion: 1,
+        projectName: 'Jugg Anthem',
+        scenePath: scenePath || null,
+        drumsPath: drumsPath || null,
+        audioPath: audioPath || null,
+        characterPath: compCharacterPath || null,
+        backgroundPath: compBackgroundPath || null,
+        plan: planSummary || null,
+        compositionProject: compProject || null,
+        audioMix: {
+          sidechainDucking: sidechainDuckingEnabled,
+          duckingAmountDb: sidechainDuckingDb,
+          attackMs: 5.0,
+          releaseMs: 150.0,
+          varispeedAudio: varispeedAudioEnabled,
+          staccatoCuts: staccatoCutsEnabled,
+          mixSourceAudio: false,
+          sourceVolumeDb: 0.0,
+          targetVolumeDb: 0.0,
+        },
+        remapParams: remapParams,
+      };
+      await invoke('save_project_state', { path, state: projectState });
+      showToast(`Project saved to ${path}`, 'success');
+    } catch (e) {
+      showToast(`Error saving project: ${e}`, 'error');
+    }
+  }
+
+  async function handleLoadProject() {
+    const path = prompt('Enter project file path to load:', 'C:/cia_project.json');
+    if (!path) return;
+    try {
+      const state = await invoke('load_project_state', { path });
+      if (state) {
+        if (state.scenePath) scenePath = state.scenePath;
+        if (state.drumsPath) drumsPath = state.drumsPath;
+        if (state.audioPath) audioPath = state.audioPath;
+        if (state.characterPath) compCharacterPath = state.characterPath;
+        if (state.backgroundPath) compBackgroundPath = state.backgroundPath;
+        if (state.plan) planSummary = state.plan;
+        if (state.compositionProject) compProject = state.compositionProject;
+        if (state.audioMix) {
+          sidechainDuckingEnabled = state.audioMix.sidechainDucking ?? true;
+          sidechainDuckingDb = state.audioMix.duckingAmountDb ?? -12;
+          varispeedAudioEnabled = state.audioMix.varispeedAudio ?? true;
+          staccatoCutsEnabled = state.audioMix.staccatoCuts ?? true;
+        }
+        if (state.remapParams) {
+          remapParams = { ...state.remapParams };
+        }
+        showToast(`Project loaded from ${path}`, 'success');
+      }
+    } catch (e) {
+      showToast(`Error loading project: ${e}`, 'error');
+    }
+  }
 
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
@@ -1323,6 +1486,7 @@
     <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
     <button class:active={activePage === 'dumper'} onclick={() => navigateTo('dumper')}>DUMPER</button>
     <button class:active={activePage === 'composition'} onclick={() => navigateTo('composition')}>COMPOSITION</button>
+    <button class:active={activePage === 'params'} onclick={() => { navigateTo('params'); refreshPresetList(); }}>⚙️ PARAMS</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -2678,6 +2842,189 @@
                     </div>
                   </div>
                 {/if}
+              </div>
+            </div>
+          </section>
+
+        {:else if activePage === 'params'}
+          <section class="params-page" aria-label="Fine 28 Parameters and Presets">
+            <!-- Top Toolbar -->
+            <div class="params-top-bar card-cyber">
+              <div class="preset-controls-left">
+                <span class="group-label">PRESET:</span>
+                <select
+                  class="preset-select"
+                  value={selectedPresetName}
+                  onchange={(e) => handleSelectPreset(e.target.value)}
+                >
+                  {#each presetList as preset}
+                    <option value={preset}>{preset}</option>
+                  {/each}
+                </select>
+                <button class="btn-param-action" onclick={handleSavePreset} type="button">💾 SAVE AS...</button>
+                <button class="btn-param-action reset" onclick={handleResetToDumperValues} type="button">🔄 RESET TO DUMPER</button>
+              </div>
+
+              <div class="project-controls-right">
+                <button class="btn-param-action" onclick={handleSaveProject} type="button">📁 SAVE PROJECT</button>
+                <button class="btn-param-action" onclick={handleLoadProject} type="button">📂 LOAD PROJECT</button>
+              </div>
+            </div>
+
+            <div class="params-grid-layout">
+              <!-- Accordion Column -->
+              <div class="params-accordions-col">
+                <!-- 1. SHAKES (7) -->
+                <div class="accordion-card card-cyber">
+                  <div class="accordion-header" onclick={() => accordionOpen.shakes = !accordionOpen.shakes}>
+                    <h3>🌪️ 1. SHAKES & DISPLACEMENT ({accordionOpen.shakes ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 PARAMS</span>
+                  </div>
+                  {#if accordionOpen.shakes}
+                    <div class="accordion-body">
+                      <GlowSlider bind:value={remapParams.shakeIntensity} min={0} max={1} step={0.01} label="Intensity" precision={2} />
+                      <GlowSlider bind:value={remapParams.shakeFreqHz} min={1} max={30} step={0.5} label="Frequency (Hz)" unit=" Hz" precision={1} />
+                      <GlowSlider bind:value={remapParams.shakeDecayMs} min={50} max={500} step={5} label="Decay (ms)" unit=" ms" precision={0} />
+                      
+                      <div class="control-group">
+                        <span class="group-label">DIRECTION</span>
+                        <div class="options-buttons-row">
+                          {#each ['x', 'y', 'radial', 'random'] as dir}
+                            <button class="btn-option" class:active={remapParams.shakeDirection === dir} onclick={() => remapParams.shakeDirection = dir} type="button">{dir.toUpperCase()}</button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <div class="control-group">
+                        <span class="group-label">BEAT SYNC ONLY</span>
+                        <button class="btn-option" class:active={remapParams.shakeOnBeatsOnly} onclick={() => remapParams.shakeOnBeatsOnly = !remapParams.shakeOnBeatsOnly} type="button">
+                          {remapParams.shakeOnBeatsOnly ? 'ON (ONLY ON BEATS)' : 'OFF (CONTINUOUS)'}
+                        </button>
+                      </div>
+
+                      <GlowSlider bind:value={remapParams.shakeRollDeg} min={0} max={15} step={0.5} label="Roll Angle" unit="°" precision={1} />
+                      <GlowSlider bind:value={remapParams.shakeNoiseSeed} min={1} max={9999} step={1} label="Noise Seed" precision={0} />
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- 2. ZOOM & DRIFT (7) -->
+                <div class="accordion-card card-cyber">
+                  <div class="accordion-header" onclick={() => accordionOpen.zoom = !accordionOpen.zoom}>
+                    <h3>🔍 2. ZOOM & SCALE ({accordionOpen.zoom ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 PARAMS</span>
+                  </div>
+                  {#if accordionOpen.zoom}
+                    <div class="accordion-body">
+                      <GlowSlider bind:value={remapParams.punchInScale} min={1.0} max={1.5} step={0.01} label="Punch-In Scale" precision={2} />
+                      <GlowSlider bind:value={remapParams.punchInDurationMs} min={50} max={400} step={5} label="Punch Duration" unit=" ms" precision={0} />
+                      
+                      <div class="control-group">
+                        <span class="group-label">EASING CURVE</span>
+                        <div class="options-buttons-row">
+                          {#each ['linear', 'easeOut', 'bounce'] as ease}
+                            <button class="btn-option" class:active={remapParams.punchInEasing === ease} onclick={() => remapParams.punchInEasing = ease} type="button">{ease.toUpperCase()}</button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <GlowSlider bind:value={remapParams.zoomDriftSpeed} min={0} max={0.02} step={0.001} label="Drift Speed" precision={3} />
+                      
+                      <div class="control-group">
+                        <span class="group-label">DRIFT DIRECTION</span>
+                        <div class="options-buttons-row">
+                          {#each ['in', 'out', 'alternate'] as d}
+                            <button class="btn-option" class:active={remapParams.zoomDriftDirection === d} onclick={() => remapParams.zoomDriftDirection = d} type="button">{d.toUpperCase()}</button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <div class="control-group">
+                        <span class="group-label">DOWNBEATS ONLY</span>
+                        <button class="btn-option" class:active={remapParams.punchOnDownbeatsOnly} onclick={() => remapParams.punchOnDownbeatsOnly = !remapParams.punchOnDownbeatsOnly} type="button">
+                          {remapParams.punchOnDownbeatsOnly ? 'ON (DOWNBEATS)' : 'OFF (ALL CUTS)'}
+                        </button>
+                      </div>
+
+                      <div class="control-group">
+                        <span class="group-label">RESET BETWEEN CUTS</span>
+                        <button class="btn-option" class:active={remapParams.zoomResetBetweenCuts} onclick={() => remapParams.zoomResetBetweenCuts = !remapParams.zoomResetBetweenCuts} type="button">
+                          {remapParams.zoomResetBetweenCuts ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- 3. AMBIANCE & FX (7) -->
+                <div class="accordion-card card-cyber">
+                  <div class="accordion-header" onclick={() => accordionOpen.ambiance = !accordionOpen.ambiance}>
+                    <h3>✨ 3. AMBIANCE & PROCEDURAL FX ({accordionOpen.ambiance ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 PARAMS</span>
+                  </div>
+                  {#if accordionOpen.ambiance}
+                    <div class="accordion-body">
+                      <GlowSlider bind:value={remapParams.rgbSplitIntensity} min={0} max={1} step={0.01} label="RGB Split / Chromatic Aberration" precision={2} />
+                      <GlowSlider bind:value={remapParams.flashIntensity} min={0} max={1} step={0.01} label="Flash Peak Intensity" precision={2} />
+                      <GlowSlider bind:value={remapParams.glowThreshold} min={0} max={1} step={0.01} label="Glow Threshold" precision={2} />
+                      <GlowSlider bind:value={remapParams.glowRadiusPx} min={0} max={20} step={0.5} label="Glow Radius" unit=" px" precision={1} />
+                      <GlowSlider bind:value={remapParams.vignetteStrength} min={0} max={1} step={0.01} label="Vignette Strength" precision={2} />
+                      <GlowSlider bind:value={remapParams.grainAmount} min={0} max={0.5} step={0.01} label="Film Grain" precision={2} />
+                      <GlowSlider bind:value={remapParams.colorShiftHueDeg} min={0} max={360} step={5} label="Color Shift Hue" unit="°" precision={0} />
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- 4. TRANSITIONS & CUTS (7) -->
+                <div class="accordion-card card-cyber">
+                  <div class="accordion-header" onclick={() => accordionOpen.transitions = !accordionOpen.transitions}>
+                    <h3>⚡ 4. TRANSITIONS & RHYTHMIC CUTS ({accordionOpen.transitions ? '▲' : '▼'})</h3>
+                    <span class="badge-tag">7 PARAMS</span>
+                  </div>
+                  {#if accordionOpen.transitions}
+                    <div class="accordion-body">
+                      <div class="control-group">
+                        <span class="group-label">TRANSITION TYPE</span>
+                        <div class="options-buttons-row">
+                          {#each ['hardCut', 'crossDissolve', 'wipe', 'zoomThrough'] as tt}
+                            <button class="btn-option" class:active={remapParams.transitionType === tt} onclick={() => remapParams.transitionType = tt} type="button">{tt.toUpperCase()}</button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <GlowSlider bind:value={remapParams.transitionDurationMs} min={0} max={200} step={5} label="Transition Duration" unit=" ms" precision={0} />
+                      <GlowSlider bind:value={remapParams.reverseCutProbability} min={0} max={1} step={0.05} label="Reverse Cut Probability" precision={2} />
+                      <GlowSlider bind:value={remapParams.freezeFrameProbability} min={0} max={1} step={0.05} label="Freeze Frame Probability" precision={2} />
+                      
+                      <div class="control-group">
+                        <span class="group-label">SPEED RAMP STYLE</span>
+                        <div class="options-buttons-row">
+                          {#each ['linear', 'bezier', 'exponential'] as sr}
+                            <button class="btn-option" class:active={remapParams.speedRampStyle === sr} onclick={() => remapParams.speedRampStyle = sr} type="button">{sr.toUpperCase()}</button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <GlowSlider bind:value={remapParams.rampAcceleration} min={0.5} max={4.0} step={0.1} label="Ramp Acceleration" precision={1} />
+                      <GlowSlider bind:value={remapParams.rampDeceleration} min={0.5} max={4.0} step={0.1} label="Ramp Deceleration" precision={1} />
+                    </div>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- Preview Column -->
+              <div class="params-preview-col">
+                <div class="card-cyber live-preview-box">
+                  <h3>LIVE 256x256 PREVIEW</h3>
+                  <div class="preview-canvas-wrap">
+                    <canvas width="256" height="256" class="preview-canvas-box"></canvas>
+                  </div>
+                  <div class="preview-stats-row">
+                    <span class="stat-pill">FPS: 30</span>
+                    <span class="stat-pill">LATENCY: ~8ms</span>
+                    <span class="stat-pill">BUFFER: OK</span>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -5560,6 +5907,181 @@
 
   .comp-render-card {
     margin-top: 4px;
+  }
+
+  /* T38 PARAMS Page Styles */
+  .params-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: 32px;
+  }
+
+  .params-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    background: #0d0d14;
+    border: 1px solid #1e1e2d;
+    border-radius: 8px;
+    gap: 16px;
+  }
+
+  .preset-controls-left,
+  .project-controls-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .preset-select {
+    background: #141420;
+    border: 1px solid #2d2d42;
+    color: #e4e4e7;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    outline: none;
+    cursor: pointer;
+  }
+  .preset-select:focus {
+    border-color: #ec4899;
+  }
+
+  .btn-param-action {
+    background: #181826;
+    border: 1px solid #2d2d42;
+    color: #cbd5e1;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .btn-param-action:hover {
+    background: #242438;
+    color: #ffffff;
+    border-color: #3b82f6;
+  }
+  .btn-param-action.reset {
+    color: #f59e0b;
+    border-color: #78350f;
+  }
+  .btn-param-action.reset:hover {
+    background: #78350f33;
+    border-color: #f59e0b;
+  }
+
+  .params-grid-layout {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 18px;
+    align-items: start;
+  }
+
+  .params-accordions-col {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .accordion-card {
+    background: #0d0d14;
+    border: 1px solid #1e1e2d;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background: #12121c;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid #1a1a28;
+    transition: background 120ms ease;
+  }
+  .accordion-header:hover {
+    background: #171724;
+  }
+  .accordion-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: #f4f4f5;
+  }
+
+  .badge-tag {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    background: #27273a;
+    border-radius: 4px;
+    color: #a1a1aa;
+  }
+
+  .accordion-body {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .params-preview-col {
+    position: sticky;
+    top: 16px;
+  }
+
+  .live-preview-box {
+    background: #0d0d14;
+    border: 1px solid #1e1e2d;
+    border-radius: 8px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .live-preview-box h3 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: #ec4899;
+  }
+
+  .preview-canvas-wrap {
+    width: 256px;
+    height: 256px;
+    margin: 0 auto;
+    background: #000000;
+    border: 1px solid #27273a;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .preview-canvas-box {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .preview-stats-row {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+  }
+  .stat-pill {
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 3px 8px;
+    background: #181826;
+    border: 1px solid #272738;
+    border-radius: 4px;
+    color: #10b981;
   }
 </style>
 

@@ -6,6 +6,7 @@ pub mod composition;
 pub mod dumper;
 pub mod effects;
 pub mod plan;
+pub mod presets;
 pub mod preview;
 pub mod probe;
 pub mod render;
@@ -16,6 +17,7 @@ pub use composition::*;
 pub use dumper::*;
 pub use effects::*;
 pub use plan::*;
+pub use presets::*;
 pub use preview::*;
 pub use probe::*;
 pub use render::*;
@@ -109,7 +111,12 @@ pub fn run() {
             composition::save_composition_project,
             composition::render_composition,
             composition::render_mesh_preview,
-            composition::get_default_composition_ops_cmd
+            composition::get_default_composition_ops_cmd,
+            presets::save_preset,
+            presets::load_preset,
+            presets::list_presets,
+            presets::save_project_state,
+            presets::load_project_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
