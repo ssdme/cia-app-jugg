@@ -11,6 +11,7 @@ pub mod presets;
 pub mod preview;
 pub mod probe;
 pub mod render;
+pub mod timeline;
 
 pub use audio::*;
 pub use beat::*;
@@ -23,6 +24,7 @@ pub use presets::*;
 pub use preview::*;
 pub use probe::*;
 pub use render::*;
+pub use timeline::*;
 
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/ssdme/cia-app-jugg";
 const ABOUT_URLS: [&str; 9] = [
@@ -122,6 +124,8 @@ pub fn run() {
             export::queue_render_job,
             export::get_queue_status,
             export::cancel_render_job,
+            timeline::get_scrub_frame,
+            timeline::get_time_curve_velocities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
