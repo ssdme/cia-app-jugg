@@ -4488,5 +4488,141 @@ fn test_project_state_roundtrip() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[test]
+fn test_ffmpeg_args_h264_mp() {
+    let settings = ExportSettings {
+        codec: VideoCodec::H264,
+        container: ContainerFormat::MP4,
+        bitrate_mbps: 18.0,
+        resolution_scale: ResolutionScale::Original,
+    };
+    assert!(settings.validate().is_ok());
+
+    let args = settings.build_ffmpeg_args("-", "C:/output/final.mp4", 30, 1080, 1080, Some("C:/audio.wav"));
+    let joined = args.join(" ");
+
+    assert!(joined.contains("-c:v libx264"), "H264 must specify -c:v libx264");
+    assert!(joined.contains("-b:v 18M"), "Bitrate must be formatted as 18M");
+    assert!(joined.contains("-preset fast"), "Must include -preset fast");
+    assert!(joined.contains("-c:a aac"), "MP4 container must use AAC audio");
+    assert!(joined.contains("-b:a 320k"), "AAC bitrate must be 320k");
+}
+
+#[test]
+fn test_ffmpeg_args_vp9_webm() {
+    let settings = ExportSettings {
+        codec: VideoCodec::VP9,
+        container: ContainerFormat::WEBM,
+        bitrate_mbps: 10.0,
+        resolution_scale: ResolutionScale::Original,
+    };
+    assert!(settings.validate().is_ok());
+
+    let args = settings.build_ffmpeg_args("-", "C:/output/final.webm", 60, 1920, 1080, Some("C:/audio.wav"));
+    let joined = args.join(" ");
+
+    assert!(joined.contains("-c:v libvpx-vp9"), "VP9 must specify -c:v libvpx-vp9");
+    assert!(joined.contains("-row-mt 1"), "VP9 multithreading must specify -row-mt 1");
+    assert!(joined.contains("-b:v 10M"), "Bitrate must be formatted as 10M");
+    assert!(joined.contains("-c:a libopus"), "WEBM container must use libopus audio");
+    assert!(joined.contains("-b:a 192k"), "Opus bitrate must be 192k");
+}
+
+#[test]
+fn test_codec_container_validation() {
+    // 1. Invalid: VP9 + MP4
+    let vp9_mp4 = ExportSettings {
+        codec: VideoCodec::VP9,
+        container: ContainerFormat::MP4,
+        bitrate_mbps: 12.0,
+        resolution_scale: ResolutionScale::Original,
+    };
+    let res1 = vp9_mp4.validate();
+    assert!(res1.is_err(), "VP9 + MP4 must be rejected");
+    assert!(res1.unwrap_err().contains("VP9 codec is incompatible with MP4"));
+
+    // 2. Invalid: H264 + WEBM
+    let h264_webm = ExportSettings {
+        codec: VideoCodec::H264,
+        container: ContainerFormat::WEBM,
+        bitrate_mbps: 12.0,
+        resolution_scale: ResolutionScale::Original,
+    };
+    let res2 = h264_webm.validate();
+    assert!(res2.is_err(), "H264 + WEBM must be rejected");
+    assert!(res2.unwrap_err().contains("H264 codec is incompatible with WEBM"));
+
+    // 3. Invalid: Bitrate out of range (< 5 or > 50)
+    let bad_bitrate = ExportSettings {
+        codec: VideoCodec::H264,
+        container: ContainerFormat::MP4,
+        bitrate_mbps: 3.0,
+        resolution_scale: ResolutionScale::Original,
+    };
+    let res3 = bad_bitrate.validate();
+    assert!(res3.is_err(), "Bitrate < 5 Mbps must be rejected");
+    assert!(res3.unwrap_err().contains("Bitrate must be between 5.0 and 50.0 Mbps"));
+
+    // 4. Valid combinations
+    let valid1 = ExportSettings {
+        codec: VideoCodec::H264,
+        container: ContainerFormat::MP4,
+        bitrate_mbps: 25.0,
+        ..Default::default()
+    };
+    assert!(valid1.validate().is_ok());
+
+    let valid2 = ExportSettings {
+        codec: VideoCodec::VP9,
+        container: ContainerFormat::WEBM,
+        bitrate_mbps: 15.0,
+        ..Default::default()
+    };
+    assert!(valid2.validate().is_ok());
+
+    let valid3 = ExportSettings {
+        codec: VideoCodec::H265,
+        container: ContainerFormat::MKV,
+        bitrate_mbps: 30.0,
+        ..Default::default()
+    };
+    assert!(valid3.validate().is_ok());
+}
+
+#[test]
+fn test_render_queue_non_blocking() {
+    let manager = RenderManager::new();
+
+    // Start timer to benchmark non-blocking dispatch
+    let start_time = std::time::Instant::now();
+
+    // Queue a job with mock work in background
+    let output_path = "C:/output/mock_render.mp4".to_string();
+    let job_id = manager.add_job(output_path.clone());
+
+    let manager_clone = manager.clone();
+    let job_id_clone = job_id.clone();
+    std::thread::spawn(move || {
+        manager_clone.update_status(&job_id_clone, RenderJobStatus::Running, 0.05, None);
+        // Simulate a 2-second heavy background render
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        manager_clone.update_status(&job_id_clone, RenderJobStatus::Completed, 1.0, None);
+    });
+
+    let elapsed = start_time.elapsed();
+    println!("[BENCHMARK RENDER QUEUE DISPATCH]");
+    println!("  Dispatch latency: {:.3} ms (Target < 50.0 ms)", elapsed.as_secs_f64() * 1000.0);
+
+    assert!(
+        elapsed.as_millis() < 50,
+        "Job queuing must return immediately without blocking UI (target < 50ms, got {}ms)",
+        elapsed.as_millis()
+    );
+
+    // Initial status should be Pending or Running
+    let status_list = manager.get_status();
+    assert!(status_list.iter().any(|j| j.id == job_id));
+}
+
 
 

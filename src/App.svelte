@@ -301,6 +301,46 @@
     }
   }
 
+  // T39 Export Settings & Render Queue State
+  let availableContainers = $derived.by(() => {
+    if (selectedCodec === 'VP9') {
+      return ['WEBM', 'MKV'];
+    } else {
+      return ['MP4', 'MKV'];
+    }
+  });
+
+  $effect(() => {
+    if (selectedCodec === 'VP9' && selectedFormat === 'MP4') {
+      selectedFormat = 'WEBM';
+    } else if ((selectedCodec === 'H.264' || selectedCodec === 'H.265') && selectedFormat === 'WEBM') {
+      selectedFormat = 'MP4';
+    }
+  });
+
+  let renderQueue = $state([]);
+
+  async function pollRenderQueue() {
+    try {
+      const status = await invoke('get_queue_status');
+      if (Array.isArray(status)) {
+        renderQueue = status;
+      }
+    } catch (e) {
+      console.warn('Queue polling error:', e);
+    }
+  }
+
+  async function handleCancelJob(id) {
+    try {
+      await invoke('cancel_render_job', { id });
+      showToast(`Job ${id} cancelled`, 'info');
+      await pollRenderQueue();
+    } catch (e) {
+      showToast(`Error cancelling job: ${e}`, 'error');
+    }
+  }
+
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
   let availableEffects = $state([]);
@@ -1457,7 +1497,11 @@
       }
     }
 
+    pollRenderQueue();
+    const queueInterval = setInterval(pollRenderQueue, 500);
+
     return () => {
+      if (queueInterval) clearInterval(queueInterval);
       if (unlistenProgress) unlistenProgress();
       if (unlistenDump) unlistenDump();
       if (unlistenComp) unlistenComp();
@@ -1859,9 +1903,9 @@
                 </div>
 
                 <div class="control-group">
-                  <span class="group-label">CONTAINER FORMAT</span>
+                  <span class="group-label">CONTAINER FORMAT (FILTERED BY CODEC)</span>
                   <div class="options-buttons-row">
-                    {#each FORMAT_OPTIONS as fmt}
+                    {#each availableContainers as fmt}
                       <button
                         class="btn-option"
                         class:active={selectedFormat === fmt}
@@ -2045,6 +2089,43 @@
                   <div class="plan-saved-path">
                     <span class="stat-label">SAVED:</span>
                     <span class="saved-path-text mono" title={planSummary.savedPath}>{planSummary.savedPath}</span>
+                  </div>
+                </div>
+              {/if}
+
+              <!-- T39 Render Queue Panel -->
+              {#if renderQueue.length > 0}
+                <div class="render-queue-card card-cyber">
+                  <div class="render-queue-header">
+                    <span class="group-label">⚡ RENDER QUEUE ({renderQueue.length} JOBS)</span>
+                    <button class="btn-param-action" onclick={pollRenderQueue} type="button">🔄 REFRESH</button>
+                  </div>
+                  <div class="render-queue-list">
+                    {#each renderQueue as job}
+                      <div class="render-queue-item">
+                        <div class="job-meta-row">
+                          <span class="job-id mono">{job.id}</span>
+                          <span class="job-status-pill" class:running={job.status === 'RUNNING'} class:completed={job.status === 'COMPLETED'} class:failed={job.status === 'FAILED'} class:cancelled={job.status === 'CANCELLED'}>
+                            {job.status}
+                          </span>
+                          <span class="job-path mono" title={job.outputPath}>{job.outputPath.split(/[\\/]/).pop() || job.outputPath}</span>
+                        </div>
+                        <div class="job-progress-row">
+                          <div class="progress-bar-container">
+                            <div class="progress-bar-fill" style="width: {Math.round((job.progress || 0) * 100)}%;"></div>
+                          </div>
+                          <span class="progress-pct mono">{Math.round((job.progress || 0) * 100)}%</span>
+                          {#if job.status === 'RUNNING' || job.status === 'PENDING'}
+                            <button class="btn-cancel-job" onclick={() => handleCancelJob(job.id)} type="button">
+                              ANNULER
+                            </button>
+                          {/if}
+                        </div>
+                        {#if job.errorMessage}
+                          <div class="job-error-msg mono">{job.errorMessage}</div>
+                        {/if}
+                      </div>
+                    {/each}
                   </div>
                 </div>
               {/if}
@@ -6082,6 +6163,119 @@
     border: 1px solid #272738;
     border-radius: 4px;
     color: #10b981;
+  }
+
+  /* T39 Render Queue Styles */
+  .render-queue-card {
+    margin-top: 14px;
+    padding: 14px;
+    background: #0a0a10;
+    border: 1px solid #1f1f2e;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .render-queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .render-queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .render-queue-item {
+    padding: 10px 12px;
+    background: #11111a;
+    border: 1px solid #1a1a28;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .job-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+  }
+
+  .job-id {
+    color: #a1a1aa;
+  }
+
+  .job-path {
+    color: #e4e4e7;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 280px;
+  }
+
+  .job-status-pill {
+    font-size: 9px;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #27273a;
+    color: #cbd5e1;
+  }
+  .job-status-pill.running {
+    background: #1e3a8a;
+    color: #60a5fa;
+  }
+  .job-status-pill.completed {
+    background: #064e3b;
+    color: #34d399;
+  }
+  .job-status-pill.failed {
+    background: #7f1d1d;
+    color: #f87171;
+  }
+  .job-status-pill.cancelled {
+    background: #78350f;
+    color: #fbbf24;
+  }
+
+  .job-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .progress-pct {
+    font-size: 11px;
+    font-weight: 700;
+    color: #a1a1aa;
+    min-width: 36px;
+  }
+
+  .btn-cancel-job {
+    background: #7f1d1d33;
+    border: 1px solid #dc2626;
+    color: #fca5a5;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .btn-cancel-job:hover {
+    background: #dc2626;
+    color: #ffffff;
+  }
+
+  .job-error-msg {
+    font-size: 10px;
+    color: #f87171;
   }
 </style>
 
