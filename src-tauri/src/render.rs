@@ -468,7 +468,7 @@ pub async fn run_render_pipeline(
         "-b:v", &bitrate_str,
         "-pix_fmt", "yuv420p",
         "-c:a", audio_codec,
-        "-shortest",
+        "-af", "apad",
         &out_mp4_path.to_string_lossy(),
     ]);
     encode_cmd.stdin(std::process::Stdio::piped());
@@ -518,6 +518,7 @@ pub async fn run_render_pipeline(
         }
     }
 
+    let mut encode_error = None;
     for i in 0..total_output_frames {
         if RENDER_CANCEL.load(Ordering::SeqCst) {
             let _ = encode_child.kill();
@@ -732,8 +733,10 @@ pub async fn run_render_pipeline(
         }
 
         // 4. Pipe to encoder
-        encode_stdin.write_all(&cropped_buf)
-            .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
+        if let Err(e) = encode_stdin.write_all(&cropped_buf) {
+            encode_error = Some((i, e));
+            break;
+        }
 
         if i % 8 == 0 || i == total_output_frames - 1 {
             let pct = ((i as f64) / (total_output_frames as f64) * 100.0) as u32;
@@ -749,6 +752,27 @@ pub async fn run_render_pipeline(
 
     drop(encode_stdin);
 
+    if let Some((i, e)) = encode_error {
+        let mut stderr_buf = Vec::new();
+        if let Some(mut err_reader) = encode_child.stderr.take() {
+            let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+        }
+        let err_str = String::from_utf8_lossy(&stderr_buf);
+        let exit_status = encode_child.wait().ok();
+        let is_success = exit_status.map(|s| s.success()).unwrap_or(false);
+        if !is_success {
+            let last_err_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+            let detail = if last_err_lines.is_empty() {
+                e.to_string()
+            } else {
+                last_err_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+            };
+            let _ = std::fs::remove_file(&raw_cache_file);
+            let _ = std::fs::remove_file(&out_mp4_path);
+            return Err(format!("Encoder stopped at frame {i}: {detail}"));
+        }
+    }
+
     let _ = app.emit("render-progress", RenderProgressPayload {
         phase: "ENCODING".to_string(),
         percent: 99,
@@ -757,13 +781,24 @@ pub async fn run_render_pipeline(
         message: "Finalizing MP4 container and audio muxing...".to_string(),
     });
 
+    let mut stderr_buf = Vec::new();
+    if let Some(mut err_reader) = encode_child.stderr.take() {
+        let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+    }
     let encode_status = encode_child.wait()
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
 
     let _ = std::fs::remove_file(&raw_cache_file);
 
     if !encode_status.success() {
-        return Err("FFmpeg video encoding failed".to_string());
+        let err_str = String::from_utf8_lossy(&stderr_buf);
+        let last_err_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+        let detail = if last_err_lines.is_empty() {
+            format!("Exit code {:?}", encode_status.code())
+        } else {
+            last_err_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+        };
+        return Err(format!("FFmpeg video encoding failed: {detail}"));
     }
 
     let render_time_secs = start_time.elapsed().as_secs_f64();
@@ -956,7 +991,7 @@ pub fn render_final_jugg_internal(
         "-b:v", &bitrate_str,
         "-pix_fmt", "yuv420p",
         "-c:a", audio_codec,
-        "-shortest",
+        "-af", "apad",
         &out_mp4_path.to_string_lossy(),
     ]);
     encode_cmd.stdin(std::process::Stdio::piped());
@@ -987,6 +1022,7 @@ pub fn render_final_jugg_internal(
     let mut base_raw_buf = vec![0u8; frame_bytes];
     let mut cropped_buf = vec![0u8; crop.width as usize * crop.height as usize * 3];
 
+    let mut encode_error = None;
     for i in 0..total_output_frames {
         if RENDER_CANCEL.load(Ordering::SeqCst) {
             let _ = encode_child.kill();
@@ -1069,8 +1105,10 @@ pub fn render_final_jugg_internal(
             }
         }
 
-        encode_stdin.write_all(&cropped_buf)
-            .map_err(|e| format!("Failed to write frame {i} to encoder: {e}"))?;
+        if let Err(e) = encode_stdin.write_all(&cropped_buf) {
+            encode_error = Some((i, e));
+            break;
+        }
 
         if let Some(a) = app {
             if i % 8 == 0 || i == total_output_frames - 1 {
@@ -1088,12 +1126,44 @@ pub fn render_final_jugg_internal(
 
     drop(encode_stdin);
 
+    if let Some((i, e)) = encode_error {
+        let mut stderr_buf = Vec::new();
+        if let Some(mut err_reader) = encode_child.stderr.take() {
+            let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+        }
+        let err_str = String::from_utf8_lossy(&stderr_buf);
+        let exit_status = encode_child.wait().ok();
+        let is_success = exit_status.map(|s| s.success()).unwrap_or(false);
+        if !is_success {
+            let last_err_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+            let detail = if last_err_lines.is_empty() {
+                e.to_string()
+            } else {
+                last_err_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+            };
+            let _ = std::fs::remove_file(&raw_cache_file);
+            let _ = std::fs::remove_file(&out_mp4_path);
+            return Err(format!("Final encoder stopped at frame {i}: {detail}"));
+        }
+    }
+
+    let mut stderr_buf = Vec::new();
+    if let Some(mut err_reader) = encode_child.stderr.take() {
+        let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+    }
     let encode_status = encode_child.wait()
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
     let _ = std::fs::remove_file(&raw_cache_file);
 
     if !encode_status.success() {
-        return Err("FFmpeg final video encoding failed".to_string());
+        let err_str = String::from_utf8_lossy(&stderr_buf);
+        let last_err_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+        let detail = if last_err_lines.is_empty() {
+            format!("Exit code {:?}", encode_status.code())
+        } else {
+            last_err_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+        };
+        return Err(format!("FFmpeg final video encoding failed: {detail}"));
     }
 
     let render_time_secs = start_time.elapsed().as_secs_f64();

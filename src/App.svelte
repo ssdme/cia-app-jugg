@@ -99,21 +99,31 @@
   }
 
   // T43 Media Pool Handlers
-  function handlePoolSelectScene(path) {
-    scenePath = path;
-    probeSceneFile(path);
-    showToast(`Selected as Scene: ${getFileName(path)}`, 'info');
+  async function probePoolSource(path, kind) {
+    try {
+      const info = await invoke('probe_media', { filePath: path });
+      if (kind === 'scene') sceneInfo = info;
+      if (kind === 'drums') drumsInfo = info;
+      if (kind === 'audio') audioInfo = info;
+      showToast(`Selected as ${kind}: ${getFileName(path)}`, 'success');
+    } catch (error) {
+      showToast(`Selected ${getFileName(path)}, but media probing failed: ${error}`, 'error');
+    }
   }
 
-  function handlePoolSelectDrums(path) {
-    drumsPath = path;
-    probeDrumsFile(path);
-    showToast(`Selected as Drums: ${getFileName(path)}`, 'info');
+  async function handlePoolSelectScene(path) {
+    validateAndSetFile('scene', path);
+    if (scenePath) await probePoolSource(path, 'scene');
   }
 
-  function handlePoolSelectAudio(path) {
-    audioPath = path;
-    showToast(`Selected as Audio: ${getFileName(path)}`, 'info');
+  async function handlePoolSelectDrums(path) {
+    validateAndSetFile('drums', path);
+    if (drumsPath) await probePoolSource(path, 'drums');
+  }
+
+  async function handlePoolSelectAudio(path) {
+    validateAndSetFile('audio', path);
+    if (audioPath) await probePoolSource(path, 'audio');
   }
 
   function handlePoolDirectOneClick(path) {
@@ -144,7 +154,7 @@
   async function captureHistoryState(description = 'User Edit') {
     try {
       const snapshot = {
-        plan: planSummary || null,
+        plan: currentPlan || null,
         remapParams: remapParams || null,
         exportSettings: {
           codec: selectedCodec === 'H.265' ? 'H.265' : selectedCodec === 'VP9' ? 'VP9' : 'H.264',
@@ -329,6 +339,7 @@
   let isRenderingPreview = $state(false);
   let compPreviewProgress = $state(null);
   let compPreviewResult = $state(null);
+  let compProject = $state(null);
   let compParallaxStrength = $state(0.5);
   let compBeatPunchIntensity = $state(0.6);
   let compLightWrapIntensity = $state(0.5);
@@ -490,7 +501,7 @@
         audioPath: audioPath || null,
         characterPath: compCharacterPath || null,
         backgroundPath: compBackgroundPath || null,
-        plan: planSummary || null,
+        plan: currentPlan || null,
         compositionProject: compProject || null,
         audioMix: {
           sidechainDucking: sidechainDuckingEnabled,
@@ -523,7 +534,10 @@
         if (state.audioPath) audioPath = state.audioPath;
         if (state.characterPath) compCharacterPath = state.characterPath;
         if (state.backgroundPath) compBackgroundPath = state.backgroundPath;
-        if (state.plan) planSummary = state.plan;
+        if (state.plan) {
+          currentPlan = state.plan;
+          planSummary = buildPlanSummary(state.plan);
+        }
         if (state.compositionProject) compProject = state.compositionProject;
         if (state.audioMix) {
           sidechainDuckingEnabled = state.audioMix.sidechainDucking ?? true;
@@ -880,8 +894,36 @@
     }
   }
 
-  // Plan Summary State (T5)
+  // A full plan is the single source of truth. The summary is display-only.
+  let currentPlan = $state(null);
   let planSummary = $state(null);
+
+  function buildPlanSummary(plan, savedPath = null) {
+    const segments = plan?.segments || [];
+    const oneFramers = plan?.one_framers || plan?.oneFramers || [];
+    const transitions = plan?.transitions || [];
+    const targetDuration = plan?.target_duration ?? plan?.targetDuration ?? 0;
+    const exportConfig = plan?.export || {};
+    return {
+      segmentsCount: segments.length,
+      loops: plan?.loops || 1,
+      targetDuration,
+      savedPath: savedPath || plan?.savedPath || '',
+      style: plan?.style || selectedStyle,
+      fps: plan?.fps || fpsValue,
+      aspect: plan?.aspect ? `${plan.aspect.w}x${plan.aspect.h}` : '1080x1080',
+      motionBlur: plan?.motion_blur ?? plan?.motionBlur,
+      fullFx: plan?.full_fx ?? plan?.fullFx ?? true,
+      shakes: true,
+      zoom: true,
+      reverse: segments.some((segment) => segment.effects?.reverse),
+      oneFramers: oneFramers.length > 0,
+      transitions: transitions.length > 0 || segments.some((segment) => segment.transition),
+      ambiance: Boolean(plan?.ambiance),
+      echoTrail: echoTrailEnabled,
+      export: exportConfig,
+    };
+  }
 
   // Render Execution State (T6)
   let renderState = $state('idle'); // 'idle' | 'running' | 'done' | 'error'
@@ -972,33 +1014,8 @@
       console.log('[PLAN] Saved project.json to:', savedPath);
 
       const parsed = JSON.parse(planJson);
-      const hasReverse = parsed.segments.some((s) => s.effects && s.effects.reverse);
-      const hasOneFramers = parsed.one_framers && parsed.one_framers.length > 0;
-      const hasTransitions = (parsed.transitions && parsed.transitions.length > 0) || parsed.segments.some((s) => s.transition);
-      const hasAmbiance = !!parsed.ambiance;
-      planSummary = {
-        segmentsCount: parsed.segments.length,
-        loops: parsed.loops,
-        targetDuration: parsed.target_duration,
-        savedPath,
-        style: parsed.style,
-        fps: parsed.fps,
-        aspect: `${parsed.aspect.w}x${parsed.aspect.h}`,
-        motionBlur: parsed.motion_blur,
-        fullFx: parsed.full_fx !== false, // default true for retrocompat
-        shakes: true,
-        zoom: true,
-        reverse: hasReverse,
-        oneFramers: hasOneFramers,
-        transitions: hasTransitions,
-        ambiance: hasAmbiance,
-        echoTrail: echoTrailEnabled,
-        export: parsed.export || {
-          codec: selectedCodec,
-          bitrateMbps: bitrateValue,
-          format: selectedFormat,
-        },
-      };
+      currentPlan = parsed;
+      planSummary = buildPlanSummary(parsed, savedPath);
 
       console.log('[RENDER] Launching 3-pass render pipeline...');
       const renderRes = await invoke('run_render_pipeline', {
@@ -1086,6 +1103,8 @@
           format: selectedFormat,
         },
       });
+      currentPlan = JSON.parse(planJson);
+      planSummary = buildPlanSummary(currentPlan);
 
       console.log('[FINAL JUGG] Launching Final Assembly Render...');
       const renderRes = await invoke('render_final_jugg', {
@@ -1302,34 +1321,8 @@
         };
       }
 
-      const hasReverse = plan.segments.some((s) => s.effects && s.effects.reverse);
-      const hasOneFramers = plan.one_framers && plan.one_framers.length > 0;
-      const hasTransitions = (plan.transitions && plan.transitions.length > 0) || plan.segments.some((s) => s.transition);
-      const hasAmbiance = !!plan.ambiance;
-
-      planSummary = {
-        segmentsCount: plan.segments.length,
-        loops: plan.loops || 1,
-        targetDuration: plan.target_duration,
-        savedPath,
-        style: plan.style,
-        fps: plan.fps,
-        aspect: `${plan.aspect.w}x${plan.aspect.h}`,
-        motionBlur: plan.motion_blur,
-        fullFx: plan.full_fx !== false,
-        shakes: true,
-        zoom: true,
-        reverse: hasReverse,
-        oneFramers: hasOneFramers,
-        transitions: hasTransitions,
-        ambiance: hasAmbiance,
-        echoTrail: echoTrailEnabled,
-        export: plan.export || {
-          codec: selectedCodec,
-          bitrateMbps: bitrateValue,
-          format: selectedFormat,
-        },
-      };
+      currentPlan = plan;
+      planSummary = buildPlanSummary(plan, savedPath);
 
       // Navigate to TIME REMAP / JUGG page
       activePage = 'remap';
@@ -1391,34 +1384,8 @@
         };
       }
 
-      const hasReverse = plan.segments.some((s) => s.effects && s.effects.reverse);
-      const hasOneFramers = plan.one_framers && plan.one_framers.length > 0;
-      const hasTransitions = (plan.transitions && plan.transitions.length > 0) || plan.segments.some((s) => s.transition);
-      const hasAmbiance = !!plan.ambiance;
-
-      planSummary = {
-        segmentsCount: plan.segments.length,
-        loops: plan.loops || 1,
-        targetDuration: plan.target_duration,
-        savedPath,
-        style: plan.style,
-        fps: plan.fps,
-        aspect: `${plan.aspect.w}x${plan.aspect.h}`,
-        motionBlur: plan.motion_blur,
-        fullFx: plan.full_fx !== false,
-        shakes: true,
-        zoom: true,
-        reverse: hasReverse,
-        oneFramers: hasOneFramers,
-        transitions: hasTransitions,
-        ambiance: hasAmbiance,
-        echoTrail: echoTrailEnabled,
-        export: plan.export || {
-          codec: selectedCodec,
-          bitrateMbps: bitrateValue,
-          format: selectedFormat,
-        },
-      };
+      currentPlan = plan;
+      planSummary = buildPlanSummary(plan, savedPath);
 
       // Navigate to TIME REMAP / JUGG page
       activePage = 'remap';
@@ -1468,6 +1435,7 @@
         impact_blur_strength: compImpactBlurStrength,
       };
       const savedPath = await invoke('save_composition_project', { project, targetPath: null });
+      compProject = project;
       showToast(`Composition saved to: ${savedPath}`, 'success');
     } catch (err) {
       console.error('Failed to save composition:', err);
@@ -1800,8 +1768,8 @@
   <!-- Custom Studio Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand">
-      <span class="brand-dot"></span>
-      <span class="titlebar-text">CIA RENDER</span>
+      <img src={appLogo} alt="CIA Jugg" class="titlebar-logo" />
+      <span class="titlebar-text">CIA JUGG</span>
       <span class="version-tag">v{appVersion}</span>
     </div>
     <div class="titlebar-controls">
@@ -4014,12 +3982,12 @@
     align-items: center;
     gap: 8px;
   }
-  .brand-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #ffffff;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+  .titlebar-logo {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    object-fit: contain;
+    display: block;
   }
   .titlebar-text {
     font-size: 11.5px;
@@ -4129,10 +4097,11 @@
     background: #16161a;
   }
   .tab-pill-group button.active {
-    color: #000000;
-    background: #ffffff;
+    color: #ffffff;
+    background: transparent;
     font-weight: 700;
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 6px;
   }
 
   /* Main Content Area */
@@ -4338,14 +4307,13 @@
     transition: all 0.15s ease;
   }
   .btn-continue.btn-one-click {
-    background: #ffffff;
-    border: 1px solid #ffffff;
-    color: #000000;
-    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    color: #ffffff;
   }
   .btn-continue.btn-one-click:hover:not(:disabled) {
-    background: #e4e4e7;
-    box-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
+    background: #16161a;
+    border-color: #ffffff;
   }
   .btn-continue.btn-manual-continue {
     background: #0d0d10;
@@ -4628,10 +4596,11 @@
   }
 
   .btn-option.active {
-    background: #ffffff;
-    color: #000000;
+    background: transparent;
+    color: #ffffff;
     font-weight: 700;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 4px;
   }
 
   .custom-ar-inputs-inline {
@@ -4857,9 +4826,9 @@
   .btn-open-folder {
     flex: 1;
     padding: 6px 12px;
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
     border-radius: 4px;
     font-size: 9.5px;
     font-weight: 800;
@@ -4869,7 +4838,8 @@
   }
 
   .btn-open-folder:hover {
-    background: #e4e4e7;
+    background: #16161a;
+    border-color: #ffffff;
   }
 
   /* Render Error Card */
@@ -5009,9 +4979,9 @@
   }
 
   .toggle-btn.active {
-    background: #ffffff;
-    color: #000000;
-    border-color: #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
   }
 
   .toggle-btn:hover:not(.active) {
@@ -5051,9 +5021,9 @@
 
   .btn-run-process {
     padding: 9px 24px;
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
     border-radius: 4px;
     font-size: 11px;
     font-weight: 800;
@@ -5063,9 +5033,8 @@
   }
 
   .btn-run-process:hover {
-    background: #000000;
-    color: #ffffff;
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
+    background: #16161a;
+    border-color: #ffffff;
   }
 
   /* About */
@@ -5345,9 +5314,9 @@
   }
 
   .btn-primary-modal {
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
     border-radius: 6px;
     padding: 8px 18px;
     font-size: 11px;
@@ -5358,7 +5327,7 @@
   }
 
   .btn-primary-modal:hover {
-    background: #000000;
+    background: #16161a;
     color: #ffffff;
     border-color: #ffffff;
   }
@@ -6266,9 +6235,9 @@
   }
 
   .btn-apply-project {
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
     padding: 8px 16px;
     font-size: 10.5px;
     font-weight: 700;
@@ -6278,8 +6247,8 @@
     transition: all 120ms ease;
   }
   .btn-apply-project:hover {
-    background: #e4e4e7;
-    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
+    background: #16161a;
+    border-color: #ffffff;
     transform: translateY(-1px);
   }
   .btn-apply-project:active {
@@ -6463,9 +6432,9 @@
     border: 1px solid #27272a;
   }
   .layer-status-pill.active {
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
   }
 
   /* ─── LAYERED COMPOSITOR OPS & CONTROLS ─────────────────────────────────── */
@@ -6930,9 +6899,9 @@
     border: 1px solid #27272a;
   }
   .job-status-pill.running {
-    background: #ffffff;
-    color: #000000;
-    border-color: #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.6);
   }
   .job-status-pill.completed {
     background: #121215;
@@ -7055,13 +7024,13 @@
     padding: 12px;
     font-size: 12px;
     font-weight: 700;
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6);
   }
   .btn-start-batch:hover:not(:disabled) {
-    background: #e4e4e7;
-    box-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
+    background: #16161a;
+    border-color: #ffffff;
   }
 
   .batch-status-card {

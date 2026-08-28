@@ -378,13 +378,13 @@
     color: #ffffff;
   }
   .btn-assign.btn-jugg-quick {
-    background: #ffffff;
-    border-color: #ffffff;
-    color: #000000;
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.6);
+    color: #ffffff;
     font-weight: 700;
   }
   .btn-assign.btn-jugg-quick:hover {
-    background: #e4e4e7;
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.25);
+    background: #16161a;
+    border-color: #ffffff;
   }
 </style>
