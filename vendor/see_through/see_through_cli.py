@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 See-Through CLI: Precision Semantic Character Layer Decomposition
-Decomposes transparent anime character PNGs into semantic depth layers (hair, body, face, eyes, foreground hand/accessories)
-with Navier-Stokes inpainting on occluded background layers for clean 2.5D parallax rendering without transparent holes.
+Decomposes transparent anime character PNGs (portraits and full-body figures) into semantic depth layers
+(Hair with Navier-Stokes infilled backing, Body/Clothes, Face/Features, Foreground Hand/Accessories).
 """
 
 import sys
@@ -57,68 +57,79 @@ def decompose_character(input_path: str, output_dir: str):
         kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         kernel15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
-        # ─── 1. HAIR DETECTION & INPAINTING ──────────────────────────────────
-        is_green_hair = (
-            ((h_chan >= 24) & (h_chan <= 95) & (s_chan >= 18)) |
-            ((g > r * 0.98) & (g > b * 0.98) & ((g - b) > 4)) |
-            ((x_coords < 365) & (y_coords < 580) & ~((v_chan > 175) & (s_chan < 25)))
-        ) & opaque_mask
+        # ─── 1. GREEN / ANIME HAIR DETECTION ─────────────────────────────────
+        is_green_hue = (h_chan >= 22) & (h_chan <= 95) & (s_chan >= 16)
+        is_green_dominant = (g > r * 0.96) & (g > b * 0.96) & ((g - b) > 3)
+        is_left_strands = (x_coords < w * 0.45) & (y_coords < h * 0.85) & ~((v_chan > 175) & (s_chan < 25))
+        is_hair_raw = opaque_mask & (is_green_hue | is_green_dominant | is_left_strands)
 
-        hair_closed = cv2.morphologyEx(is_green_hair.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel3)
-        is_hair_total = (hair_closed > 0) & opaque_mask
+        hair_closed = cv2.morphologyEx(is_hair_raw.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel3)
+        is_hair = (hair_closed > 0) & opaque_mask
 
-        # ─── 2. FOREGROUND HAND / ACCESSORY DETECTION ────────────────────────
-        is_hand_box = (y_coords >= 120) & (y_coords <= 360) & (x_coords >= 360) & (x_coords <= 520)
-        is_red_cuff = is_hand_box & opaque_mask & (r > 120) & (g < 80) & (b < 80) & ((r - g) > 40)
-        is_purple_sleeve = is_hand_box & opaque_mask & (v_chan < 90) & (r > b * 0.9) & (r > g) & (y_coords >= 180) & (y_coords <= 320) & (x_coords >= 360) & (x_coords <= 460)
-        is_glove_white = is_hand_box & opaque_mask & ~is_hair_total & (v_chan > 155) & (s_chan < 50) & (y_coords <= 280)
+        # ─── 2. SKIN TONES & HANDS ───────────────────────────────────────────
+        is_skin_tone = opaque_mask & ~is_hair & (
+            (r > 145) & (g > 105) & (b > 75) &
+            (r > g) & (g >= b) & ((r - b) > 10) &
+            (h_chan <= 28) & (s_chan >= 10) & (s_chan <= 160)
+        )
 
-        hand_seed = (is_red_cuff | is_purple_sleeve | is_glove_white).astype(np.uint8) * 255
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(hand_seed, connectivity=8)
-        glove_mask = np.zeros((h, w), dtype=bool)
-        for lbl in range(1, num_labels):
-            cx, cy = centroids[lbl]
-            area = stats[lbl, cv2.CC_STAT_AREA]
-            if 360 <= cx <= 520 and 120 <= cy <= 340 and area > 120:
-                glove_mask |= (labels == lbl)
+        num_skin_labels, skin_labels, skin_stats, skin_centroids = cv2.connectedComponentsWithStats(
+            is_skin_tone.astype(np.uint8) * 255, connectivity=8
+        )
 
-        glove_dilated = cv2.dilate(glove_mask.astype(np.uint8) * 255, kernel3) > 0
-        is_foreground_acc = glove_dilated & opaque_mask & ~is_hair_total
+        is_hand = np.zeros((h, w), dtype=bool)
+        is_face_skin = np.zeros((h, w), dtype=bool)
 
-        # ─── 3. EYES & FACE SKIN ─────────────────────────────────────────────
-        is_head_region = (y_coords >= 100) & (y_coords <= 320) & (x_coords >= 400) & (x_coords <= 580)
-        is_face_head = is_head_region & opaque_mask & ~is_hair_total & ~is_foreground_acc
+        head_cy_threshold = h * 0.55
+        for s_idx in range(1, num_skin_labels):
+            comp = (skin_labels == s_idx)
+            cx, cy = skin_centroids[s_idx]
+            area = skin_stats[s_idx, cv2.CC_STAT_AREA]
+            if area < 25:
+                continue
+            if cy < head_cy_threshold and cx > w * 0.45:
+                is_face_skin |= comp
+            elif cy >= head_cy_threshold * 0.7:
+                is_hand |= comp
+            else:
+                is_face_skin |= comp
 
-        is_eye_gold = is_head_region & opaque_mask & ~is_foreground_acc & (h_chan >= 14) & (h_chan <= 48) & (s_chan >= 85) & (v_chan >= 100) & (x_coords >= 470) & (y_coords <= 215)
-        is_eye_dark = is_head_region & opaque_mask & ~is_foreground_acc & (v_chan < 60) & (x_coords >= 470) & (y_coords >= 150) & (y_coords <= 215)
-        is_eyes = (is_eye_gold | is_eye_dark) & is_head_region
-        is_face = is_face_head & ~is_eyes
+        # ─── 3. EYES & FACE FEATURES ─────────────────────────────────────────
+        is_eye_box = is_face_skin | (opaque_mask & ~is_hair & (y_coords < head_cy_threshold) & (x_coords > w * 0.40))
+        is_eye_gold = is_eye_box & (h_chan >= 12) & (h_chan <= 48) & (s_chan >= 60) & (v_chan >= 80)
+        is_eye_dark = is_eye_box & (v_chan < 65)
+        is_eyes = (is_eye_gold | is_eye_dark) & ~is_hair & ~is_hand
+        is_face = (is_face_skin | is_eyes) & ~is_hair & ~is_hand
 
-        # ─── 4. BODY & PLUGSUIT ──────────────────────────────────────────────
-        assigned_head_and_acc = is_hair_total | is_foreground_acc | is_face_head
-        is_body = opaque_mask & ~assigned_head_and_acc
+        # ─── 4. FOREGROUND ACCESSORIES / GLOVE / HAND ────────────────────────
+        # Red cuffs / wrist accents if present
+        is_red_acc = opaque_mask & (r > 120) & (g < 80) & (b < 80) & ((r - g) > 40)
+        is_acc = (is_hand | is_red_acc) & ~is_hair
 
-        # ─── 5. INPAINT HAIR BACK FOR 2.5D MOTION ────────────────────────────
+        # ─── 5. BODY & CLOTHES ───────────────────────────────────────────────
+        assigned = is_hair | is_face | is_eyes | is_acc
+        is_body = opaque_mask & ~assigned
+
+        # ─── 6. INPAINT HAIR BACKING FOR SEAMLESS 2.5D MOTION ────────────────
         hair_bgr = bgr.copy()
-        hair_inpaint_mask = ((is_face_head | is_foreground_acc) & (y_coords < 340)).astype(np.uint8) * 255
-        hair_inpaint_mask = cv2.dilate(hair_inpaint_mask, kernel15)
-        inpainted_hair_bgr = cv2.inpaint(hair_bgr, hair_inpaint_mask, 7, cv2.INPAINT_NS)
+        inpaint_mask = ((is_face | is_acc | is_body) & (x_coords > w * 0.35)).astype(np.uint8) * 255
+        inpaint_mask = cv2.dilate(inpaint_mask, kernel15)
+        inpainted_hair_bgr = cv2.inpaint(hair_bgr, inpaint_mask, 9, cv2.INPAINT_NS)
         inpainted_hair_rgb = cv2.cvtColor(inpainted_hair_bgr, cv2.COLOR_BGR2RGB)
 
-        hair_full_mask = (is_hair_total | (is_head_region & (is_face_head | is_foreground_acc))) & opaque_mask
-        hair_infilled_arr = np.zeros((h, w, 4), dtype=np.uint8)
-        hair_infilled_arr[is_hair_total] = img_arr[is_hair_total]
-        inpaint_area = hair_full_mask & ~is_hair_total
-        hair_infilled_arr[inpaint_area, :3] = inpainted_hair_rgb[inpaint_area]
-        hair_infilled_arr[inpaint_area, 3] = alpha[inpaint_area]
+        hair_out = np.zeros((h, w, 4), dtype=np.uint8)
+        hair_out[is_hair] = img_arr[is_hair]
+        inpaint_area = (inpaint_mask > 0) & opaque_mask & ~is_hair
+        hair_out[inpaint_area, :3] = inpainted_hair_rgb[inpaint_area]
+        hair_out[inpaint_area, 3] = alpha[inpaint_area]
 
         layer_data = {
-            "hair_back": hair_infilled_arr,
+            "hair_back": hair_out,
             "body": np.where(is_body[:, :, None], img_arr, 0).astype(np.uint8),
             "face": np.where(is_face[:, :, None], img_arr, 0).astype(np.uint8),
             "eyes": np.where(is_eyes[:, :, None], img_arr, 0).astype(np.uint8),
             "hair_front": np.zeros((h, w, 4), dtype=np.uint8),
-            "accessories": np.where(is_foreground_acc[:, :, None], img_arr, 0).astype(np.uint8),
+            "accessories": np.where(is_acc[:, :, None], img_arr, 0).astype(np.uint8),
         }
     else:
         is_skin = (r > 140) & (g > 90) & (b > 70) & (r > g) & (g >= b)
