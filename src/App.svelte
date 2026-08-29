@@ -349,9 +349,12 @@
     {
       id: 'drop_shadow',
       name: 'Drop Shadow',
+      opType: 'drop_shadow',
       op_type: 'drop_shadow',
+      blendMode: 'Multiply',
       blend_mode: 'Multiply',
       opacity: 0.60,
+      maskByAlpha: false,
       mask_by_alpha: false,
       enabled: true,
       params: { offsetX: 12.0, offsetY: 16.0, blurRadius: 14.0 }
@@ -359,9 +362,12 @@
     {
       id: 'light_wrap',
       name: 'Light Wrap',
+      opType: 'light_wrap',
       op_type: 'light_wrap',
+      blendMode: 'Screen',
       blend_mode: 'Screen',
       opacity: 0.55,
+      maskByAlpha: true,
       mask_by_alpha: true,
       enabled: true,
       params: { blurRadius: 20.0, edgeWidth: 10.0 }
@@ -369,9 +375,12 @@
     {
       id: 'tint_raccord',
       name: 'Tint de Raccord',
+      opType: 'tint',
       op_type: 'tint',
+      blendMode: 'Multiply',
       blend_mode: 'Multiply',
       opacity: 0.07,
+      maskByAlpha: true,
       mask_by_alpha: true,
       enabled: true,
       params: {}
@@ -379,9 +388,12 @@
     {
       id: 'rim_light',
       name: 'Rim Light',
+      opType: 'rim_light',
       op_type: 'rim_light',
+      blendMode: 'Add',
       blend_mode: 'Add',
       opacity: 0.65,
+      maskByAlpha: true,
       mask_by_alpha: true,
       enabled: true,
       params: { color: [220.0, 240.0, 255.0] }

@@ -85,13 +85,18 @@ pub struct CompProject {
     pub impact_blur_strength: Option<f32>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BlendMode {
+    #[serde(alias = "normal", alias = "NORMAL")]
     Normal,
+    #[serde(alias = "multiply", alias = "MULTIPLY")]
     Multiply,
+    #[serde(alias = "add", alias = "ADD")]
     Add,
+    #[serde(alias = "screen", alias = "SCREEN")]
     Screen,
+    #[serde(alias = "lighten", alias = "LIGHTEN")]
     Lighten,
 }
 
@@ -100,10 +105,14 @@ pub enum BlendMode {
 pub struct CompositionOp {
     pub id: String,
     pub name: String,
+    #[serde(alias = "op_type")]
     pub op_type: String, // "drop_shadow" | "light_wrap" | "tint" | "rim_light" | "gradient" | "blur"
+    #[serde(alias = "blend_mode")]
     pub blend_mode: BlendMode,
     pub opacity: f32, // 0.0 .. 1.0
+    #[serde(alias = "mask_by_alpha", default)]
     pub mask_by_alpha: bool,
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub params: serde_json::Value,
