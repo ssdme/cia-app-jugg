@@ -3958,6 +3958,7 @@
     user-select: none;
   }
 
+
   .app-root {
     display: flex;
     flex-direction: column;
@@ -4361,13 +4362,10 @@
   /* Compact Settings Page (T4.5) */
   .settings-page {
     width: min(100%, 880px);
-    margin: auto;
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    justify-content: center;
-    overflow-y: auto;
-    padding: 0;
+    padding: 0 0 24px 0;
   }
 
   .settings-container {
@@ -5856,13 +5854,12 @@
 
   /* ─── DUMPER PAGE ───────────────────────────────────────────────────────── */
   .dumper-page {
-    width: min(100%, 780px);
-    margin: auto;
+    width: min(100%, 860px);
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    height: 100%;
-    justify-content: center;
+    padding-bottom: 24px;
   }
 
   .dumper-container {
@@ -6257,13 +6254,12 @@
 
   /* ─── COMPOSITION PAGE STYLES ───────────────────────────────────────────── */
   .composition-page {
-    width: min(100%, 780px);
-    margin: auto;
+    width: min(100%, 860px);
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    height: 100%;
-    justify-content: center;
+    padding-bottom: 24px;
   }
 
   .composition-container {
