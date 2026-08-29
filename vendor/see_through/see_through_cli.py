@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 See-Through CLI: Precision Semantic Character Layer Decomposition
-Decomposes transparent anime character PNGs (portraits and full-body figures) into semantic depth layers
-(Hair with Navier-Stokes infilled backing, Body/Clothes, Face/Features, Foreground Hand/Accessories).
+Decomposes transparent anime character PNGs into semantic depth layers
+(Hair with Navier-Stokes infilled backing, Body/Clothes, Face/Head, Eyes, Foreground Hand/Accessories).
 """
 
 import sys
@@ -99,20 +99,19 @@ def decompose_character(input_path: str, output_dir: str):
         is_eye_gold = is_eye_box & (h_chan >= 12) & (h_chan <= 48) & (s_chan >= 60) & (v_chan >= 80)
         is_eye_dark = is_eye_box & (v_chan < 65)
         is_eyes = (is_eye_gold | is_eye_dark) & ~is_hair & ~is_hand
-        is_face = (is_face_skin | is_eyes) & ~is_hair & ~is_hand
+        is_face_base = is_face_skin & ~is_eyes & ~is_hair & ~is_hand
 
         # ─── 4. FOREGROUND ACCESSORIES / GLOVE / HAND ────────────────────────
-        # Red cuffs / wrist accents if present
         is_red_acc = opaque_mask & (r > 120) & (g < 80) & (b < 80) & ((r - g) > 40)
         is_acc = (is_hand | is_red_acc) & ~is_hair
 
         # ─── 5. BODY & CLOTHES ───────────────────────────────────────────────
-        assigned = is_hair | is_face | is_eyes | is_acc
+        assigned = is_hair | is_face_base | is_eyes | is_acc
         is_body = opaque_mask & ~assigned
 
         # ─── 6. INPAINT HAIR BACKING FOR SEAMLESS 2.5D MOTION ────────────────
         hair_bgr = bgr.copy()
-        inpaint_mask = ((is_face | is_acc | is_body) & (x_coords > w * 0.35)).astype(np.uint8) * 255
+        inpaint_mask = ((is_face_base | is_eyes | is_acc | is_body) & (x_coords > w * 0.35)).astype(np.uint8) * 255
         inpaint_mask = cv2.dilate(inpaint_mask, kernel15)
         inpainted_hair_bgr = cv2.inpaint(hair_bgr, inpaint_mask, 9, cv2.INPAINT_NS)
         inpainted_hair_rgb = cv2.cvtColor(inpainted_hair_bgr, cv2.COLOR_BGR2RGB)
@@ -126,7 +125,7 @@ def decompose_character(input_path: str, output_dir: str):
         layer_data = {
             "hair_back": hair_out,
             "body": np.where(is_body[:, :, None], img_arr, 0).astype(np.uint8),
-            "face": np.where(is_face[:, :, None], img_arr, 0).astype(np.uint8),
+            "face": np.where(is_face_base[:, :, None], img_arr, 0).astype(np.uint8),
             "eyes": np.where(is_eyes[:, :, None], img_arr, 0).astype(np.uint8),
             "hair_front": np.zeros((h, w, 4), dtype=np.uint8),
             "accessories": np.where(is_acc[:, :, None], img_arr, 0).astype(np.uint8),
