@@ -1622,6 +1622,7 @@ pub fn render_composition_internal(
             "-i", background_path,
             "-map", "0:v:0",
             "-map", "1:a:0?",
+            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-pix_fmt", "yuv420p",
@@ -1631,7 +1632,7 @@ pub fn render_composition_internal(
         ]);
         encode_cmd.stdin(std::process::Stdio::piped());
         encode_cmd.stdout(std::process::Stdio::null());
-        encode_cmd.stderr(std::process::Stdio::null());
+        encode_cmd.stderr(std::process::Stdio::piped());
         #[cfg(target_os = "windows")]
         encode_cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -1672,13 +1673,24 @@ pub fn render_composition_internal(
         }
 
         drop(encode_stdin);
+        let mut stderr_buf = Vec::new();
+        if let Some(mut err_reader) = encode_child.stderr.take() {
+            let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+        }
         let encode_status = encode_child.wait()
             .map_err(|e| format!("Encoder wait failed: {e}"))?;
 
         let _ = std::fs::remove_file(&cache_file);
 
         if !encode_status.success() {
-            return Err("FFmpeg video encoding failed".to_string());
+            let err_str = String::from_utf8_lossy(&stderr_buf);
+            let last_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+            let detail = if last_lines.is_empty() {
+                format!("Exit code {:?}", encode_status.code())
+            } else {
+                last_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+            };
+            return Err(format!("FFmpeg video encoding failed: {detail}"));
         }
 
         if let Some(app_handle) = app {
@@ -2465,7 +2477,6 @@ pub fn render_mesh_preview_internal(
     let out_mp4 = base_out.join(format!("preview_mesh_{timestamp}.mp4"));
 
     // 3. Launch FFmpeg encoder
-    let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
     let mut args = vec![
         "-y".to_string(),
         "-f".to_string(), "rawvideo".to_string(),
@@ -2477,22 +2488,29 @@ pub fn render_mesh_preview_internal(
 
     if let Some(aud) = audio_path {
         if Path::new(aud).exists() {
-            args.extend(["-ss".to_string(), "0".to_string(), "-t".to_string(), format!("{duration}"), "-i".to_string(), aud.to_string(), "-c:a".to_string(), "aac".to_string()]);
+            args.extend([
+                "-ss".to_string(), "0".to_string(),
+                "-t".to_string(), format!("{duration}"),
+                "-i".to_string(), aud.to_string(),
+                "-c:a".to_string(), "aac".to_string(),
+                "-af".to_string(), "apad".to_string(),
+            ]);
         }
     }
 
     args.extend([
+        "-vf".to_string(), "pad=ceil(iw/2)*2:ceil(ih/2)*2".to_string(),
         "-c:v".to_string(), "libx264".to_string(),
         "-preset".to_string(), "veryfast".to_string(),
         "-pix_fmt".to_string(), "yuv420p".to_string(),
-        "-shortest".to_string(),
+        "-t".to_string(), format!("{duration}"),
         out_mp4.to_string_lossy().to_string(),
     ]);
 
     encode_cmd.args(&args);
     encode_cmd.stdin(std::process::Stdio::piped());
     encode_cmd.stdout(std::process::Stdio::null());
-    encode_cmd.stderr(std::process::Stdio::null());
+    encode_cmd.stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     encode_cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -2612,11 +2630,22 @@ pub fn render_mesh_preview_internal(
     }
 
     drop(encode_stdin);
+    let mut stderr_buf = Vec::new();
+    if let Some(mut err_reader) = encode_child.stderr.take() {
+        let _ = std::io::Read::read_to_end(&mut err_reader, &mut stderr_buf);
+    }
     let status = encode_child.wait()
         .map_err(|e| format!("FFmpeg encoder failed: {e}"))?;
 
     if !status.success() {
-        return Err("FFmpeg preview encoding failed".to_string());
+        let err_str = String::from_utf8_lossy(&stderr_buf);
+        let last_lines: Vec<&str> = err_str.lines().rev().take(6).collect();
+        let detail = if last_lines.is_empty() {
+            format!("Exit code {:?}", status.code())
+        } else {
+            last_lines.into_iter().rev().collect::<Vec<&str>>().join(" | ")
+        };
+        return Err(format!("FFmpeg preview encoding failed: {detail}"));
     }
 
     if let Some(app_handle) = app {
