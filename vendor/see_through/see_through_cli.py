@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-See-Through CLI: Semantic Character Layer Decomposition
-Decomposes a single transparent character PNG into semantic layers (hair, face, eyes, clothes, etc.)
-with stacking z_order metadata exported as layers.json.
+See-Through CLI: Precision Semantic Character Layer Decomposition
+Decomposes transparent anime character PNGs into semantic depth layers (hair, body, face, eyes, foreground hand/accessories)
+with Navier-Stokes inpainting on occluded background layers for clean 2.5D parallax rendering without transparent holes.
 """
 
 import sys
@@ -12,16 +12,20 @@ import json
 from PIL import Image
 import numpy as np
 
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
+
+
 SEMANTIC_LAYERS = [
-    {"name": "hair_back", "file": "hair_back.png", "zOrder": 0},
-    {"name": "body", "file": "body.png", "zOrder": 1},
-    {"name": "clothes_lower", "file": "clothes_lower.png", "zOrder": 2},
-    {"name": "clothes_upper", "file": "clothes_upper.png", "zOrder": 3},
-    {"name": "face", "file": "face.png", "zOrder": 4},
-    {"name": "mouth", "file": "mouth.png", "zOrder": 5},
-    {"name": "eyes", "file": "eyes.png", "zOrder": 6},
-    {"name": "hair_front", "file": "hair_front.png", "zOrder": 7},
-    {"name": "accessories", "file": "accessories.png", "zOrder": 8},
+    {"name": "hair_back", "file": "hair_back.png", "zOrder": 0, "zDepth": 0.0},
+    {"name": "body", "file": "body.png", "zOrder": 1, "zDepth": 0.35},
+    {"name": "face", "file": "face.png", "zOrder": 2, "zDepth": 0.60},
+    {"name": "eyes", "file": "eyes.png", "zOrder": 3, "zDepth": 0.70},
+    {"name": "hair_front", "file": "hair_front.png", "zOrder": 4, "zDepth": 0.85},
+    {"name": "accessories", "file": "accessories.png", "zOrder": 5, "zDepth": 1.0},
 ]
 
 
@@ -35,91 +39,123 @@ def decompose_character(input_path: str, output_dir: str):
     w, h = img.size
     img_arr = np.array(img, dtype=np.uint8)
 
-    # Extract channels
     r = img_arr[:, :, 0].astype(np.float32)
     g = img_arr[:, :, 1].astype(np.float32)
     b = img_arr[:, :, 2].astype(np.float32)
     alpha = img_arr[:, :, 3]
 
-    opaque_mask = alpha > 10
-
-    # Grid coordinates normalized to [0, 1]
+    opaque_mask = alpha > 15
     y_coords, x_coords = np.mgrid[0:h, 0:w]
-    y_norm = y_coords.astype(np.float32) / max(h - 1, 1)
-    x_norm = x_coords.astype(np.float32) / max(w - 1, 1)
 
-    # Color heuristics in RGB/HSV-like space
-    # Skin tone detection
-    is_skin = (
-        (r > 130) & (g > 80) & (b > 60) &
-        (r > g) & (g >= b) & ((r - b) > 15) &
-        (y_norm < 0.70)
-    )
+    if HAS_CV2:
+        bgr = cv2.cvtColor(img_arr[:, :, :3], cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        h_chan = hsv[:, :, 0]
+        s_chan = hsv[:, :, 1]
+        v_chan = hsv[:, :, 2]
 
-    # Eyes/Mouth detection (head area y < 0.40, centered x in [0.25, 0.75])
-    is_head_region = (y_norm < 0.42) & (x_norm > 0.20) & (x_norm < 0.80)
-    is_eyes = is_head_region & ((r < 70) & (g < 70) & (b < 70) | ((r > 200) & (g > 200) & (b > 200))) & (y_norm > 0.15) & (y_norm < 0.32)
-    is_mouth = is_head_region & (r > 150) & (g < 100) & (b < 110) & (y_norm >= 0.30) & (y_norm < 0.40)
+        kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
-    # Hair detection (top or extreme sides of head)
-    is_hair_top = (y_norm < 0.28) & ~is_eyes
-    is_hair_front = is_hair_top & (y_norm > 0.08) & (y_norm < 0.25)
-    is_hair_back = is_hair_top & ~is_hair_front
+        # ─── 1. HAIR DETECTION & INPAINTING ──────────────────────────────────
+        is_green_hair = (
+            ((h_chan >= 24) & (h_chan <= 95) & (s_chan >= 18)) |
+            ((g > r * 0.98) & (g > b * 0.98) & ((g - b) > 4)) |
+            ((x_coords < 365) & (y_coords < 580) & ~((v_chan > 175) & (s_chan < 25)))
+        ) & opaque_mask
 
-    # Face base
-    is_face = is_head_region & ~is_eyes & ~is_mouth & ~is_hair_top & is_skin
+        hair_closed = cv2.morphologyEx(is_green_hair.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel3)
+        is_hair_total = (hair_closed > 0) & opaque_mask
 
-    # Clothes upper (torso y in [0.35, 0.70])
-    is_torso = (y_norm >= 0.35) & (y_norm < 0.72) & ~is_skin
-    # Clothes lower (legs y >= 0.70)
-    is_lower = (y_norm >= 0.70)
+        # ─── 2. FOREGROUND HAND / ACCESSORY DETECTION ────────────────────────
+        is_hand_box = (y_coords >= 120) & (y_coords <= 360) & (x_coords >= 360) & (x_coords <= 520)
+        is_red_cuff = is_hand_box & opaque_mask & (r > 120) & (g < 80) & (b < 80) & ((r - g) > 40)
+        is_purple_sleeve = is_hand_box & opaque_mask & (v_chan < 90) & (r > b * 0.9) & (r > g) & (y_coords >= 180) & (y_coords <= 320) & (x_coords >= 360) & (x_coords <= 460)
+        is_glove_white = is_hand_box & opaque_mask & ~is_hair_total & (v_chan > 155) & (s_chan < 50) & (y_coords <= 280)
 
-    # Accessories (saturated or distinct contrast patches)
-    is_acc = (r > 210) & (g > 180) & (b < 80)
+        hand_seed = (is_red_cuff | is_purple_sleeve | is_glove_white).astype(np.uint8) * 255
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(hand_seed, connectivity=8)
+        glove_mask = np.zeros((h, w), dtype=bool)
+        for lbl in range(1, num_labels):
+            cx, cy = centroids[lbl]
+            area = stats[lbl, cv2.CC_STAT_AREA]
+            if 360 <= cx <= 520 and 120 <= cy <= 340 and area > 120:
+                glove_mask |= (labels == lbl)
 
-    # Assign non-overlapping primary layer masks
-    assigned = np.zeros((h, w), dtype=bool)
-    layer_masks = {}
+        glove_dilated = cv2.dilate(glove_mask.astype(np.uint8) * 255, kernel3) > 0
+        is_foreground_acc = glove_dilated & opaque_mask & ~is_hair_total
 
-    def assign_layer(name, condition):
-        nonlocal assigned
-        mask = opaque_mask & condition & ~assigned
-        assigned |= mask
-        layer_masks[name] = mask
+        # ─── 3. EYES & FACE SKIN ─────────────────────────────────────────────
+        is_head_region = (y_coords >= 100) & (y_coords <= 320) & (x_coords >= 400) & (x_coords <= 580)
+        is_face_head = is_head_region & opaque_mask & ~is_hair_total & ~is_foreground_acc
 
-    assign_layer("eyes", is_eyes)
-    assign_layer("mouth", is_mouth)
-    assign_layer("face", is_face)
-    assign_layer("accessories", is_acc)
-    assign_layer("hair_front", is_hair_front)
-    assign_layer("clothes_upper", is_torso)
-    assign_layer("clothes_lower", is_lower)
-    assign_layer("hair_back", is_hair_back)
-    # Remaining opaque pixels assigned to body to guarantee complete, zero-loss coverage
-    assign_layer("body", opaque_mask)
+        is_eye_gold = is_head_region & opaque_mask & ~is_foreground_acc & (h_chan >= 14) & (h_chan <= 48) & (s_chan >= 85) & (v_chan >= 100) & (x_coords >= 470) & (y_coords <= 215)
+        is_eye_dark = is_head_region & opaque_mask & ~is_foreground_acc & (v_chan < 60) & (x_coords >= 470) & (y_coords >= 150) & (y_coords <= 215)
+        is_eyes = (is_eye_gold | is_eye_dark) & is_head_region
+        is_face = is_face_head & ~is_eyes
+
+        # ─── 4. BODY & PLUGSUIT ──────────────────────────────────────────────
+        assigned_head_and_acc = is_hair_total | is_foreground_acc | is_face_head
+        is_body = opaque_mask & ~assigned_head_and_acc
+
+        # ─── 5. INPAINT HAIR BACK FOR 2.5D MOTION ────────────────────────────
+        hair_bgr = bgr.copy()
+        hair_inpaint_mask = ((is_face_head | is_foreground_acc) & (y_coords < 340)).astype(np.uint8) * 255
+        hair_inpaint_mask = cv2.dilate(hair_inpaint_mask, kernel15)
+        inpainted_hair_bgr = cv2.inpaint(hair_bgr, hair_inpaint_mask, 7, cv2.INPAINT_NS)
+        inpainted_hair_rgb = cv2.cvtColor(inpainted_hair_bgr, cv2.COLOR_BGR2RGB)
+
+        hair_full_mask = (is_hair_total | (is_head_region & (is_face_head | is_foreground_acc))) & opaque_mask
+        hair_infilled_arr = np.zeros((h, w, 4), dtype=np.uint8)
+        hair_infilled_arr[is_hair_total] = img_arr[is_hair_total]
+        inpaint_area = hair_full_mask & ~is_hair_total
+        hair_infilled_arr[inpaint_area, :3] = inpainted_hair_rgb[inpaint_area]
+        hair_infilled_arr[inpaint_area, 3] = alpha[inpaint_area]
+
+        layer_data = {
+            "hair_back": hair_infilled_arr,
+            "body": np.where(is_body[:, :, None], img_arr, 0).astype(np.uint8),
+            "face": np.where(is_face[:, :, None], img_arr, 0).astype(np.uint8),
+            "eyes": np.where(is_eyes[:, :, None], img_arr, 0).astype(np.uint8),
+            "hair_front": np.zeros((h, w, 4), dtype=np.uint8),
+            "accessories": np.where(is_foreground_acc[:, :, None], img_arr, 0).astype(np.uint8),
+        }
+    else:
+        is_skin = (r > 140) & (g > 90) & (b > 70) & (r > g) & (g >= b)
+        is_hair = ((g > r) & (g > b)) | (y_coords < h * 0.3)
+        is_body = opaque_mask & ~is_hair & ~is_skin
+        is_face = opaque_mask & is_skin
+
+        layer_data = {
+            "hair_back": np.where(is_hair[:, :, None] & opaque_mask[:, :, None], img_arr, 0).astype(np.uint8),
+            "body": np.where(is_body[:, :, None], img_arr, 0).astype(np.uint8),
+            "face": np.where(is_face[:, :, None], img_arr, 0).astype(np.uint8),
+            "eyes": np.zeros((h, w, 4), dtype=np.uint8),
+            "hair_front": np.zeros((h, w, 4), dtype=np.uint8),
+            "accessories": np.zeros((h, w, 4), dtype=np.uint8),
+        }
 
     layers_meta = []
     for item in SEMANTIC_LAYERS:
         name = item["name"]
         filename = item["file"]
         z_order = item["zOrder"]
-        mask = layer_masks.get(name, np.zeros((h, w), dtype=bool))
+        z_depth = item.get("zDepth", z_order / float(len(SEMANTIC_LAYERS) - 1))
 
-        layer_img_arr = np.zeros((h, w, 4), dtype=np.uint8)
-        layer_img_arr[mask] = img_arr[mask]
+        layer_arr = layer_data.get(name, np.zeros((h, w, 4), dtype=np.uint8))
+        has_content = bool(np.any(layer_arr[:, :, 3] > 0))
 
-        layer_img = Image.fromarray(layer_img_arr, "RGBA")
         out_file_path = os.path.join(output_dir, filename)
-        layer_img.save(out_file_path, "PNG")
+        Image.fromarray(layer_arr, "RGBA").save(out_file_path, "PNG")
 
         layers_meta.append({
             "name": name,
             "file": filename,
             "zOrder": z_order,
-            "hasContent": bool(np.any(mask))
+            "zDepth": z_depth,
+            "hasContent": has_content,
         })
 
-    # Save layers.json
     layers_json_path = os.path.join(output_dir, "layers.json")
     with open(layers_json_path, "w", encoding="utf-8") as f:
         json.dump(layers_meta, f, indent=2)

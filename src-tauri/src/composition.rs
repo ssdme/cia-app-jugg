@@ -1066,7 +1066,25 @@ pub fn resolve_see_through_python(app: Option<&tauri::AppHandle>) -> Result<(Pat
         }
     }
 
-    // 3. Fallback: check system python
+    // 3. Fallback: check Programs/Python paths and system python
+    let mut candidate_paths = Vec::new();
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        for ver in &["Python311", "Python312", "Python310", "Python313"] {
+            let p = PathBuf::from(&local_app_data)
+                .join("Programs")
+                .join("Python")
+                .join(ver)
+                .join("python.exe");
+            if p.exists() {
+                candidate_paths.push(p);
+            }
+        }
+    }
+
+    for cand_p in candidate_paths {
+        return Ok((cand_p, cli_script));
+    }
+
     let candidates = ["py", "python", "python3"];
     for cand in candidates {
         let mut check_cmd = std::process::Command::new(cand);
