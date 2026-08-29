@@ -2477,6 +2477,7 @@ pub fn render_mesh_preview_internal(
     let out_mp4 = base_out.join(format!("preview_mesh_{timestamp}.mp4"));
 
     // 3. Launch FFmpeg encoder
+    let mut encode_cmd = std::process::Command::new(&ffmpeg_bin);
     let mut args = vec![
         "-y".to_string(),
         "-f".to_string(), "rawvideo".to_string(),
