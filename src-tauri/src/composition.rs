@@ -86,17 +86,16 @@ pub struct CompProject {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub enum BlendMode {
-    #[serde(alias = "normal", alias = "NORMAL")]
+    #[serde(alias = "Normal", alias = "normal", alias = "NORMAL")]
     Normal,
-    #[serde(alias = "multiply", alias = "MULTIPLY")]
+    #[serde(alias = "Multiply", alias = "multiply", alias = "MULTIPLY")]
     Multiply,
-    #[serde(alias = "add", alias = "ADD")]
+    #[serde(alias = "Add", alias = "add", alias = "ADD")]
     Add,
-    #[serde(alias = "screen", alias = "SCREEN")]
+    #[serde(alias = "Screen", alias = "screen", alias = "SCREEN")]
     Screen,
-    #[serde(alias = "lighten", alias = "LIGHTEN")]
+    #[serde(alias = "Lighten", alias = "lighten", alias = "LIGHTEN")]
     Lighten,
 }
 
