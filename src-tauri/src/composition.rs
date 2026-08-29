@@ -2136,159 +2136,186 @@ pub fn sample_bilinear_pixel(img: &RawImage, sx: f32, sy: f32) -> [u8; 4] {
     out
 }
 
-pub fn composite_deformed_mesh_direct(
+pub fn composite_layer_smooth(
     target_canvas: &mut [u8],
     canvas_w: usize,
     canvas_h: usize,
     src_layer: &RawImage,
-    mesh: &LayerMesh,
-    deformed_verts: &[(f32, f32)],
+    layer_name: &str,
+    t: f64,
+    fps: f64,
+    beats: &[f64],
+    downbeats: &[f64],
+    config: &AnimationConfig,
+    layer_z_depth: f32,
+    camera: &CameraState,
 ) {
     let w = canvas_w;
     let h = canvas_h;
     let src_w = src_layer.width;
     let src_h = src_layer.height;
 
-    struct TriData {
-        v0_dst: (f32, f32),
-        v1_dst: (f32, f32),
-        v2_dst: (f32, f32),
-        v0_src: (f32, f32),
-        v1_src: (f32, f32),
-        v2_src: (f32, f32),
-        min_y: usize,
-        max_y: usize,
-        min_x: usize,
-        max_x: usize,
-        inv_det: f32,
+    if src_w == 0 || src_h == 0 || w == 0 || h == 0 {
+        return;
     }
 
-    let mut tri_list = Vec::with_capacity(mesh.triangles.len());
+    let is_hair = layer_name.contains("hair");
+    let is_eyes = layer_name.contains("eye");
+    let is_body = layer_name.contains("body") || layer_name.contains("clothes") || layer_name.contains("skin");
+    let is_acc = layer_name.contains("acc");
+    let is_face = layer_name.contains("face") || layer_name.contains("mouth");
 
-    for tri in &mesh.triangles {
-        let i0 = tri.v_indices[0];
-        let i1 = tri.v_indices[1];
-        let i2 = tri.v_indices[2];
+    let bbox = compute_layer_bbox(src_layer);
+    let cx = (bbox[0] + bbox[2]) * 0.5;
+    let cy = (bbox[1] + bbox[3]) * 0.5;
+    let by_bottom = bbox[3];
 
-        let p0 = deformed_verts[i0];
-        let p1 = deformed_verts[i1];
-        let p2 = deformed_verts[i2];
-
-        let det = (p1.0 - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (p1.1 - p0.1);
-        if det.abs() < 1e-6 {
-            continue;
+    // 1. Entrance Stagger & Easing Bounce
+    let entrance_bounce = if config.entrance_enabled && t < 0.6 {
+        if t < 0.0 {
+            0.0f32
+        } else {
+            let tau = (t / 0.6) as f32;
+            (1.0 - (-5.0 * tau).exp() * (2.5 * std::f32::consts::PI * tau).cos() * 0.35).clamp(0.0, 1.05)
         }
+    } else {
+        1.0f32
+    };
 
-        let s0 = (mesh.vertices[i0].orig_x, mesh.vertices[i0].orig_y);
-        let s1 = (mesh.vertices[i1].orig_x, mesh.vertices[i1].orig_y);
-        let s2 = (mesh.vertices[i2].orig_x, mesh.vertices[i2].orig_y);
-
-        let src_min_x = (s0.0.min(s1.0).min(s2.0).floor() as i32).clamp(0, src_w as i32 - 1) as usize;
-        let src_max_x = (s0.0.max(s1.0).max(s2.0).ceil() as i32).clamp(0, src_w as i32 - 1) as usize;
-        let src_min_y = (s0.1.min(s1.1).min(s2.1).floor() as i32).clamp(0, src_h as i32 - 1) as usize;
-        let src_max_y = (s0.1.max(s1.1).max(s2.1).ceil() as i32).clamp(0, src_h as i32 - 1) as usize;
-
-        let mut has_opaque = false;
-        'check_opaque: for sy in src_min_y..=src_max_y {
-            let row = sy * src_w * 4;
-            for sx in src_min_x..=src_max_x {
-                if src_layer.data[row + sx * 4 + 3] > 0 {
-                    has_opaque = true;
-                    break 'check_opaque;
-                }
+    // 2. Downbeat Pump Decay
+    let mut pump_scale = 0.0f32;
+    for &db in downbeats {
+        if t >= db {
+            let dt = (t - db) as f32;
+            if dt < 0.6 {
+                pump_scale += 0.025 * (-config.pump_decay_rate * dt).exp();
             }
         }
-
-        if !has_opaque {
-            continue;
-        }
-
-        let min_x = (p0.0.min(p1.0).min(p2.0).floor() as i32).clamp(0, w as i32 - 1) as usize;
-        let max_x = (p0.0.max(p1.0).max(p2.0).ceil() as i32).clamp(0, w as i32 - 1) as usize;
-        let min_y = (p0.1.min(p1.1).min(p2.1).floor() as i32).clamp(0, h as i32 - 1) as usize;
-        let max_y = (p0.1.max(p1.1).max(p2.1).ceil() as i32).clamp(0, h as i32 - 1) as usize;
-
-        tri_list.push(TriData {
-            v0_dst: p0,
-            v1_dst: p1,
-            v2_dst: p2,
-            v0_src: s0,
-            v1_src: s1,
-            v2_src: s2,
-            min_y,
-            max_y,
-            min_x,
-            max_x,
-            inv_det: 1.0 / det,
-        });
     }
 
-    let band_height = 32;
+    // 3. Beat Accents for Sway
+    let mut beat_accent = 0.0f32;
+    for &b in beats {
+        if t >= b {
+            let dt = (t - b) as f32;
+            if dt < 0.35 {
+                beat_accent += 3.0 * (8.0 * std::f32::consts::PI * dt).sin() * (-8.0 * dt).exp();
+            }
+        }
+    }
 
-    target_canvas.par_chunks_mut(band_height * w * 4)
+    // 4. Eyes Blink
+    let blink_scale_y = if is_eyes {
+        let period = config.blink_interval_sec.max(1.0);
+        let cycle_t = (t as f32) % period;
+        let blink_duration = 3.0 / fps as f32;
+        if cycle_t < blink_duration {
+            let progress = cycle_t / blink_duration;
+            (1.0 - (std::f32::consts::PI * progress).sin()).clamp(0.0, 1.0)
+        } else {
+            1.0f32
+        }
+    } else {
+        1.0f32
+    };
+
+    // 2.5D Orthographic Parallax Math
+    let z_centered = layer_z_depth - 0.5;
+    let parallax_strength = config.parallax_strength;
+    let offset_x = z_centered * camera.pan_x * parallax_strength * (w as f32);
+    let offset_y = z_centered * camera.pan_y * parallax_strength * (h as f32);
+
+    let zoom_effect = (camera.zoom - 1.0) * parallax_strength;
+    let layer_scale_factor = 1.0 + z_centered * zoom_effect;
+    let total_zoom = (camera.zoom * layer_scale_factor).max(0.01);
+
+    let cam_cx = w as f32 * 0.5;
+    let cam_cy = h as f32 * 0.5;
+
+    let cos_r = camera.roll.cos();
+    let sin_r = camera.roll.sin();
+
+    // Scale / Breathing parameters
+    let breath = 1.0 + config.breathing_amplitude * (1.2 * std::f32::consts::PI * t as f32).sin();
+    let total_body_scale = (breath + pump_scale) * entrance_bounce;
+
+    let tf = t as f32;
+    let s1 = 8.0 * (2.2 * std::f32::consts::PI * tf + 0.4).sin();
+    let s2 = 4.0 * (4.4 * std::f32::consts::PI * tf + 1.1).sin();
+    let hair_sway = (s1 + s2 + beat_accent) * config.hair_sway_amplitude;
+
+    let acc_theta = if is_acc {
+        0.025 * (1.8 * std::f32::consts::PI * tf + 0.8).sin()
+    } else {
+        0.0
+    };
+    let cos_acc = acc_theta.cos();
+    let sin_acc = acc_theta.sin();
+
+    let bh = (bbox[3] - bbox[1]).max(1.0);
+
+    // Parallel row-by-row continuous rasterization (ZERO slicing, ZERO tearing, pure crispness)
+    target_canvas.par_chunks_exact_mut(w * 4)
         .enumerate()
-        .for_each(|(band_idx, band_chunk)| {
-            let y_start = band_idx * band_height;
-            let y_end = (y_start + band_height).min(h);
+        .for_each(|(y_idx, row_chunk)| {
+            let py = y_idx as f32;
 
-            for tri in &tri_list {
-                if tri.max_y < y_start || tri.min_y >= y_end {
-                    continue;
+            for px_idx in 0..w {
+                let px = px_idx as f32;
+
+                // 1. Inverse Camera & Parallax Transform
+                let dx = px - (cam_cx + offset_x);
+                let dy = py - (cam_cy + offset_y);
+
+                let unzoomed_x = dx / total_zoom;
+                let unzoomed_y = dy / total_zoom;
+
+                // Inverse rotation by roll
+                let unrolled_x = unzoomed_x * cos_r + unzoomed_y * sin_r;
+                let unrolled_y = -unzoomed_x * sin_r + unzoomed_y * cos_r;
+
+                let scene_x = cam_cx + unrolled_x;
+                let scene_y = cam_cy + unrolled_y;
+
+                // 2. Inverse Layer Animation Transform
+                let mut sx = scene_x;
+                let mut sy = scene_y;
+
+                if is_hair {
+                    let v = ((sy - bbox[1]) / bh).clamp(0.0, 1.0);
+                    let weight = v.powf(1.2);
+                    sx -= weight * hair_sway;
+                    sy -= weight * 1.0 * (3.0 * std::f32::consts::PI * tf).sin();
+                } else if is_eyes {
+                    sy = cy + (sy - cy) / blink_scale_y.max(0.05);
+                } else if is_body {
+                    sx = cx + (sx - cx) / total_body_scale;
+                    sy = by_bottom + (sy - by_bottom) / total_body_scale;
+                } else if is_acc {
+                    let rx = sx - cx;
+                    let ry = sy - cy;
+                    sx = cx + rx * cos_acc + ry * sin_acc;
+                    sy = cy - rx * sin_acc + ry * cos_acc;
+                } else if is_face {
+                    sy -= 0.8 * (1.2 * std::f32::consts::PI * tf).sin();
+                } else {
+                    // Default layer / single image fallback
+                    sx = cx + (sx - cx) / total_body_scale;
+                    sy = by_bottom + (sy - by_bottom) / total_body_scale;
                 }
 
-                let sub_min_y = tri.min_y.max(y_start);
-                let sub_max_y = tri.max_y.min(y_end.saturating_sub(1));
-
-                let p0 = tri.v0_dst;
-                let p1 = tri.v1_dst;
-                let p2 = tri.v2_dst;
-                let s0 = tri.v0_src;
-                let s1 = tri.v1_src;
-                let s2 = tri.v2_src;
-                let inv_det = tri.inv_det;
-
-                for py in sub_min_y..=sub_max_y {
-                    let local_y = py - y_start;
-                    let row_offset = local_y * w * 4;
-                    let pyf = py as f32;
-
-                    for px in tri.min_x..=tri.max_x {
-                        let pxf = px as f32;
-
-                        let w1 = ((pxf - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (pyf - p0.1)) * inv_det;
-                        let w2 = ((p1.0 - p0.0) * (pyf - p0.1) - (pxf - p0.0) * (p1.1 - p0.1)) * inv_det;
-                        let w0 = 1.0 - w1 - w2;
-
-                        if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
-                            let norm = w0 + w1 + w2;
-                            let nw0 = w0 / norm;
-                            let nw1 = w1 / norm;
-                            let nw2 = w2 / norm;
-
-                            let sx = nw0 * s0.0 + nw1 * s1.0 + nw2 * s2.0;
-                            let sy = nw0 * s0.1 + nw1 * s1.1 + nw2 * s2.1;
-
-                            let pixel = sample_bilinear_pixel(src_layer, sx, sy);
-                            if pixel[3] > 0 {
-                                let idx = row_offset + px * 4;
-                                let existing_a = band_chunk[idx + 3];
-                                if existing_a == 0 {
-                                    band_chunk[idx] = pixel[0];
-                                    band_chunk[idx + 1] = pixel[1];
-                                    band_chunk[idx + 2] = pixel[2];
-                                    band_chunk[idx + 3] = pixel[3];
-                                } else {
-                                    let fg_a = pixel[3] as f32 / 255.0;
-                                    let bg_a = existing_a as f32 / 255.0;
-                                    let out_a = fg_a + bg_a * (1.0 - fg_a);
-                                    if out_a > 0.0 {
-                                        band_chunk[idx] = ((pixel[0] as f32 * fg_a + band_chunk[idx] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
-                                        band_chunk[idx + 1] = ((pixel[1] as f32 * fg_a + band_chunk[idx + 1] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
-                                        band_chunk[idx + 2] = ((pixel[2] as f32 * fg_a + band_chunk[idx + 2] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
-                                        band_chunk[idx + 3] = (out_a * 255.0).round() as u8;
-                                    }
-                                }
-                            }
+                if sx >= 0.0 && sx < (src_w as f32) && sy >= 0.0 && sy < (src_h as f32) {
+                    let pixel = sample_bilinear_pixel(src_layer, sx, sy);
+                    let fg_a = pixel[3] as f32 / 255.0;
+                    if fg_a > 0.001 {
+                        let dst_idx = px_idx * 4;
+                        let bg_a = row_chunk[dst_idx + 3] as f32 / 255.0;
+                        let out_a = fg_a + bg_a * (1.0 - fg_a);
+                        if out_a > 0.0 {
+                            row_chunk[dst_idx] = ((pixel[0] as f32 * fg_a + row_chunk[dst_idx] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                            row_chunk[dst_idx + 1] = ((pixel[1] as f32 * fg_a + row_chunk[dst_idx + 1] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                            row_chunk[dst_idx + 2] = ((pixel[2] as f32 * fg_a + row_chunk[dst_idx + 2] as f32 * bg_a * (1.0 - fg_a)) / out_a).round() as u8;
+                            row_chunk[dst_idx + 3] = (out_a * 255.0).round() as u8;
                         }
                     }
                 }
@@ -2296,35 +2323,10 @@ pub fn composite_deformed_mesh_direct(
         });
 }
 
-pub fn render_deformed_mesh(
-    src_layer: &RawImage,
-    mesh: &LayerMesh,
-    deformed_verts: &[(f32, f32)],
-) -> RawImage {
-    let w = src_layer.width;
-    let h = src_layer.height;
-    let mut out_data = vec![0u8; w * h * 4];
-
-    composite_deformed_mesh_direct(
-        &mut out_data,
-        w,
-        h,
-        src_layer,
-        mesh,
-        deformed_verts,
-    );
-
-    RawImage {
-        width: w,
-        height: h,
-        data: out_data,
-    }
-}
-
 pub fn render_animated_character_frame(
     layers: &[(String, RawImage, LayerMesh, usize, f32)],
     t: f64,
-    frame_idx: u32,
+    _frame_idx: u32,
     fps: f64,
     beats: &[f64],
     downbeats: &[f64],
@@ -2336,29 +2338,20 @@ pub fn render_animated_character_frame(
     let mut composite_data = vec![0u8; canvas_w * canvas_h * 4];
 
     // Layers are ordered by z_order ascending
-    for (_layer_name, raw_img, mesh, z_idx, z_depth) in layers {
-        let deformed_verts = compute_deformed_vertices(
-            mesh,
-            t,
-            frame_idx,
-            fps,
-            beats,
-            downbeats,
-            config,
-            *z_idx,
-            *z_depth,
-            camera,
-            canvas_w,
-            canvas_h,
-        );
-
-        composite_deformed_mesh_direct(
+    for (layer_name, raw_img, _mesh, _z_idx, z_depth) in layers {
+        composite_layer_smooth(
             &mut composite_data,
             canvas_w,
             canvas_h,
             raw_img,
-            mesh,
-            &deformed_verts,
+            layer_name,
+            t,
+            fps,
+            beats,
+            downbeats,
+            config,
+            *z_depth,
+            camera,
         );
     }
 
