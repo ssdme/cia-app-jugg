@@ -79,12 +79,12 @@
       zoom: true,
       flicker: true,
       oneFramers: fullFx && (isHard || isHybrid),
-      transitions: true,
+      transitions: false,
       tint: fullFx,
       vignette: fullFx,
       scanlines: false,
       echoTrail: echoTrailEnabled,
-      exposureFlash: fullFx && isHard,
+      exposureFlash: fullFx && (isHard || isHybrid),
       bouncyShake: isHard || isHybrid,
       dissolveShake: isHard || isHybrid,
       skewShake: isHard || isHybrid,
@@ -1496,6 +1496,26 @@
 </div>
 
 <style>
+  /* CUSTOM MONOCHROME STUDIO SCROLLBARS */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #27272a;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #71717a;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #27272a transparent;
+  }
+
   /* REFINED INDUSTRIAL DARK SLATE DESIGN SYSTEM */
   *, *::before, *::after {
     box-sizing: border-box;

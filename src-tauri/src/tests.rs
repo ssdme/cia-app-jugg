@@ -172,7 +172,8 @@ fn test_schema_v1_and_v2_parsing_and_retrocompat() {
     assert_eq!(parsed_v1.transitions.len(), 0);
     assert_eq!(parsed_v1.segments[0].transition, None);
 
-    let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true, None, None).unwrap();
+    let ov_trans = crate::plan::EffectOverrides { transitions: true, ..Default::default() };
+    let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true, Some(ov_trans), None).unwrap();
     assert_eq!(v2_plan.schema_version, 2);
     assert_eq!(v2_plan.motion_blur, true);
     assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
@@ -560,7 +561,7 @@ fn test_ambiance_echo_trail_blend() {
         flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
         echo_trail: EchoTrailConfig { enabled: true, alpha, k },
-        tint: TintConfig { offset_rgb: [0, 0, 0] },
+        tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: false },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
     };
@@ -615,7 +616,7 @@ fn test_ambiance_tint_vignette_scanlines() {
         flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
         echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
-        tint: TintConfig { offset_rgb: [tint_r, 0, 0] },
+        tint: TintConfig { offset_rgb: [tint_r, 0, 0], invert_bw: false },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.15 },
     };
@@ -729,7 +730,8 @@ fn test_transitions_auto_placement() {
     let fps = 16u32;
     let bpm = 83.33;
 
-    let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None).unwrap();
+    let ov_trans = crate::plan::EffectOverrides { transitions: true, ..Default::default() };
+    let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None).unwrap();
 
     let wrap_transitions: Vec<_> = plan_hard.transitions.iter().filter(|t| t.is_wrap).collect();
     assert_eq!(wrap_transitions.len(), 1, "HARD plan should have 1 wrap transition");
@@ -748,13 +750,13 @@ fn test_transitions_auto_placement() {
     assert!((cut_waves as i32 - 4).abs() <= 2, "Wave cuts count should be ~4");
     assert!((cut_slides as i32 - 8).abs() <= 2, "Slide cuts count should be ~8");
 
-    let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None).unwrap();
+    let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None).unwrap();
     let smooth_warps = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
     let smooth_waves = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
     assert_eq!(smooth_warps, 0, "SMOOTH style has 0% warp on cuts");
     assert_eq!(smooth_waves, 0, "SMOOTH style has 0% wave on cuts");
 
-    let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None).unwrap();
+    let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans), None).unwrap();
     assert!(plan_hybrid.transitions.len() > plan_smooth.transitions.len());
 }
 
@@ -1235,7 +1237,7 @@ fn test_full_fx_off_strips_effects() {
 
     assert_eq!(plan.full_fx, false);
     assert!(plan.one_framers.is_empty(), "full_fx=false must produce empty one_framers");
-    assert!(!plan.transitions.is_empty(), "full_fx=false must still have geometric transitions");
+    assert!(plan.transitions.is_empty(), "transitions is disabled by default for all modes");
 
     let amb = plan.ambiance.as_ref().unwrap();
     assert!(amb.flicker.amplitude > 0.0);
@@ -1263,12 +1265,13 @@ fn test_full_fx_on_matches_head() {
 
     assert_eq!(plan.full_fx, true);
     assert!(!plan.one_framers.is_empty());
-    assert!(!plan.transitions.is_empty());
+    assert!(plan.transitions.is_empty(), "transitions is disabled by default for all modes");
     let amb = plan.ambiance.as_ref().unwrap();
     assert!(amb.flicker.amplitude > 0.0);
     assert!(!amb.exposure_flash.times.is_empty());
     assert!(amb.vignette.strength > 0.0);
     assert_eq!(amb.scanlines.opacity, 0.0); // Scanlines are disabled by default for all modes
+    assert!(amb.tint.invert_bw); // Tint has Invert B&W enabled with Full FX
 }
 
 #[test]

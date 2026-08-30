@@ -25,7 +25,7 @@ pub struct EffectOverrides {
     pub flicker: bool,
     #[serde(default = "default_true")]
     pub one_framers: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub transitions: bool,
     #[serde(default = "default_true")]
     pub tint: bool,
@@ -62,7 +62,7 @@ impl Default for EffectOverrides {
             zoom: true,
             flicker: true,
             one_framers: true,
-            transitions: true,
+            transitions: false,
             tint: true,
             vignette: true,
             scanlines: false,
@@ -91,12 +91,12 @@ pub fn default_effects_for_style(style: &str, full_fx: bool) -> EffectOverrides 
         zoom: true,
         flicker: true,
         one_framers: full_fx && (is_hard || is_hybrid),
-        transitions: true,
+        transitions: false,
         tint: full_fx,
         vignette: full_fx,
         scanlines: false,
         echo_trail: false,
-        exposure_flash: full_fx && is_hard,
+        exposure_flash: full_fx && (is_hard || is_hybrid),
         bouncy_shake: is_hard || is_hybrid,
         dissolve_shake: is_hard || is_hybrid,
         skew_shake: is_hard || is_hybrid,
@@ -981,15 +981,10 @@ pub fn create_plan_internal(
     let ambiance = if has_any_ambiance {
         let mut a = default_ambiance(style, downbeats);
         if overrides.tint {
-            let default_tint = {
-                let seed = 0x9e3779b9u32;
-                let r = ((seed.wrapping_mul(1664525).wrapping_add(1013904223)) % 21) as i16 - 10;
-                let g = ((seed.wrapping_mul(22695477).wrapping_add(1)) % 11) as i16 - 5;
-                let b = ((seed.wrapping_mul(6364136223846793005u64 as u32).wrapping_add(1442695040)) % 17) as i16 - 8;
-                [r, g, b]
-            };
-            a.tint.offset_rgb = custom_params.as_ref().map_or(default_tint, |c| [c.tint_r_offset, c.tint_g_offset, c.tint_b_offset]);
+            a.tint.invert_bw = true;
+            a.tint.offset_rgb = custom_params.as_ref().map_or([0, 0, 0], |c| [c.tint_r_offset, c.tint_g_offset, c.tint_b_offset]);
         } else {
+            a.tint.invert_bw = false;
             a.tint.offset_rgb = [0, 0, 0];
         }
         if overrides.flicker {

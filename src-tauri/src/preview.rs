@@ -66,9 +66,11 @@ pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Ve
         "tint" => {
             for (i, chunk) in base_frame.chunks(3).enumerate() {
                 let out_idx = i * 3;
-                out_frame[out_idx] = (chunk[0] as i16 + 50).clamp(0, 255) as u8;
-                out_frame[out_idx + 1] = (chunk[1] as i16 - 30).clamp(0, 255) as u8;
-                out_frame[out_idx + 2] = (chunk[2] as i16 + 60).clamp(0, 255) as u8;
+                let gray = ((chunk[0] as u32 * 77 + chunk[1] as u32 * 150 + chunk[2] as u32 * 29) >> 8) as u8;
+                let inv = 255 - gray;
+                out_frame[out_idx] = inv;
+                out_frame[out_idx + 1] = inv;
+                out_frame[out_idx + 2] = inv;
             }
         }
         "vignette" => {
@@ -329,7 +331,7 @@ pub fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
         ("flicker", "Flicker Oscillation", "AMBIANCE", "Sinusoidal luminosity micro-oscillations"),
         ("exposure_flash", "Exposure Flash", "AMBIANCE", "Sharp white flashes at musical impact points"),
         ("echo_trail", "Echo / Trail", "AMBIANCE", "Motion time blend with trailing ghost frames"),
-        ("tint", "RGB Color Tint", "AMBIANCE", "Dynamic chromatic shifts and color palette tone"),
+        ("tint", "Invert B&W (Negative)", "AMBIANCE", "Inverts colors to black and white with zero saturation"),
         ("vignette", "Vignette Darkening", "AMBIANCE", "Radial corner darkening focusing visual center"),
         ("scanlines", "CRT Scanlines", "AMBIANCE", "Retro television horizontal scanline rasterization"),
     ];

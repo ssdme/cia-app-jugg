@@ -188,6 +188,8 @@ pub struct EchoTrailConfig {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TintConfig {
     pub offset_rgb: [i16; 3],
+    #[serde(default)]
+    pub invert_bw: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -220,7 +222,7 @@ pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
         flicker: FlickerConfig { amplitude: amp, f: freq, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: flash_peak, times: downbeats.to_vec() },
         echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
-        tint: TintConfig { offset_rgb: [0; 3] },
+        tint: TintConfig { offset_rgb: [0; 3], invert_bw: false },
         vignette: VignetteConfig { strength: 0.3 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
     }
@@ -1120,6 +1122,14 @@ pub fn apply_ambiance_effects(
                 let mut g = ((256 - alpha_fp) * g_cur + alpha_fp * g_echo) >> 8;
                 let mut b = ((256 - alpha_fp) * b_cur + alpha_fp * b_echo) >> 8;
 
+                if amb.tint.invert_bw {
+                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let inv = 255 - gray.min(255);
+                    r = inv;
+                    g = inv;
+                    b = inv;
+                }
+
                 r = ((r as i32 + tr as i32).clamp(0, 255)) as u32;
                 g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
                 b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
@@ -1140,9 +1150,21 @@ pub fn apply_ambiance_effects(
                 let v = vignette_lut[row_offset + px] as u32;
                 let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
 
-                let r = ((frame_in[idx]     as i32 + tr as i32).clamp(0, 255)) as u32;
-                let g = ((frame_in[idx + 1] as i32 + tg as i32).clamp(0, 255)) as u32;
-                let b = ((frame_in[idx + 2] as i32 + tb as i32).clamp(0, 255)) as u32;
+                let mut r = frame_in[idx] as u32;
+                let mut g = frame_in[idx + 1] as u32;
+                let mut b = frame_in[idx + 2] as u32;
+
+                if amb.tint.invert_bw {
+                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let inv = 255 - gray.min(255);
+                    r = inv;
+                    g = inv;
+                    b = inv;
+                }
+
+                r = ((r as i32 + tr as i32).clamp(0, 255)) as u32;
+                g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
+                b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
 
                 frame_out[idx]     = ((r * combined) >> 8) as u8;
                 frame_out[idx + 1] = ((g * combined) >> 8) as u8;
@@ -1161,6 +1183,14 @@ pub fn apply_ambiance_effects(
                 let mut r = ((frame_in[idx]     as u32 * scale_fp) >> 8).min(255);
                 let mut g = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
                 let mut b = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
+
+                if amb.tint.invert_bw {
+                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let inv = 255 - gray.min(255);
+                    r = inv;
+                    g = inv;
+                    b = inv;
+                }
 
                 r = ((r as i32 + tr as i32).clamp(0, 255)) as u32;
                 g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
