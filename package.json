@@ -13,7 +13,7 @@
   "homepage": "https://github.com/cia213/cia-app#readme",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/free-port.mjs && vite",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
