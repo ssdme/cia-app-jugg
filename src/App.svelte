@@ -18,8 +18,19 @@
   let toast = $state({ show: false, message: '', type: 'info' });
   let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
+  let isMaximized = $state(false);
   const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';
   const buildTime = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
+
+  async function handleToggleMaximize() {
+    if (!appWindow) return;
+    try {
+      await appWindow.toggleMaximize();
+      isMaximized = await appWindow.isMaximized();
+    } catch (e) {
+      console.error('Failed to toggle maximize:', e);
+    }
+  }
 
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
@@ -213,7 +224,7 @@
         sceneError = '';
         sceneInfo = null;
       } else {
-        sceneError = 'Expected: video â€” mp4/mkv/webm/mov/avi';
+        sceneError = 'Expected: video - mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -224,7 +235,7 @@
         downbeats = null;
         bpm = null;
       } else {
-        drumsError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
+        drumsError = 'Expected: audio - mp3/wav/flac/m4a/ogg';
       }
     } else if (zone === 'audio') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
@@ -232,7 +243,7 @@
         audioError = '';
         audioInfo = null;
       } else {
-        audioError = 'Expected: audio â€” mp3/wav/flac/m4a/ogg';
+        audioError = 'Expected: audio - mp3/wav/flac/m4a/ogg';
       }
     }
   }
@@ -650,6 +661,14 @@
       console.error('Failed to listen to render-progress:', e);
     }
 
+    if (appWindow) {
+      try {
+        isMaximized = await appWindow.isMaximized();
+      } catch (e) {
+        console.warn('Failed to check maximized state:', e);
+      }
+    }
+
     checkForAppUpdates(false);
 
     return () => {
@@ -673,8 +692,11 @@
           <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
         </button>
       {/if}
-      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>-</button>
-      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>X</button>
+      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>−</button>
+      <button class="titlebar-btn" onclick={handleToggleMaximize} aria-label="Maximize / Restore" disabled={!appWindow}>
+        {isMaximized ? '❐' : '□'}
+      </button>
+      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>✕</button>
     </div>
   </div>
 
@@ -685,7 +707,6 @@
 
   <!-- Main Content Area -->
   <main class="content-area">
-    {#key activePage}
       <div class="page-stage">
         {#if activePage === 'remap'}
           <section class="remap-page" aria-label="Time remap configuration">
@@ -710,7 +731,6 @@
                   <div class="zone-filled-content">
                     <div class="zone-header">
                       <span class="zone-tag">VIDEO</span>
-                      <span class="pro-dot active"></span>
                     </div>
                     <div class="zone-title">SCENE</div>
                     <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
@@ -750,7 +770,6 @@
                   <div class="zone-filled-content">
                     <div class="zone-header">
                       <span class="zone-tag">AUDIO</span>
-                      <span class="pro-dot active"></span>
                     </div>
                     <div class="zone-title">DRUMS</div>
                     <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
@@ -790,7 +809,6 @@
                   <div class="zone-filled-content">
                     <div class="zone-header">
                       <span class="zone-tag">AUDIO</span>
-                      <span class="pro-dot active"></span>
                     </div>
                     <div class="zone-title">AUDIO</div>
                     <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
@@ -846,7 +864,7 @@
                     <span class="source-name mono" title={scenePath}>{getFileName(scenePath)}</span>
                     {#if sceneInfo}
                       <span class="meta-pill mono">
-                        {sceneInfo.duration.toFixed(2)}s Â· {sceneInfo.width}x{sceneInfo.height} Â· {sceneInfo.fps.toFixed(0)}fps
+                        {sceneInfo.duration.toFixed(2)}s • {sceneInfo.width}x{sceneInfo.height} • {sceneInfo.fps.toFixed(0)}fps
                       </span>
                     {/if}
                   </div>
@@ -857,7 +875,7 @@
                     <span class="source-name mono" title={drumsPath}>{getFileName(drumsPath)}</span>
                     {#if drumsInfo}
                       <span class="meta-pill mono">
-                        {drumsInfo.duration.toFixed(2)}s Â· {drumsInfo.audioSampleRate}Hz Â· {bpm ? bpm.toFixed(1) : 'â€”'} BPM Â· {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
+                        {drumsInfo.duration.toFixed(2)}s • {drumsInfo.audioSampleRate}Hz • {bpm ? bpm.toFixed(1) : '-'} BPM • {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
                       </span>
                     {/if}
                   </div>
@@ -868,7 +886,7 @@
                     <span class="source-name mono" title={audioPath}>{getFileName(audioPath)}</span>
                     {#if audioInfo}
                       <span class="meta-pill mono">
-                        {audioInfo.duration.toFixed(2)}s Â· {audioInfo.audioSampleRate}Hz Â· {audioInfo.audioChannels}ch
+                        {audioInfo.duration.toFixed(2)}s • {audioInfo.audioSampleRate}Hz • {audioInfo.audioChannels}ch
                       </span>
                     {/if}
                   </div>
@@ -1013,51 +1031,6 @@
                     </button>
                   </div>
                 </div>
-
-                <!-- 6. T19 Export Options: Codec, Bitrate, Format -->
-                <div class="control-group">
-                  <span class="group-label">VIDEO CODEC</span>
-                  <div class="options-buttons-row">
-                    {#each CODEC_OPTIONS as codec}
-                      <button
-                        class="btn-option"
-                        class:active={selectedCodec === codec.id}
-                        onclick={() => selectedCodec = codec.id}
-                        type="button"
-                      >
-                        {codec.label}
-                      </button>
-                    {/each}
-                  </div>
-                </div>
-
-                <div class="control-group">
-                  <GlowSlider
-                    bind:value={bitrateValue}
-                    min={5}
-                    max={50}
-                    step={1}
-                    label="BITRATE"
-                    unit=" Mbps"
-                    precision={0}
-                  />
-                </div>
-
-                <div class="control-group">
-                  <span class="group-label">CONTAINER FORMAT</span>
-                  <div class="options-buttons-row">
-                    {#each FORMAT_OPTIONS as fmt}
-                      <button
-                        class="btn-option"
-                        class:active={selectedFormat === fmt}
-                        onclick={() => selectedFormat = fmt}
-                        type="button"
-                      >
-                        {fmt}
-                      </button>
-                    {/each}
-                  </div>
-                </div>
               </div>
 
               <!-- Render Execution Cards (T6) -->
@@ -1090,10 +1063,9 @@
                 <div class="render-done-card">
                   <div class="render-done-header">
                     <div class="done-title-row">
-                      <span class="pro-dot active"></span>
                       <span class="render-done-title">RENDER COMPLETE</span>
                     </div>
-                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} Â· {renderStats?.targetFps || fpsValue} FPS</span>
+                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} • {renderStats?.targetFps || fpsValue} FPS</span>
                   </div>
 
                   {#if renderStats}
@@ -1154,23 +1126,23 @@
                   <div class="plan-summary-grid">
                     <div class="plan-stat">
                       <span class="stat-label">STYLE / FPS</span>
-                      <span class="stat-value mono">{planSummary.style} Â· {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} Â· BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
+                      <span class="stat-value mono">{planSummary.style} • {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} • BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">EFFECTS</span>
-                      <span class="stat-value mono">SHAKES ON Â· ZOOM ON Â· REVERSE {planSummary.reverse ? 'ON' : 'OFF'} Â· ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} Â· TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} Â· AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} Â· ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
+                      <span class="stat-value mono">SHAKES ON • ZOOM ON • REVERSE {planSummary.reverse ? 'ON' : 'OFF'} • ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} • TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} • AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} • ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">FX MODE</span>
-                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} · ADV SHAKES ON</span>
+                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} • ADV SHAKES ON</span>
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">EXPORT</span>
-                      <span class="stat-value mono">{planSummary.export?.codec || selectedCodec} · {planSummary.export?.bitrateMbps || planSummary.export?.bitrate_mbps || bitrateValue} Mbps · {planSummary.export?.format || selectedFormat}</span>
+                      <span class="stat-value mono">{planSummary.export?.codec || selectedCodec} • {planSummary.export?.bitrateMbps || planSummary.export?.bitrate_mbps || bitrateValue} Mbps • {planSummary.export?.format || selectedFormat}</span>
                     </div>
                     {#if planSummary.ambiance}
                     <div class="plan-stat flicker-warning">
-                      <span class="flicker-badge">âš  FLICKER ACTIVE â€” photosensitive epilepsy warning</span>
+                      <span class="flicker-badge">⚠ FLICKER ACTIVE — photosensitive epilepsy warning</span>
                     </div>
                     {/if}
                     <div class="plan-stat">
@@ -1179,7 +1151,7 @@
                     </div>
                     <div class="plan-stat">
                       <span class="stat-label">LOOPS / DURATION</span>
-                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} Â· {planSummary.targetDuration.toFixed(2)}s</span>
+                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} • {planSummary.targetDuration.toFixed(2)}s</span>
                     </div>
                   </div>
                   <div class="plan-saved-path">
@@ -1245,7 +1217,6 @@
           </section>
         {/if}
       </div>
-    {/key}
   </main>
 
   <!-- Auto-Updater Modal Overlay -->
@@ -1328,7 +1299,7 @@
             <h2>EFFECT DETAILS & TOGGLES</h2>
             <span class="modal-subtitle">Configure individual effects for project plans and preview algorithm output</span>
           </div>
-          <button class="btn-close-modal" onclick={() => showDetailsModal = false} aria-label="Close details">âœ•</button>
+          <button class="btn-close-modal" onclick={() => showDetailsModal = false} aria-label="Close details">✕</button>
         </div>
 
         <div class="details-toolbar">
@@ -1636,8 +1607,9 @@
   .content-area {
     flex: 1;
     min-height: 0;
-    overflow: hidden;
-    padding: 12px 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 20px 32px;
     background: #050507;
     display: flex;
     flex-direction: column;
@@ -1648,36 +1620,31 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    animation: page-enter 190ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  @keyframes page-enter {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .page-stage { animation: none; }
+    justify-content: flex-start;
   }
 
   /* Time Remap Page (3 Drop Zones) */
   .remap-page {
-    width: min(100%, 920px);
-    margin: auto;
+    width: min(100%, 1040px);
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    height: 100%;
-    justify-content: center;
+    gap: 16px;
+    min-height: 100%;
+    justify-content: flex-start;
   }
 
   .remap-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    flex: 1;
-    max-height: 380px;
+    gap: 14px;
+    width: 100%;
+  }
+
+  @media (max-width: 860px) {
+    .remap-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   .remap-drop-zone {
@@ -1685,9 +1652,8 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 100%;
-    min-height: 320px;
-    padding: 20px 14px;
+    min-height: 240px;
+    padding: 24px 16px;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 8px;
     background: #09090c;
@@ -1695,6 +1661,13 @@
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
     text-align: center;
+  }
+
+  @media (max-width: 860px) {
+    .remap-drop-zone {
+      min-height: 180px;
+      padding: 16px 12px;
+    }
   }
 
   .remap-drop-zone:hover,
@@ -2098,37 +2071,6 @@
     border-color: rgba(255, 255, 255, 0.5);
   }
 
-  /* T19 Export Option Buttons */
-  .options-buttons-row {
-    display: flex;
-    gap: 6px;
-  }
-
-  .btn-option {
-    flex: 1;
-    padding: 5px 8px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 4px;
-    color: #71717a;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9.5px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .btn-option:hover {
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-
-  .btn-option.active {
-    background: #121215;
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 0.5);
-  }
-
   .custom-ar-inputs-inline {
     display: flex;
     align-items: center;
@@ -2278,93 +2220,102 @@
     border-color: #f87171;
   }
 
-  /* Render Done Card */
+  /* Render Done Card - Monochrome Studio */
   .render-done-card {
-    background: #09090c;
-    border: 1px solid rgba(74, 222, 128, 0.4);
+    background: #0d0d12;
+    border: 1px solid #27272a;
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    gap: 12px;
   }
 
   .render-done-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1c1c22;
   }
 
   .done-title-row {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
   }
 
   .render-done-title {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     color: #ffffff;
   }
 
   .done-specs {
-    font-size: 8.5px;
+    font-size: 10px;
     font-weight: 600;
-    color: #4ade80;
+    color: #a1a1aa;
+    letter-spacing: 0.04em;
   }
 
   .render-stats-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 4px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 4px;
-    padding: 6px 8px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+
+  @media (max-width: 700px) {
+    .render-stats-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 
   .render-stat-item {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 2px 4px;
+    flex-direction: column;
+    gap: 3px;
+    background: #121217;
+    border: 1px solid #1f1f26;
+    border-radius: 6px;
+    padding: 8px 10px;
   }
 
   .done-path-box {
     display: flex;
     align-items: center;
-    gap: 5px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 4px;
-    padding: 2px 6px;
+    gap: 8px;
+    background: #121217;
+    border: 1px solid #1f1f26;
+    border-radius: 6px;
+    padding: 8px 10px;
     overflow: hidden;
   }
 
   .done-actions-row {
     display: flex;
-    gap: 6px;
-    margin-top: 1px;
+    gap: 8px;
+    margin-top: 2px;
   }
 
   .btn-open-folder {
-    flex: 1;
-    padding: 6px 12px;
-    background: #ffffff;
-    color: #000000;
-    border: 1px solid #ffffff;
-    border-radius: 4px;
-    font-size: 9.5px;
-    font-weight: 800;
-    letter-spacing: 0.05em;
+    flex: 2;
+    padding: 8px 16px;
+    background: #1c1c24;
+    color: #ffffff;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
   .btn-open-folder:hover {
-    background: #e4e4e7;
+    background: #272732;
+    border-color: #71717a;
+    color: #ffffff;
   }
 
   /* Render Error Card */
@@ -2819,10 +2770,21 @@
     border: none;
     color: #71717a;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
+    line-height: 1;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.15s ease;
   }
 
-  .btn-close-modal:hover { color: #ffffff; }
+  .btn-close-modal:hover {
+    color: #ffffff;
+    background: #1c1c24;
+  }
 
   .modal-body {
     padding: 18px;
