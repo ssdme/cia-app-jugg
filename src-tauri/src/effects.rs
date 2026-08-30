@@ -711,8 +711,15 @@ pub fn apply_one_framer_flash_black(frame_in: &[u8], frame_out: &mut [u8]) {
 }
 
 pub fn apply_one_framer_invert(frame_in: &[u8], frame_out: &mut [u8]) {
-    for (out, &inp) in frame_out.iter_mut().zip(frame_in.iter()) {
-        *out = 255 - inp;
+    for (chunk_in, chunk_out) in frame_in.chunks_exact(3).zip(frame_out.chunks_exact_mut(3)) {
+        let r = chunk_in[0] as u32;
+        let g = chunk_in[1] as u32;
+        let b = chunk_in[2] as u32;
+        let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+        let inv = (255 - gray.min(255)) as u8;
+        chunk_out[0] = inv;
+        chunk_out[1] = inv;
+        chunk_out[2] = inv;
     }
 }
 

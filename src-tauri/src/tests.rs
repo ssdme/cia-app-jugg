@@ -215,6 +215,14 @@ fn test_one_framers_library_diff() {
         println!("One-Framer [{}] produced total pixel diff: {}", framer_type, diff);
         assert!(diff > 0, "One-framer {} must modify frame (diff > 0)", framer_type);
     }
+
+    // Verify INVERT specifically yields saturation 0 (R == G == B) on colourful input
+    let mut invert_out = vec![0u8; width * height * 3];
+    apply_one_framer("INVERT", &frame_in, &mut invert_out, width, height);
+    for chunk in invert_out.chunks_exact(3) {
+        assert_eq!(chunk[0], chunk[1], "Inverted One-Framer must have R == G (monochrome)");
+        assert_eq!(chunk[1], chunk[2], "Inverted One-Framer must have G == B (monochrome)");
+    }
 }
 
 #[test]
