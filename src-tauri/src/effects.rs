@@ -222,7 +222,7 @@ pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
         echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
         tint: TintConfig { offset_rgb: [0; 3] },
         vignette: VignetteConfig { strength: 0.3 },
-        scanlines: ScanlinesConfig { opacity: 0.15 },
+        scanlines: ScanlinesConfig { opacity: 0.0 },
     }
 }
 

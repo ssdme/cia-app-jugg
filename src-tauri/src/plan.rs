@@ -10,6 +10,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectOverrides {
@@ -27,9 +31,9 @@ pub struct EffectOverrides {
     pub tint: bool,
     #[serde(default = "default_true")]
     pub vignette: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub scanlines: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub echo_trail: bool,
     #[serde(default = "default_true")]
     pub exposure_flash: bool,
@@ -61,7 +65,7 @@ impl Default for EffectOverrides {
             transitions: true,
             tint: true,
             vignette: true,
-            scanlines: true,
+            scanlines: false,
             echo_trail: false,
             exposure_flash: true,
             bouncy_shake: true,
@@ -90,7 +94,7 @@ pub fn default_effects_for_style(style: &str, full_fx: bool) -> EffectOverrides 
         transitions: true,
         tint: full_fx,
         vignette: full_fx,
-        scanlines: full_fx,
+        scanlines: false,
         echo_trail: false,
         exposure_flash: full_fx && is_hard,
         bouncy_shake: is_hard || is_hybrid,

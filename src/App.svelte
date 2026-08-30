@@ -82,7 +82,7 @@
       transitions: true,
       tint: fullFx,
       vignette: fullFx,
-      scanlines: fullFx,
+      scanlines: false,
       echoTrail: echoTrailEnabled,
       exposureFlash: fullFx && isHard,
       bouncyShake: isHard || isHybrid,
@@ -964,7 +964,7 @@
                   <div class="toggle-row">
                     <div class="toggle-row-label">
                       <span class="group-label">FULL FX</span>
-                      <span class="toggle-row-desc">All effects â€” one-framers, transitions, tint, vignette, scanlines. Default ON.</span>
+                      <span class="toggle-row-desc">All effects — one-framers, transitions, tint, vignette. Default ON.</span>
                     </div>
                     <div class="toggle-actions-group">
                       <button

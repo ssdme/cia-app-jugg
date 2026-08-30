@@ -1268,7 +1268,7 @@ fn test_full_fx_on_matches_head() {
     assert!(amb.flicker.amplitude > 0.0);
     assert!(!amb.exposure_flash.times.is_empty());
     assert!(amb.vignette.strength > 0.0);
-    assert!(amb.scanlines.opacity > 0.0);
+    assert_eq!(amb.scanlines.opacity, 0.0); // Scanlines are disabled by default for all modes
 }
 
 #[test]
