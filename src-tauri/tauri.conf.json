@@ -46,9 +46,11 @@
       {
         "label": "main",
         "title": "cia app",
-        "width": 920,
-        "height": 540,
-        "resizable": false,
+        "width": 960,
+        "height": 580,
+        "minWidth": 920,
+        "minHeight": 540,
+        "resizable": true,
         "decorations": false,
         "dragDropEnabled": true
       }

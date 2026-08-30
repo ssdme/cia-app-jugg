@@ -850,49 +850,6 @@
         {:else if activePage === 'settings'}
           <section class="settings-page" aria-label="Settings configuration">
             <div class="settings-container">
-              <!-- Summary Probed Sources -->
-              <div class="settings-sources-card">
-                <div class="settings-sources-header">
-                  <span class="settings-kicker">cia app / TIME REMAP</span>
-                  <h1>SETTINGS</h1>
-                </div>
-
-                <div class="compact-sources-list">
-                  <!-- SCENE -->
-                  <div class="source-row">
-                    <span class="source-tag">SCENE</span>
-                    <span class="source-name mono" title={scenePath}>{getFileName(scenePath)}</span>
-                    {#if sceneInfo}
-                      <span class="meta-pill mono">
-                        {sceneInfo.duration.toFixed(2)}s • {sceneInfo.width}x{sceneInfo.height} • {sceneInfo.fps.toFixed(0)}fps
-                      </span>
-                    {/if}
-                  </div>
-
-                  <!-- DRUMS -->
-                  <div class="source-row">
-                    <span class="source-tag">DRUMS</span>
-                    <span class="source-name mono" title={drumsPath}>{getFileName(drumsPath)}</span>
-                    {#if drumsInfo}
-                      <span class="meta-pill mono">
-                        {drumsInfo.duration.toFixed(2)}s • {drumsInfo.audioSampleRate}Hz • {bpm ? bpm.toFixed(1) : '-'} BPM • {beats ? beats.length : 0} beats ({downbeats ? downbeats.length : 0} downbeats)
-                      </span>
-                    {/if}
-                  </div>
-
-                  <!-- AUDIO -->
-                  <div class="source-row">
-                    <span class="source-tag">AUDIO</span>
-                    <span class="source-name mono" title={audioPath}>{getFileName(audioPath)}</span>
-                    {#if audioInfo}
-                      <span class="meta-pill mono">
-                        {audioInfo.duration.toFixed(2)}s • {audioInfo.audioSampleRate}Hz • {audioInfo.audioChannels}ch
-                      </span>
-                    {/if}
-                  </div>
-                </div>
-              </div>
-
               <!-- Controls Card -->
               <div class="settings-controls-card">
                 <!-- 1. Style Selector (HARD / SMOOTH / HYBRID) -->
@@ -1882,88 +1839,14 @@
     gap: 8px;
   }
 
-  .settings-sources-card,
   .settings-controls-card {
     background: #09090c;
     border: 1px solid #1c1c20;
     border-radius: 8px;
-    padding: 8px 12px;
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-  }
-
-  .settings-sources-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }
-
-  .settings-kicker {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #71717a;
-  }
-
-  .settings-sources-header h1 {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #ffffff;
-  }
-
-  .compact-sources-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    padding: 5px 8px;
-  }
-
-  .source-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 20px;
-  }
-
-  .source-tag {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
-    border-radius: 3px;
-    padding: 1px 4px;
-    min-width: 42px;
-    text-align: center;
-  }
-
-  .source-name {
-    font-size: 10px;
-    font-weight: 600;
-    color: #e4e4e7;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .meta-pill {
-    font-size: 8.5px;
-    font-weight: 700;
-    color: #4ade80;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.25);
-    border-radius: 3px;
-    padding: 0 5px;
-    white-space: nowrap;
+    gap: 10px;
   }
 
   /* Control Group Common */
@@ -2170,7 +2053,7 @@
   .render-percent {
     font-size: 9.5px;
     font-weight: 700;
-    color: #4ade80;
+    color: #ffffff;
   }
 
   .progress-bar-container {
@@ -2391,7 +2274,7 @@
   .stat-value {
     font-size: 9.5px;
     font-weight: 700;
-    color: #4ade80;
+    color: #ffffff;
   }
 
   .plan-saved-path {
@@ -2849,9 +2732,9 @@
   .titlebar-btn.update-badge {
     width: auto;
     padding: 0 8px;
-    background: rgba(34, 197, 94, 0.15);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.3);
+    background: #1c1c24;
+    color: #ffffff;
+    border: 1px solid #3f3f46;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 9px;
     font-weight: 700;
@@ -2861,16 +2744,16 @@
     gap: 5px;
   }
   .titlebar-btn.update-badge:hover {
-    background: rgba(34, 197, 94, 0.25);
-    border-color: #4ade80;
+    background: #272732;
+    border-color: #71717a;
     color: #ffffff;
   }
   .update-badge-dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: #4ade80;
-    box-shadow: 0 0 6px #4ade80;
+    background: #ffffff;
+    box-shadow: 0 0 4px #ffffff;
   }
 
   .about-update-btn {
@@ -2902,7 +2785,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #4ade80;
+    color: #ffffff;
   }
 
   .update-modal-card {
@@ -2965,10 +2848,10 @@
     align-items: center;
     gap: 8px;
     padding: 12px;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.3);
+    background: #18181b;
+    border: 1px solid #3f3f46;
     border-radius: 6px;
-    color: #4ade80;
+    color: #ffffff;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
     font-weight: 700;

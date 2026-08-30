@@ -190,6 +190,8 @@ pub struct TintConfig {
     pub offset_rgb: [i16; 3],
     #[serde(default)]
     pub invert_bw: bool,
+    #[serde(default)]
+    pub downbeat_times: Vec<f64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -222,7 +224,7 @@ pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
         flicker: FlickerConfig { amplitude: amp, f: freq, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: flash_peak, times: downbeats.to_vec() },
         echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
-        tint: TintConfig { offset_rgb: [0; 3], invert_bw: false },
+        tint: TintConfig { offset_rgb: [0; 3], invert_bw: false, downbeat_times: downbeats.to_vec() },
         vignette: VignetteConfig { strength: 0.3 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
     }
@@ -1083,6 +1085,24 @@ pub fn apply_ambiance_effects(
     let total_exp = (flicker_exp + flash_exp).clamp(-0.999, 0.999);
     let scale_fp = ((1.0 + total_exp).clamp(0.0, 2.0) * 256.0) as u32;
 
+    let should_invert = if amb.tint.invert_bw {
+        if amb.tint.downbeat_times.is_empty() {
+            true
+        } else {
+            let mut hit = false;
+            for &db_t in &amb.tint.downbeat_times {
+                let t_frames = (t - db_t) * fps;
+                if t_frames >= -0.2 && t_frames < 1.0 {
+                    hit = true;
+                    break;
+                }
+            }
+            hit
+        }
+    } else {
+        false
+    };
+
     let [tr, tg, tb] = amb.tint.offset_rgb;
     let dim_fp = ((1.0 - scanline_opacity) * 256.0) as u32;
 
@@ -1122,7 +1142,7 @@ pub fn apply_ambiance_effects(
                 let mut g = ((256 - alpha_fp) * g_cur + alpha_fp * g_echo) >> 8;
                 let mut b = ((256 - alpha_fp) * b_cur + alpha_fp * b_echo) >> 8;
 
-                if amb.tint.invert_bw {
+                if should_invert {
                     let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
                     let inv = 255 - gray.min(255);
                     r = inv;
@@ -1154,7 +1174,7 @@ pub fn apply_ambiance_effects(
                 let mut g = frame_in[idx + 1] as u32;
                 let mut b = frame_in[idx + 2] as u32;
 
-                if amb.tint.invert_bw {
+                if should_invert {
                     let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
                     let inv = 255 - gray.min(255);
                     r = inv;
@@ -1184,7 +1204,7 @@ pub fn apply_ambiance_effects(
                 let mut g = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
                 let mut b = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
 
-                if amb.tint.invert_bw {
+                if should_invert {
                     let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
                     let inv = 255 - gray.min(255);
                     r = inv;

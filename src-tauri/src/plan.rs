@@ -982,9 +982,11 @@ pub fn create_plan_internal(
         let mut a = default_ambiance(style, downbeats);
         if overrides.tint {
             a.tint.invert_bw = true;
+            a.tint.downbeat_times = downbeats.to_vec();
             a.tint.offset_rgb = custom_params.as_ref().map_or([0, 0, 0], |c| [c.tint_r_offset, c.tint_g_offset, c.tint_b_offset]);
         } else {
             a.tint.invert_bw = false;
+            a.tint.downbeat_times.clear();
             a.tint.offset_rgb = [0, 0, 0];
         }
         if overrides.flicker {

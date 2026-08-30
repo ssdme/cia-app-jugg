@@ -561,7 +561,7 @@ fn test_ambiance_echo_trail_blend() {
         flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
         echo_trail: EchoTrailConfig { enabled: true, alpha, k },
-        tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: false },
+        tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: false, downbeat_times: vec![] },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
     };
@@ -616,7 +616,7 @@ fn test_ambiance_tint_vignette_scanlines() {
         flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
         exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
         echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
-        tint: TintConfig { offset_rgb: [tint_r, 0, 0], invert_bw: false },
+        tint: TintConfig { offset_rgb: [tint_r, 0, 0], invert_bw: false, downbeat_times: vec![] },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.15 },
     };
@@ -637,6 +637,54 @@ fn test_ambiance_tint_vignette_scanlines() {
         .map(|(&a, &b)| (a as i64 - b as i64).abs())
         .sum();
     assert!(diff > 0, "Ambiance effects must change the frame");
+}
+
+#[test]
+fn test_invert_bw_downbeat_trigger() {
+    let width = 4;
+    let height = 4;
+    let frame_in = vec![200u8, 100u8, 50u8].repeat(width * height);
+    let mut frame_out = vec![0u8; width * height * 3];
+    let mut echo_ring = vec![vec![0u8; width * height * 3]; 4];
+    let mut echo_head = 0usize;
+    let vignette_lut = vec![255u8; width * height];
+
+    let seg = PlanSegment {
+        t0: 0.0,
+        t1: 1.0,
+        s0: 0.0,
+        s1: 1.0,
+        curve: "snap".to_string(),
+        effects: crate::default_segment_effects(),
+        transition: None,
+    };
+
+    let amb = AmbianceConfig {
+        flicker: FlickerConfig { amplitude: 0.0, f: 0.0, phase: 0.0 },
+        exposure_flash: ExposureFlashConfig { peak: 0.0, times: vec![] },
+        echo_trail: EchoTrailConfig { enabled: false, alpha: 0.0, k: 1 },
+        tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: true, downbeat_times: vec![2.0] },
+        vignette: VignetteConfig { strength: 0.0 },
+        scanlines: ScanlinesConfig { opacity: 0.0 },
+    };
+
+    // Frame at t=1.0 (between downbeats): must remain normal colors!
+    apply_ambiance_effects(
+        &frame_in, &mut frame_out, width, height, &amb,
+        &mut echo_ring, &mut echo_head, &vignette_lut, 0.0, 1.0, &seg, 16.0,
+    );
+    assert_eq!(frame_out[0], 199, "Between downbeats, R must stay original (not inverted)");
+    assert_eq!(frame_out[1], 99, "Between downbeats, G must stay original");
+    assert_eq!(frame_out[2], 49, "Between downbeats, B must stay original");
+
+    // Frame at t=2.0 (on downbeat hit): must be inverted B&W with saturation 0 (R == G == B)!
+    apply_ambiance_effects(
+        &frame_in, &mut frame_out, width, height, &amb,
+        &mut echo_ring, &mut echo_head, &vignette_lut, 0.0, 2.0, &seg, 16.0,
+    );
+    assert_eq!(frame_out[0], 130, "On downbeat hit, R must be inverted B&W");
+    assert_eq!(frame_out[1], 130, "On downbeat hit, G must be inverted B&W (saturation 0)");
+    assert_eq!(frame_out[2], 130, "On downbeat hit, B must be inverted B&W (saturation 0)");
 }
 
 #[test]
