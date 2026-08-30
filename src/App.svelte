@@ -18,6 +18,8 @@
   let toast = $state({ show: false, message: '', type: 'info' });
   let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
+  const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';
+  const buildTime = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
 
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
@@ -660,7 +662,10 @@
   <!-- Custom Windows Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand">
-      <span class="titlebar-text">cia app</span>
+      <span class="titlebar-text">cia jugg</span>
+      {#if buildDate && buildTime}
+        <span class="titlebar-build-badge mono">{buildDate} {buildTime}</span>
+      {/if}
     </div>
     <div class="titlebar-controls">
       {#if availableUpdate}
@@ -1553,8 +1558,19 @@
     border-bottom: 1px solid #1c1c20;
   }
 
-  .titlebar-brand { display: flex; align-items: center; }
-  .titlebar-text { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #71717a; }
+  .titlebar-brand { display: flex; align-items: center; gap: 8px; }
+  .titlebar-text { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #a1a1aa; text-transform: uppercase; }
+  .titlebar-build-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    color: #71717a;
+    background: #111116;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #27272a;
+    letter-spacing: 0.04em;
+    user-select: text;
+  }
   .titlebar-controls { display: flex; gap: 2px; }
 
   .titlebar-btn {
