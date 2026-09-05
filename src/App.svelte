@@ -1120,9 +1120,9 @@
                         class="zone-link mono"
                         onclick={(e) => { e.stopPropagation(); openAboutLink('https://vocalremover.org/splitter-ai'); }}
                         type="button"
-                        title="Open vocal remover AI"
+                        title="Open https://vocalremover.org/splitter-ai"
                       >
-                        https://vocalremover.org/splitter-ai
+                        splitter-ai
                       </button>
                     </div>
                   </div>
