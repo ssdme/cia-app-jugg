@@ -4,6 +4,7 @@ version = "1.0.2"
 edition = "2021"
 description = "Desktop shell and about info."
 repository = "https://github.com/ssdme/cia-app-jugg"
+authors = ["cia213"]
 license = "MIT"
 
 [lib]
