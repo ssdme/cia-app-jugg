@@ -643,7 +643,7 @@
         oneFramers: hasOneFramers,
         transitions: hasTransitions,
         ambiance: hasAmbiance,
-        echoTrail: echoTrailEnabled,
+        echoTrail: false,
         export: parsed.export || {
           codec: selectedCodec,
           bitrateMbps: bitrateValue,
@@ -656,7 +656,7 @@
         planJson,
         scenePath,
         audioPath,
-        echoTrail: echoTrailEnabled,
+        echoTrail: false,
       });
 
       console.log('[RENDER] Render completed successfully:', renderRes);
@@ -1181,100 +1181,96 @@
                 </div>
 
                 <!-- 4. T13 Full FX toggle & T17 Details button -->
-                <div class="control-group">
-                  <div class="toggle-row">
-                    <div class="toggle-row-label">
-                      <span class="group-label has-tip" title="All effects — one-framers, transitions, tint, vignette. Default ON.">FULL FX</span>
-                    </div>
-                    <div class="toggle-actions-group">
-                      <button
-                        id="btn-details-fx"
-                        class="btn-details-fx"
-                        onclick={() => showDetailsModal = true}
-                        type="button"
-                      >
-                        DETAILS
-                      </button>
-                      <button
-                        id="toggle-full-fx"
-                        class="toggle-btn"
-                        class:active={fullFxEnabled}
-                        onclick={handleToggleFullFx}
-                        type="button"
-                        aria-pressed={fullFxEnabled}
-                      >
-                        {fullFxEnabled ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
+                <div class="toggle-row">
+                  <div class="toggle-row-left" title="All effects — one-framers, transitions, tint, vignette. Default ON.">
+                    <span class="toggle-row-title">FULL FX</span>
+                    <span class="toggle-info-icon" aria-label="Info">ⓘ</span>
+                  </div>
+                  <div class="toggle-actions-group">
+                    <button
+                      id="btn-details-fx"
+                      class="btn-details-fx"
+                      onclick={() => showDetailsModal = true}
+                      type="button"
+                    >
+                      DETAILS
+                    </button>
+                    <button
+                      id="toggle-full-fx"
+                      class="toggle-btn"
+                      class:active={fullFxEnabled}
+                      onclick={handleToggleFullFx}
+                      type="button"
+                      aria-pressed={fullFxEnabled}
+                    >
+                      {fullFxEnabled ? 'ON' : 'OFF'}
+                    </button>
                   </div>
                 </div>
 
                 <!-- 5. Color Correction (CC) -->
-                <div class="control-group">
-                  <div class="toggle-row">
-                    <div class="toggle-row-label">
-                      <span class="group-label has-tip" title="Deep tone curve, highlight bloom glow (10px), 19% film grain noise. Grayscale monochrome.">COLOR CORRECTION (CC)</span>
-                    </div>
-                    <button
-                      id="toggle-cc-deep-dark"
-                      class="toggle-btn"
-                      class:active={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
-                      onclick={() => {
-                        const val = !(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
-                        effectOverrides.ccDeepDark = val;
-                        effectOverrides.cc_deep_dark = val;
-                      }}
-                      type="button"
-                      aria-pressed={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
-                    >
-                      {(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark) ? 'DEEP DARK [ON]' : 'DEEP DARK [OFF]'}
-                    </button>
+                <div class="toggle-row">
+                  <div class="toggle-row-left" title="Deep tone curve, highlight bloom glow (10px), 19% film grain noise. Grayscale monochrome.">
+                    <span class="toggle-row-title">COLOR CORRECTION (CC)</span>
+                    <span class="toggle-info-icon" aria-label="Info">ⓘ</span>
                   </div>
+                  <button
+                    id="toggle-cc-deep-dark"
+                    class="toggle-btn"
+                    class:active={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                    onclick={() => {
+                      const val = !(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
+                      effectOverrides.ccDeepDark = val;
+                      effectOverrides.cc_deep_dark = val;
+                    }}
+                    type="button"
+                    aria-pressed={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                  >
+                    {(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark) ? 'DEEP DARK [ON]' : 'DEEP DARK [OFF]'}
+                  </button>
                 </div>
 
                 <!-- 6. Anti Flash Mode -->
-                <div class="control-group">
-                  <div class="toggle-row">
-                    <div class="toggle-row-label">
-                      <span class="group-label has-tip" title="Eliminates all white/black flashes, brightness strobes, and color inversions. Safe for photosensitive viewers.">ANTI FLASH</span>
-                    </div>
-                    <button
-                      id="toggle-anti-flash"
-                      class="toggle-btn"
-                      class:active={effectOverrides.antiFlash || effectOverrides.anti_flash}
-                      onclick={() => {
-                        const val = !(effectOverrides.antiFlash || effectOverrides.anti_flash);
-                        effectOverrides.antiFlash = val;
-                        effectOverrides.anti_flash = val;
-                      }}
-                      type="button"
-                      aria-pressed={effectOverrides.antiFlash || effectOverrides.anti_flash}
-                    >
-                      {(effectOverrides.antiFlash || effectOverrides.anti_flash) ? 'ANTI FLASH [ON]' : 'ANTI FLASH [OFF]'}
-                    </button>
+                <div class="toggle-row">
+                  <div class="toggle-row-left" title="Eliminates all white/black flashes, brightness strobes, and color inversions. Safe for photosensitive viewers.">
+                    <span class="toggle-row-title">ANTI FLASH</span>
+                    <span class="toggle-info-icon" aria-label="Info">ⓘ</span>
                   </div>
+                  <button
+                    id="toggle-anti-flash"
+                    class="toggle-btn"
+                    class:active={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                    onclick={() => {
+                      const val = !(effectOverrides.antiFlash || effectOverrides.anti_flash);
+                      effectOverrides.antiFlash = val;
+                      effectOverrides.anti_flash = val;
+                    }}
+                    type="button"
+                    aria-pressed={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                  >
+                    {(effectOverrides.antiFlash || effectOverrides.anti_flash) ? 'ANTI FLASH [ON]' : 'ANTI FLASH [OFF]'}
+                  </button>
                 </div>
 
                 <!-- 7. ScenePack Controls (visible when longVideoMode === 'scenepack') -->
                 {#if longVideoMode === 'scenepack'}
-                  <div class="control-group">
-                    <div class="toggle-row">
-                      <div class="toggle-row-label">
-                        <span class="group-label has-tip" title="Clips currently selected for ScenePack rendering. Click to modify selection.">SCENEPACK CLIPS</span>
-                      </div>
-                      <button
-                        class="btn-details-fx"
-                        onclick={() => showScenePackGallery = true}
-                        type="button"
-                      >
-                        SELECT CLIPS ({selectedClipIndices.size} / {sceneClipsList.length})
-                      </button>
+                  <div class="toggle-row">
+                    <div class="toggle-row-left" title="Clips currently selected for ScenePack rendering. Click to modify selection.">
+                      <span class="toggle-row-title">SCENEPACK CLIPS</span>
+                      <span class="toggle-info-icon" aria-label="Info">ⓘ</span>
                     </div>
+                    <button
+                      class="btn-details-fx"
+                      onclick={() => showScenePackGallery = true}
+                      type="button"
+                    >
+                      SELECT CLIPS ({selectedClipIndices.size} / {sceneClipsList.length})
+                    </button>
                   </div>
 
                   <div class="control-group">
                     <div class="scenepack-rhythm-header">
-                      <span class="group-label has-tip" title="Cadence of scene cuts synchronized to audio beats.">SCENEPACK RHYTHM</span>
+                      <span class="group-label">SCENEPACK RHYTHM</span>
                     </div>
                     <div class="scenepack-rhythm-grid">
                       <button
@@ -2387,18 +2383,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #71717a;
-  }
-
-  .group-label.has-tip {
-    cursor: help;
-    text-decoration: underline dotted rgba(255, 255, 255, 0.25);
-    text-underline-offset: 3px;
-    transition: color 0.15s ease, text-decoration-color 0.15s ease;
-  }
-
-  .group-label.has-tip:hover {
-    color: #e4e4e7;
-    text-decoration-color: rgba(255, 255, 255, 0.7);
+    text-transform: uppercase;
   }
 
   /* Style Selector Cards */
@@ -2787,19 +2772,60 @@
     flex: 1;
   }
 
-  /* T11: Echo/Trail toggle row */
+  /* Toggle Rows */
   .toggle-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
+    padding: 7px 12px;
+    background: #050508;
+    border: 1px solid #1c1c24;
+    border-radius: 6px;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }
 
-  .toggle-row-label {
+  .toggle-row:hover {
+    background: #09090f;
+    border-color: #272733;
+  }
+
+  .toggle-row-left {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
-    flex: 1;
+    align-items: center;
+    gap: 8px;
+    cursor: help;
+  }
+
+  .toggle-row-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #d4d4d8;
+    text-transform: uppercase;
+    transition: color 0.15s ease;
+  }
+
+  .toggle-row:hover .toggle-row-title {
+    color: #ffffff;
+  }
+
+  .toggle-info-icon {
+    font-size: 11px;
+    color: #52525b;
+    line-height: 1;
+    transition: color 0.15s ease;
+    user-select: none;
+  }
+
+  .toggle-row:hover .toggle-info-icon {
+    color: #a1a1aa;
+  }
+
+  .toggle-actions-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .toggle-btn {
