@@ -53,7 +53,7 @@
   // Beta features toggle (false for public release distribution)
   const SHOW_BETA_TEXT_STUDIO = false;
   let toast = $state({ show: false, message: '', type: 'info' });
-  let appVersion = $state('1.0.2');
+  let appVersion = $state('1.0.3');
   let discordCopyFeedback = $state(false);
   let isMaximized = $state(false);
   const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';

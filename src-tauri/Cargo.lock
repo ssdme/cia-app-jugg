@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "cia-render"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "mp4",
  "rfd",

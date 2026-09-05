@@ -6,13 +6,24 @@ import os from 'os';
 const tauriConf = JSON.parse(fs.readFileSync(path.join('src-tauri', 'tauri.conf.json'), 'utf8'));
 const version = tauriConf.version;
 const keyPath = path.join(os.homedir(), '.tauri', 'cia-app.key');
-const installerPath = path.join('src-tauri', 'target', 'release', 'bundle', 'nsis', `cia app_${version}_x64-setup.exe`);
-const sigPath = `${installerPath}.sig`;
+const bundleDir = path.join('src-tauri', 'target', 'release', 'bundle', 'nsis');
+const candidates = [
+  path.join(bundleDir, `${tauriConf.productName}_${version}_x64-setup.exe`),
+  path.join(bundleDir, `cia jugg_${version}_x64-setup.exe`),
+  path.join(bundleDir, `cia app_${version}_x64-setup.exe`),
+  path.join(bundleDir, `cia.jugg_${version}_x64-setup.exe`),
+  path.join(bundleDir, `cia.app_${version}_x64-setup.exe`)
+];
 
-if (!fs.existsSync(installerPath)) {
-  console.error(`Installer not found at ${installerPath}`);
+const installerPath = candidates.find(p => fs.existsSync(p));
+
+if (!installerPath) {
+  console.error(`Installer not found in ${bundleDir}. Checked:`, candidates);
   process.exit(1);
 }
+
+console.log(`Using installer at ${installerPath}`);
+const sigPath = `${installerPath}.sig`;
 
 console.log(`Signing installer for v${version}...`);
 execSync(`npx tauri signer sign --private-key-path "${keyPath}" "${installerPath}"`, {
@@ -32,14 +43,24 @@ if (!fs.existsSync(sigPath)) {
 
 const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
+// Create sanitized alias copies without spaces for direct links
+const dotJuggPath = path.join(bundleDir, `cia.jugg_${version}_x64-setup.exe`);
+const dotAppPath = path.join(bundleDir, `cia.app_${version}_x64-setup.exe`);
+if (installerPath !== dotJuggPath) {
+  fs.copyFileSync(installerPath, dotJuggPath);
+}
+if (installerPath !== dotAppPath) {
+  fs.copyFileSync(installerPath, dotAppPath);
+}
+
 const manifest = {
   version: version,
-  notes: `cia app v${version}\n- Embedded beat detection (beat_this ONNX runtime) and media processing tools (FFmpeg/FFprobe)\n- Pure Rust matrix effects engine (Ambiance, CC Deep Dark, Anti-Flash, Shake, Optical Flow)\n- 100% offline standalone installer for clean Windows installations`,
+  notes: `cia jugg v${version}\n- Multi-video sequential decoding and timeline assembly\n- Streamlined dropzones layout with splitter-ai stem separation integration\n- Pure Rust matrix transform engine (Ambiance, CC Deep Dark, Anti-Flash, Shake, Optical Flow)\n- Standalone zero-dependency offline installer for clean Windows installations`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
       signature: signature,
-      url: `https://github.com/ssdme/cia-app-jugg/releases/download/v${version}/cia.app_${version}_x64-setup.exe`
+      url: `https://github.com/ssdme/cia-app-jugg/releases/download/v${version}/cia.jugg_${version}_x64-setup.exe`
     }
   }
 };
