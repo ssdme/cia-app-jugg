@@ -21,6 +21,7 @@ vite.config.ts.timestamp-*
 *.mov
 *.avi
 *.webm
+!/docs/*.mp4
 
 # Local Python caches, environments, and model weights
 /venv/
