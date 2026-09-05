@@ -43,14 +43,10 @@ if (!fs.existsSync(sigPath)) {
 
 const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
-// Create sanitized alias copies without spaces for direct links
+// Create sanitized alias copy without spaces for direct links
 const dotJuggPath = path.join(bundleDir, `cia.jugg_${version}_x64-setup.exe`);
-const dotAppPath = path.join(bundleDir, `cia.app_${version}_x64-setup.exe`);
 if (installerPath !== dotJuggPath) {
   fs.copyFileSync(installerPath, dotJuggPath);
-}
-if (installerPath !== dotAppPath) {
-  fs.copyFileSync(installerPath, dotAppPath);
 }
 
 const manifest = {
