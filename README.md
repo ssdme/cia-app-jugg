@@ -1,105 +1,109 @@
 # cia app
 
-> **Fast, local, beat-synchronized video time remap & kinetic edit studio for Windows.**
+Desktop application for beat-synchronized video time remapping and kinetic transform compositing on Windows.
 
-Your media stays entirely local. **cia app** performs media analysis, onset/beat tracking, geometric remapping, transform stacking, and hardware-accelerated encoding locally without cloud dependencies.
+All processing runs locally on the host machine. The application bundles its own ONNX neural inference runtime and FFmpeg toolchain, requiring no cloud services, Python runtime, or external codec installations.
 
 [![Release](https://img.shields.io/github/v/release/ssdme/cia-app-jugg?color=00f2fe&style=flat-square)](https://github.com/ssdme/cia-app-jugg/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-18181b?style=flat-square&logo=windows)](https://github.com/ssdme/cia-app-jugg/releases)
 [![License](https://img.shields.io/badge/license-MIT-3f3f46?style=flat-square)](LICENSE)
-[![Zero Setup](https://img.shields.io/badge/setup-100%25%20standalone-22c55e?style=flat-square)](https://github.com/ssdme/cia-app-jugg/releases)
+[![Build](https://img.shields.io/badge/build-standalone%20nsis-22c55e?style=flat-square)](https://github.com/ssdme/cia-app-jugg/releases)
 
 ---
 
-## Interface Preview
+## Interface
 
-![cia app preview](docs/preview.png)
+![cia app interface](docs/preview.png)
 
 ---
 
 ## Render Previews
 
-Here is how the beat-synchronized time remap engine renders:
-
-<div align="center">
-  <table>
-    <tr>
-      <td align="center" width="50%">
-        <b>⚡ Quick Teaser (5s — Fast Snaps &amp; One-Framers)</b><br><br>
-        <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4" controls width="100%"></video>
-        <br>
-        <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4">▶ Direct Link / Download preview1.mp4 (2 MB)</a></sub>
-      </td>
-      <td align="center" width="50%">
-        <b>🔥 Full Showcase (28s — Complete Beat Sync &amp; Color Grading)</b><br><br>
-        <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4" controls width="100%"></video>
-        <br>
-        <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4">▶ Direct Link / Download preview2.mp4 (15 MB)</a></sub>
-      </td>
-    </tr>
-  </table>
-</div>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <b>Teaser (5s — Fast Snaps, Reverse Cuts)</b><br><br>
+      <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4" controls width="100%"></video>
+      <br>
+      <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4">Direct Link: preview1.mp4 (2 MB)</a></sub>
+    </td>
+    <td align="center" width="50%">
+      <b>Showcase (28s — Complete Remap, Transform Stacking)</b><br><br>
+      <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4" controls width="100%"></video>
+      <br>
+      <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4">Direct Link: preview2.mp4 (15 MB)</a></sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
-## Core Features
+## Pipeline & Architecture
 
-- **3-Source Input Pipeline** :
-  - **SCENE** : Source video clip (MP4, MKV, WEBM, MOV, AVI).
-  - **DRUMS** : Isolated drum stem or beat audio for onset extraction.
-  - **AUDIO** : Target master music track for final sync and audio multiplexing.
-- **Local Neural Onset & Beat Tracking** :
-  - Embedded `beat_this` neural network ONNX engine for microsecond-accurate beat and downbeat tracking.
-  - No external Python environment or network requests needed.
-- **Dynamic Remap Curves** :
-  - **HARD** : Aggressive snaps, dynamic reverse cuts on downbeats, one-framers, and high-energy shakes.
-  - **SMOOTH** : Continuous flowing curves, gentle zoom transitions, zero reverse remaps.
-  - **HYBRID** : Balanced alternating snap and saddle curves with medium shake intensity.
-- **Pure Rust Matrix Effects Engine** :
-  - **Camera Shakes** : Harmonic amplitude/decay, bouncy bounce, dissolve skew, and squish-pop.
-  - **Ambiance Styling** : Highlight bloom flash, echo-trail motion blending, and CC Deep Dark tone curve.
-  - **Anti-Flash Mode** : Clean photosensitive-safe rendering that suppresses white/black strobes while preserving kinetic motion.
-- **Flexible Export Options** :
-  - High-efficiency codecs : **H.264**, **H.265 (HEVC)**, and **VP9**.
-  - Adjustable bitrates from 5 to 50 Mbps.
-  - Automated borderless stretch and crop-to-fill geometry.
+### Ingestion Pipeline
+- **Scene**: Source footage (MP4, MKV, WEBM, MOV, AVI).
+- **Drums**: Isolated percussive audio stem for neural onset and downbeat analysis.
+- **Audio**: Target master soundtrack for final audio multiplexing and alignment.
 
----
+### Neural Beat Detection
+- Embedded `beat_this` ONNX model executed via ONNX Runtime C API.
+- Sub-frame onset detection and downbeat classification with microsecond timestamp resolution.
+- Zero external dependencies: no Python runtime, PyTorch, or GPU driver packages required.
 
-## Getting Started
+### Time Remapping Curves
+- **HARD**: High-gradient velocity ramps, one-frame cuts, and beat-aligned reverse cuts.
+- **SMOOTH**: Continuous cubic and bezier easing without reverse velocity.
+- **HYBRID**: Alternating snap-and-saddle curve profile with dynamic acceleration.
 
-### Standalone Windows Installer (Recommended)
+### Transform & Shader Engine
+- **Camera Shakes**: Harmonic damping, bounce, dissolve skew, and squish-pop coordinate transforms.
+- **Ambiance Passes**: Highlight bloom, temporal echo-trail frame blending, and CC Deep Dark tone curve.
+- **Anti-Flash Mode**: Suppresses rapid luminance delta while preserving coordinate displacement for photosensitivity compliance.
 
-Download the latest standalone setup from the **[Releases Page](https://github.com/ssdme/cia-app-jugg/releases/latest)** :
-
-📥 **[Download cia app v1.0.2 Installer (.exe)](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/cia.app_1.0.2_x64-setup.exe)**
-
-- **100% Offline & Standalone** : Bundles the full media and beat detection runtimes (FFmpeg, FFprobe, and ONNX models).
-- **Zero Configuration** : Runs out-of-the-box on clean Windows installations without administrative UAC prompts, Scoop, or Python setup.
+### Export Pipeline
+- Hardware-accelerated and software encoding via embedded FFmpeg pipeline.
+- Target codecs: **H.264 (AVC)**, **H.265 (HEVC)**, and **VP9**.
+- Configurable target bitrates from 5 Mbps to 50 Mbps.
+- Geometric output modes: Native, Crop-to-fill, and Stretch.
 
 ---
 
-## Build from Source
+## Installation
 
-Prerequisites : Node.js (v18+), Rust stable, and Visual Studio MSVC build tools.
+Download the standalone installer from the [Releases](https://github.com/ssdme/cia-app-jugg/releases/latest) page:
+
+- **[cia.app_1.0.2_x64-setup.exe](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/cia.app_1.0.2_x64-setup.exe)** (129 MB)
+
+The installer is self-contained. It bundles all required binaries (`ffmpeg.exe`, `ffprobe.exe`, `beat_this.exe`, `onnxruntime.dll`, and ONNX model weights). No administrative privileges or system environment changes are required.
+
+---
+
+## Building from Source
+
+### Prerequisites
+- Node.js 18+
+- Rust stable (MSVC toolchain)
+- Visual Studio C++ Build Tools
+
+### Build Steps
 
 ```powershell
-# 1. Clone the repository
+# Clone the repository
 git clone https://github.com/ssdme/cia-app-jugg.git
 cd cia-app-jugg
 
-# 2. Install dependencies
+# Install frontend dependencies
 npm ci
 
-# 3. Launch development server
+# Run in development mode
 npm run tauri dev
 
-# 4. Compile production NSIS installer
+# Compile standalone production installer
 npm run tauri build
 ```
 
 ---
 
-## Licence
+## License
 
-cia app source code is [MIT licensed](LICENSE). Embedded third-party tools retain their respective licenses (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+MIT License. See [LICENSE](LICENSE) for terms. Bundled third-party binaries and models retain their respective licenses (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
