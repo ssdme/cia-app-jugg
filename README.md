@@ -32,7 +32,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 ## UX
 
-![cia app ux](docs/preview.png)
+![cia jugg ux](docs/preview.png)
 
 ---
 
@@ -70,7 +70,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 Download the standalone installer from the [Releases](https://github.com/ssdme/cia-app-jugg/releases/latest) page:
 
-- **[cia.app_1.0.2_x64-setup.exe](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/cia.app_1.0.2_x64-setup.exe)** (129 MB)
+- **[cia.jugg_1.0.3_x64-setup.exe](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.3/cia.jugg_1.0.3_x64-setup.exe)** (130 MB)
 
 The installer is self-contained. It bundles all required binaries (`ffmpeg.exe`, `ffprobe.exe`, `beat_this.exe`, `onnxruntime.dll`, and ONNX model weights). No administrative privileges or system environment changes are required.
 
