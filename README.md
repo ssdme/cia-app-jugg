@@ -23,13 +23,13 @@ All processing runs locally on the host machine. The application bundles its own
   <tr>
     <td align="center" width="50%">
       <b>Teaser (5s — Fast Snaps, Reverse Cuts)</b><br><br>
-      <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4" controls width="100%"></video>
+      <video src="https://github.com/user-attachments/assets/960ae91f-d6aa-4c61-9bf7-89dd9c6582b9" controls width="100%"></video>
       <br>
       <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview1.mp4">Direct Link: preview1.mp4 (2 MB)</a></sub>
     </td>
     <td align="center" width="50%">
       <b>Showcase (28s — Complete Remap, Transform Stacking)</b><br><br>
-      <video src="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4" controls width="100%"></video>
+      <video src="https://github.com/user-attachments/assets/925d8312-2a50-4117-867f-065f97be912a" controls width="100%"></video>
       <br>
       <sub><a href="https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.2/preview2.mp4">Direct Link: preview2.mp4 (15 MB)</a></sub>
     </td>
