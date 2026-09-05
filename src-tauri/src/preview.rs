@@ -331,7 +331,6 @@ pub fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
         ("one_framers", "One-Framers Library (10 Styles)", "CUTS", "Multi-style library: Minimax Beams, Fisheye, Bokeh, Offset Blur, Radial Blur, Scene Tint & Soft Flash"),
         ("flicker", "Flicker Oscillation", "AMBIANCE", "Sinusoidal luminosity micro-oscillations"),
         ("exposure_flash", "Exposure Flash", "AMBIANCE", "Sharp white flashes at musical impact points"),
-        ("echo_trail", "Echo / Trail", "AMBIANCE", "Motion time blend with trailing ghost frames"),
         ("tint", "Invert B&W (Negative)", "AMBIANCE", "Inverts colors to black and white with zero saturation"),
         ("vignette", "Vignette Darkening", "AMBIANCE", "Radial corner darkening focusing visual center"),
         ("scanlines", "CRT Scanlines", "AMBIANCE", "Retro television horizontal scanline rasterization"),

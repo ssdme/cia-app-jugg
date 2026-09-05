@@ -1485,7 +1485,7 @@ fn test_generic_preview_frame_pattern() {
 #[test]
 fn test_all_18_effect_previews_produce_diff() {
     let previews = get_effect_previews().expect("get_effect_previews must succeed");
-    assert_eq!(previews.len(), 19);
+    assert_eq!(previews.len(), 18);
 
     let base_frame = generate_generic_preview_frame(256, 256);
 

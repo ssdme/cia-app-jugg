@@ -16,6 +16,40 @@
       : null;
 
   let activePage = $state('remap'); // 'remap' | 'settings' | 'text' | 'about'
+  let lastRemapPage = $state('remap'); // remembers 'remap' (dropzones) or 'settings'
+  let historyStack = $state(['remap']);
+  let historyIndex = $state(0);
+  let canGoBack = $derived(historyIndex > 0);
+  let canGoForward = $derived(historyIndex < historyStack.length - 1);
+
+  function pushNavigation(page) {
+    if (page === activePage) return;
+    historyStack = [...historyStack.slice(0, historyIndex + 1), page];
+    historyIndex = historyStack.length - 1;
+    activePage = page;
+    if (page === 'remap' || page === 'settings') {
+      lastRemapPage = page;
+    }
+  }
+
+  function handleGoBack() {
+    if (!canGoBack) return;
+    historyIndex -= 1;
+    activePage = historyStack[historyIndex];
+    if (activePage === 'remap' || activePage === 'settings') {
+      lastRemapPage = activePage;
+    }
+  }
+
+  function handleGoForward() {
+    if (!canGoForward) return;
+    historyIndex += 1;
+    activePage = historyStack[historyIndex];
+    if (activePage === 'remap' || activePage === 'settings') {
+      lastRemapPage = activePage;
+    }
+  }
+
   // Beta features toggle (false for public release distribution)
   const SHOW_BETA_TEXT_STUDIO = false;
   let toast = $state({ show: false, message: '', type: 'info' });
@@ -52,7 +86,10 @@
   let audioError = $state('');
   let hoveredZone = $state(null);
 
-  // Probe & Beat Detection State
+  // Probe & Beat Detection State & Cache
+  let probedScenePath = $state('');
+  let probedDrumsPath = $state('');
+  let probedAudioPath = $state('');
   let sceneInfo = $state(null);
   let drumsInfo = $state(null);
   let audioInfo = $state(null);
@@ -70,7 +107,6 @@
   let customHeight = $state(1080);
   let customArError = $state('');
   let borderless = $state(true); // always true internally
-  let echoTrailEnabled = $state(false); // T11 echo/trail, default OFF
   let fullFxEnabled = $state(true);    // T13 full fx, default ON
   let renderStats = $state(null);      // T16 render logs & stats
 
@@ -86,29 +122,34 @@
   let hoverPos = $state({ x: 0, y: 0 });
 
   function getDefaultOverrides(style, fullFx) {
-    const isSmooth = style === 'SMOOTH';
-    const isHybrid = style === 'HYBRID';
-    const isHard = !isSmooth && !isHybrid;
-
     return {
       shakes: true,
       zoom: true,
       flicker: true,
-      oneFramers: fullFx,
+      oneFramers: true,
+      one_framers: true,
       transitions: false,
-      tint: fullFx,
-      vignette: fullFx,
+      tint: true,
+      vignette: true,
       scanlines: false,
-      echoTrail: echoTrailEnabled,
-      exposureFlash: fullFx && (isHard || isHybrid),
-      bouncyShake: isHard || isHybrid,
-      dissolveShake: isHard || isHybrid,
-      skewShake: isHard || isHybrid,
-      squishPop: isHard || isHybrid,
-      opticsBounce: isHard || isHybrid,
+      exposureFlash: true,
+      exposure_flash: true,
+      bouncyShake: true,
+      bouncy_shake: true,
+      dissolveShake: true,
+      dissolve_shake: true,
+      skewShake: true,
+      skew_shake: true,
+      squishPop: true,
+      squish_pop: true,
+      opticsBounce: true,
+      optics_bounce: true,
       buildupChain: true,
-      warpStretch: isHard || isHybrid,
+      buildup_chain: true,
+      warpStretch: true,
+      warp_stretch: true,
       zoomBeatOffset: true,
+      zoom_beat_offset: true,
       ccDeepDark: false,
       cc_deep_dark: false,
       antiFlash: false,
@@ -128,7 +169,7 @@
   let selectedClipIndices = $state(new Set());
   let hoveredSceneClip = $state(null);
   let hoverScenePos = $state({ x: 0, y: 0 });
-  let scenePackRhythm = $state('mid'); // 'fast' | 'mid' | 'slow'
+  let scenePackRhythm = $state('fast'); // 'fast' | 'mid' | 'slow'
 
   function formatTimecode(sec) {
     if (isNaN(sec) || sec == null) return '0:00.0';
@@ -287,28 +328,40 @@
     const ext = getFileExtension(path);
     if (zone === 'scene') {
       if (VIDEO_EXTENSIONS.includes(ext)) {
-        scenePath = path;
-        sceneError = '';
-        sceneInfo = null;
+        if (scenePath !== path) {
+          scenePath = path;
+          sceneError = '';
+          sceneInfo = null;
+          probedScenePath = '';
+          sceneClipsList = [];
+          selectedClipIndices = new Set();
+          detectedScenes = [];
+        }
       } else {
         sceneError = 'Expected: video - mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
-        drumsPath = path;
-        drumsError = '';
-        drumsInfo = null;
-        beats = null;
-        downbeats = null;
-        bpm = null;
+        if (drumsPath !== path) {
+          drumsPath = path;
+          drumsError = '';
+          drumsInfo = null;
+          probedDrumsPath = '';
+          beats = null;
+          downbeats = null;
+          bpm = null;
+        }
       } else {
         drumsError = 'Expected: audio - mp3/wav/flac/m4a/ogg';
       }
     } else if (zone === 'audio') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
-        audioPath = path;
-        audioError = '';
-        audioInfo = null;
+        if (audioPath !== path) {
+          audioPath = path;
+          audioError = '';
+          audioInfo = null;
+          probedAudioPath = '';
+        }
       } else {
         audioError = 'Expected: audio - mp3/wav/flac/m4a/ogg';
       }
@@ -321,10 +374,15 @@
       scenePath = '';
       sceneError = '';
       sceneInfo = null;
+      probedScenePath = '';
+      sceneClipsList = [];
+      selectedClipIndices = new Set();
+      detectedScenes = [];
     } else if (zone === 'drums') {
       drumsPath = '';
       drumsError = '';
       drumsInfo = null;
+      probedDrumsPath = '';
       beats = null;
       downbeats = null;
       bpm = null;
@@ -332,6 +390,7 @@
       audioPath = '';
       audioError = '';
       audioInfo = null;
+      probedAudioPath = '';
     }
   }
 
@@ -380,16 +439,46 @@
 
   async function handleContinue() {
     if (!scenePath || !drumsPath || !audioPath) return;
+
+    // Fast-path cache hit: if media files haven't changed and beat detection is cached
+    const cacheHit = (
+      scenePath === probedScenePath &&
+      drumsPath === probedDrumsPath &&
+      audioPath === probedAudioPath &&
+      sceneInfo !== null &&
+      drumsInfo !== null &&
+      audioInfo !== null &&
+      beats !== null
+    );
+
+    if (cacheHit) {
+      if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+        if (longVideoMode === 'scenepack' && sceneClipsList.length > 0) {
+          showScenePackGallery = true;
+        } else {
+          showLongVideoModal = true;
+        }
+      } else {
+        longVideoMode = 'no_change';
+        detectedScenes = [];
+        navigateTo('settings');
+      }
+      return;
+    }
+
     isAnalyzing = true;
     try {
       analyzingStep = 'Probing scene video...';
       sceneInfo = await invoke('probe_media', { filePath: scenePath });
+      probedScenePath = scenePath;
 
       analyzingStep = 'Probing drums audio...';
       drumsInfo = await invoke('probe_media', { filePath: drumsPath });
+      probedDrumsPath = drumsPath;
 
       analyzingStep = 'Probing target audio...';
       audioInfo = await invoke('probe_media', { filePath: audioPath });
+      probedAudioPath = audioPath;
 
       analyzingStep = 'Detecting beats with ONNX model...';
       const beatResult = await invoke('detect_beats', { audioPath: drumsPath });
@@ -637,7 +726,10 @@
     if (target === 'text' && !SHOW_BETA_TEXT_STUDIO) {
       target = 'remap';
     }
-    if (activePage !== target) activePage = target;
+    if (target === 'remap' && lastRemapPage) {
+      target = lastRemapPage;
+    }
+    pushNavigation(target);
   }
 
   async function openAboutLink(url) {
@@ -796,13 +888,35 @@
 <div class="app-root">
   <!-- Custom Windows Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
-    <div class="titlebar-brand">
-      <span class="titlebar-text">cia jugg</span>
-      {#if buildDate && buildTime}
-        <span class="titlebar-build-badge mono">{buildDate} {buildTime}</span>
-      {/if}
+    <div class="titlebar-left">
+      <div class="titlebar-nav-controls" data-tauri-drag-region="false">
+        <button
+          class="titlebar-nav-btn"
+          onclick={handleGoBack}
+          disabled={!canGoBack}
+          title="Go back"
+          aria-label="Back"
+        >
+          ←
+        </button>
+        <button
+          class="titlebar-nav-btn"
+          onclick={handleGoForward}
+          disabled={!canGoForward}
+          title="Go forward"
+          aria-label="Forward"
+        >
+          →
+        </button>
+      </div>
+      <div class="titlebar-brand">
+        <span class="titlebar-text">cia jugg</span>
+        {#if buildDate && buildTime}
+          <span class="titlebar-build-badge mono">{buildDate} {buildTime}</span>
+        {/if}
+      </div>
     </div>
-    <div class="titlebar-controls">
+    <div class="titlebar-controls" data-tauri-drag-region="false">
       {#if availableUpdate}
         <button class="titlebar-btn update-badge" onclick={() => showUpdateModal = true} aria-label="Update available">
           <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
@@ -1070,8 +1184,7 @@
                 <div class="control-group">
                   <div class="toggle-row">
                     <div class="toggle-row-label">
-                      <span class="group-label">FULL FX</span>
-                      <span class="toggle-row-desc">All effects — one-framers, transitions, tint, vignette. Default ON.</span>
+                      <span class="group-label has-tip" title="All effects — one-framers, transitions, tint, vignette. Default ON.">FULL FX</span>
                     </div>
                     <div class="toggle-actions-group">
                       <button
@@ -1096,32 +1209,11 @@
                   </div>
                 </div>
 
-                <!-- 5. T11 Echo/Trail toggle -->
+                <!-- 5. Color Correction (CC) -->
                 <div class="control-group">
                   <div class="toggle-row">
                     <div class="toggle-row-label">
-                      <span class="group-label">ECHO / TRAIL</span>
-                      <span class="toggle-row-desc">Time Blend — blends current frame with 3 previous frames (α=0.3). Default OFF.</span>
-                    </div>
-                    <button
-                      id="toggle-echo-trail"
-                      class="toggle-btn"
-                      class:active={echoTrailEnabled}
-                      onclick={() => echoTrailEnabled = !echoTrailEnabled}
-                      type="button"
-                      aria-pressed={echoTrailEnabled}
-                    >
-                      {echoTrailEnabled ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-                </div>
-
-                <!-- 6. Color Correction (CC) -->
-                <div class="control-group">
-                  <div class="toggle-row">
-                    <div class="toggle-row-label">
-                      <span class="group-label">COLOR CORRECTION (CC)</span>
-                      <span class="toggle-row-desc">Deep tone curve, highlight bloom glow (10px), 19% film grain noise. Grayscale monochrome.</span>
+                      <span class="group-label has-tip" title="Deep tone curve, highlight bloom glow (10px), 19% film grain noise. Grayscale monochrome.">COLOR CORRECTION (CC)</span>
                     </div>
                     <button
                       id="toggle-cc-deep-dark"
@@ -1140,12 +1232,11 @@
                   </div>
                 </div>
 
-                <!-- 6B. Anti Flash Mode -->
+                <!-- 6. Anti Flash Mode -->
                 <div class="control-group">
                   <div class="toggle-row">
                     <div class="toggle-row-label">
-                      <span class="group-label">ANTI FLASH</span>
-                      <span class="toggle-row-desc">Eliminates all white/black flashes, brightness strobes, and color inversions. Safe for photosensitive viewers.</span>
+                      <span class="group-label has-tip" title="Eliminates all white/black flashes, brightness strobes, and color inversions. Safe for photosensitive viewers.">ANTI FLASH</span>
                     </div>
                     <button
                       id="toggle-anti-flash"
@@ -1164,12 +1255,26 @@
                   </div>
                 </div>
 
-                <!-- 7. ScenePack Rhythm (visible when longVideoMode === 'scenepack') -->
+                <!-- 7. ScenePack Controls (visible when longVideoMode === 'scenepack') -->
                 {#if longVideoMode === 'scenepack'}
                   <div class="control-group">
+                    <div class="toggle-row">
+                      <div class="toggle-row-label">
+                        <span class="group-label has-tip" title="Clips currently selected for ScenePack rendering. Click to modify selection.">SCENEPACK CLIPS</span>
+                      </div>
+                      <button
+                        class="btn-details-fx"
+                        onclick={() => showScenePackGallery = true}
+                        type="button"
+                      >
+                        SELECT CLIPS ({selectedClipIndices.size} / {sceneClipsList.length})
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="control-group">
                     <div class="scenepack-rhythm-header">
-                      <span class="group-label">SCENEPACK RHYTHM</span>
-                      <span class="toggle-row-desc">Cadence of scene cuts synchronized to audio beats.</span>
+                      <span class="group-label has-tip" title="Cadence of scene cuts synchronized to audio beats.">SCENEPACK RHYTHM</span>
                     </div>
                     <div class="scenepack-rhythm-grid">
                       <button
@@ -1289,55 +1394,12 @@
                     </button>
                   </div>
                 </div>
-
-              {:else if planSummary}
-                <div class="plan-summary-card">
-                  <div class="plan-summary-header">
-                    <span class="plan-summary-title">PLAN SUMMARY</span>
-                    <span class="pro-dot active"></span>
-                  </div>
-                  <div class="plan-summary-grid">
-                    <div class="plan-stat">
-                      <span class="stat-label">STYLE / FPS</span>
-                      <span class="stat-value mono">{planSummary.style} • {planSummary.fps} FPS{#if planSummary.motionBlur !== undefined} • BLUR {planSummary.motionBlur ? 'ON' : 'OFF'}{/if}</span>
-                    </div>
-                    <div class="plan-stat">
-                      <span class="stat-label">EFFECTS</span>
-                      <span class="stat-value mono">SHAKES ON • ZOOM ON • REVERSE {planSummary.reverse ? 'ON' : 'OFF'} • ONE-FRAMERS {planSummary.oneFramers ? 'ON' : 'OFF'} • TRANSITIONS {planSummary.transitions ? 'ON' : 'OFF'} • AMBIANCE {planSummary.ambiance ? 'ON' : 'OFF'} • ECHO {planSummary.echoTrail ? 'ON' : 'OFF'}</span>
-                    </div>
-                    <div class="plan-stat">
-                      <span class="stat-label">FX MODE</span>
-                      <span class="stat-value mono" class:fx-motion-only={!planSummary.fullFx}>{planSummary.fullFx ? 'FX: FULL' : 'FX: MOTION ONLY'} • ADV SHAKES ON</span>
-                    </div>
-                    <div class="plan-stat">
-                      <span class="stat-label">EXPORT</span>
-                      <span class="stat-value mono">{planSummary.export?.codec || selectedCodec} • {planSummary.export?.bitrateMbps || planSummary.export?.bitrate_mbps || bitrateValue} Mbps • {planSummary.export?.format || selectedFormat}</span>
-                    </div>
-                    {#if planSummary.ambiance}
-                    <div class="plan-stat flicker-warning">
-                      <span class="flicker-badge">⚠ FLICKER ACTIVE — photosensitive epilepsy warning</span>
-                    </div>
-                    {/if}
-                    <div class="plan-stat">
-                      <span class="stat-label">SEGMENTS</span>
-                      <span class="stat-value mono">{planSummary.segmentsCount} cuts</span>
-                    </div>
-                    <div class="plan-stat">
-                      <span class="stat-label">LOOPS / DURATION</span>
-                      <span class="stat-value mono">{planSummary.loops} loop{planSummary.loops === 1 ? '' : 's'} • {planSummary.targetDuration.toFixed(2)}s</span>
-                    </div>
-                  </div>
-                  <div class="plan-saved-path">
-                    <span class="stat-label">SAVED:</span>
-                    <span class="saved-path-text mono" title={planSummary.savedPath}>{planSummary.savedPath}</span>
-                  </div>
-                </div>
               {/if}
 
               <!-- Footer Actions (only when idle/error) -->
               {#if renderState !== 'running' && renderState !== 'done'}
                 <div class="settings-actions-footer">
-                  <button class="btn-pro-secondary" onclick={() => navigateTo('remap')}>
+                  <button class="btn-pro-secondary" onclick={() => pushNavigation('remap')}>
                     &lt; BACK TO SOURCES
                   </button>
                   <button class="btn-run-process" onclick={handleRunProcess}>
@@ -1801,8 +1863,6 @@
                 <GlowSlider id="cp-flicker-amp" label="Flicker Amplitude" bind:value={customParams.flickerAmplitude} min={0} max={0.5} step={0.01} precision={2} />
                 <GlowSlider id="cp-flicker-freq" label="Flicker Frequency (Hz)" bind:value={customParams.flickerFrequencyHz} min={1} max={30} step={0.5} precision={1} />
                 <GlowSlider id="cp-exposure-peak" label="Exposure Flash Peak" bind:value={customParams.exposureFlashPeak} min={0} max={1} step={0.01} precision={2} />
-                <GlowSlider id="cp-echo-alpha" label="Echo Alpha" bind:value={customParams.echoAlpha} min={0} max={0.9} step={0.01} precision={2} />
-                <GlowSlider id="cp-echo-depth" label="Echo Depth (k)" bind:value={customParams.echoKDepth} min={1} max={8} step={1} precision={0} />
                 <GlowSlider id="cp-tint-r" label="Tint R Offset" bind:value={customParams.tintROffset} min={-50} max={50} step={1} precision={0} />
                 <GlowSlider id="cp-tint-g" label="Tint G Offset" bind:value={customParams.tintGOffset} min={-50} max={50} step={1} precision={0} />
                 <GlowSlider id="cp-tint-b" label="Tint B Offset" bind:value={customParams.tintBOffset} min={-50} max={50} step={1} precision={0} />
@@ -1921,6 +1981,32 @@
     border-bottom: 1px solid #1c1c20;
   }
 
+  .titlebar-left { display: flex; align-items: center; gap: 12px; }
+  .titlebar-nav-controls { display: flex; align-items: center; gap: 4px; }
+  .titlebar-nav-btn {
+    width: 24px;
+    height: 22px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #a1a1aa;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+  }
+  .titlebar-nav-btn:hover:not(:disabled) {
+    background: #1c1c20;
+    border-color: #27272a;
+    color: #ffffff;
+  }
+  .titlebar-nav-btn:disabled {
+    color: #3f3f46;
+    cursor: not-allowed;
+    opacity: 0.35;
+  }
   .titlebar-brand { display: flex; align-items: center; gap: 8px; }
   .titlebar-text { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #a1a1aa; text-transform: uppercase; }
   .titlebar-build-badge {
@@ -2017,20 +2103,24 @@
 
   /* Time Remap Page (3 Drop Zones) */
   .remap-page {
-    width: min(100%, 1040px);
+    width: min(100%, 1100px);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    min-height: 100%;
+    height: 100%;
+    flex: 1;
+    min-height: 0;
     justify-content: flex-start;
   }
 
   .remap-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 2fr 1fr 1fr;
     gap: 14px;
     width: 100%;
+    flex: 1;
+    min-height: 0;
   }
 
   @media (max-width: 860px) {
@@ -2044,7 +2134,8 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 240px;
+    height: 100%;
+    min-height: 280px;
     padding: 24px 16px;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 8px;
@@ -2296,6 +2387,18 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #71717a;
+  }
+
+  .group-label.has-tip {
+    cursor: help;
+    text-decoration: underline dotted rgba(255, 255, 255, 0.25);
+    text-underline-offset: 3px;
+    transition: color 0.15s ease, text-decoration-color 0.15s ease;
+  }
+
+  .group-label.has-tip:hover {
+    color: #e4e4e7;
+    text-decoration-color: rgba(255, 255, 255, 0.7);
   }
 
   /* Style Selector Cards */
@@ -2658,46 +2761,7 @@
     color: #e4e4e7;
   }
 
-  /* Plan Summary Card (T5) */
-  .plan-summary-card {
-    background: #09090c;
-    border: 1px solid rgba(255, 255, 255, 0.28);
-    border-radius: 8px;
-    padding: 6px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    animation: page-enter 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .plan-summary-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .plan-summary-title {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #ffffff;
-  }
-
-  .plan-summary-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 5px;
-  }
-
-  .plan-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 4px;
-    padding: 3px 5px;
-  }
+  /* Plan Stat Labels */
 
   .stat-label {
     font-size: 7.5px;
@@ -2712,16 +2776,6 @@
     color: #ffffff;
   }
 
-  .plan-saved-path {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 4px;
-    padding: 2px 6px;
-    overflow: hidden;
-  }
 
   .saved-path-text {
     font-size: 8.5px;
@@ -2746,13 +2800,6 @@
     flex-direction: column;
     gap: 3px;
     flex: 1;
-  }
-
-  .toggle-row-desc {
-    font-size: 10px;
-    color: #71717a;
-    font-family: var(--font-mono);
-    line-height: 1.4;
   }
 
   .toggle-btn {
@@ -2781,28 +2828,6 @@
   .toggle-btn:hover:not(.active) {
     border-color: #52525b;
     color: #a1a1aa;
-  }
-
-  /* T11: Flicker photosensitivity warning badge */
-  .flicker-warning {
-    background: rgba(220, 38, 38, 0.08);
-    border: 1px solid rgba(220, 38, 38, 0.35);
-    border-radius: 4px;
-    padding: 6px 10px;
-  }
-
-  .flicker-badge {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 700;
-    color: #ef4444;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  .fx-motion-only {
-    color: #f59e0b;
-    font-weight: 700;
   }
 
   /* Footer Actions */

@@ -1,7 +1,7 @@
 {
-  "productName": "cia app",
+  "productName": "cia jugg",
   "version": "1.0.2",
-  "identifier": "io.github.cia213.ciaapp",
+  "identifier": "io.github.cia213.ciajugg",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,8 +12,8 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
-    "shortDescription": "cia app desktop shell.",
-    "longDescription": "cia app desktop application shell and about interface.",
+    "shortDescription": "cia jugg desktop shell.",
+    "longDescription": "cia jugg beat-synchronized time remap application.",
     "resources": [
       "binaries/*"
     ],
@@ -27,7 +27,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "startMenuFolder": "cia app",
+        "startMenuFolder": "cia jugg",
         "displayLanguageSelector": false,
         "compression": "lzma"
       }
@@ -48,7 +48,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "cia app",
+        "title": "cia jugg",
         "width": 960,
         "height": 580,
         "minWidth": 920,
