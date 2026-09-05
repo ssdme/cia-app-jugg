@@ -449,6 +449,80 @@ pub fn detect_scenes(
 }
 
 #[tauri::command]
+pub fn get_multi_scene_clips(
+    app: tauri::AppHandle,
+    video_paths: Vec<String>,
+) -> Result<Vec<SceneClipInfo>, String> {
+    let ffprobe_bin = get_ffprobe_binary(&app).ok();
+    let ffmpeg_path = get_ffmpeg_binary(&app).ok();
+    let mut clips = Vec::new();
+    let mut current_offset = 0.0f64;
+
+    for path in &video_paths {
+        let probe = probe_media_internal(path, ffprobe_bin.as_deref()).unwrap_or_else(|_| MediaInfo {
+            duration: 5.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            audio_channels: 0,
+            audio_sample_rate: 0,
+        });
+
+        let duration = ((probe.duration) * 100.0).round() / 100.0;
+        let sample_t = (duration * 0.25).min(1.0).max(0.0);
+        let thumbnail = if let Some(ref p) = ffmpeg_path {
+            extract_frame_thumbnail(p, path, sample_t)
+                .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
+        } else {
+            crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
+        };
+
+        let start = current_offset;
+        let end = current_offset + duration;
+        current_offset = end;
+
+        clips.push(SceneClipInfo {
+            index: clips.len(),
+            start_time: start,
+            end_time: end,
+            duration,
+            thumbnail,
+        });
+    }
+
+    Ok(clips)
+}
+
+#[tauri::command]
+pub fn pick_files(kind: String) -> Result<Option<Vec<String>>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    match kind.as_str() {
+        "video" => {
+            dialog = dialog.add_filter(
+                "Video Files (*.mp4, *.mkv, *.webm, *.mov, *.avi)",
+                &["mp4", "mkv", "webm", "mov", "avi"],
+            );
+        }
+        "audio" => {
+            dialog = dialog.add_filter(
+                "Audio Files (*.mp3, *.wav, *.flac, *.m4a, *.ogg)",
+                &["mp3", "wav", "flac", "m4a", "ogg"],
+            );
+        }
+        _ => {
+            dialog = dialog.add_filter(
+                "Media Files",
+                &[
+                    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "flac", "m4a", "ogg",
+                ],
+            );
+        }
+    }
+    let files = dialog.pick_files();
+    Ok(files.map(|paths| paths.into_iter().map(|path| path.to_string_lossy().to_string()).collect()))
+}
+
+#[tauri::command]
 pub fn pick_file(kind: String) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new();
     match kind.as_str() {

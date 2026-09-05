@@ -285,6 +285,7 @@ pub async fn run_render_pipeline(
     scene_path: String,
     audio_path: String,
     echo_trail: bool,
+    scene_paths: Option<Vec<String>>,
 ) -> Result<RenderStats, String> {
     RENDER_CANCEL.store(false, Ordering::SeqCst);
     let start_time = std::time::Instant::now();
@@ -299,8 +300,15 @@ pub async fn run_render_pipeline(
 
     let ffmpeg_bin = get_ffmpeg_binary(&app)?;
 
+    let all_scene_paths: Vec<String> = match scene_paths {
+        Some(paths) if !paths.is_empty() => paths,
+        _ => vec![scene_path.clone()],
+    };
+    let is_multi_video = all_scene_paths.len() > 1;
+
     // 1. Probe scene info (with ffprobe fallback)
-    let scene_info = probe_media(app.clone(), scene_path.clone())?;
+    let primary_path = if is_multi_video { &all_scene_paths[0] } else { &scene_path };
+    let scene_info = probe_media(app.clone(), primary_path.clone())?;
     if scene_info.width == 0 || scene_info.height == 0 {
         return Err("Invalid scene dimensions for rendering".to_string());
     }
@@ -312,7 +320,11 @@ pub async fn run_render_pipeline(
         vec![(0.0, scene_info.duration.min(plan.video_duration))]
     });
 
-    let total_extract_duration: f64 = intervals.iter().map(|(_, dur)| *dur).sum();
+    let total_extract_duration: f64 = if is_multi_video {
+        plan.video_duration
+    } else {
+        intervals.iter().map(|(_, dur)| *dur).sum()
+    };
     let estimated_frames = (total_extract_duration * src_fps).ceil().max(1.0) as u64;
 
     // Optional scale filter: only downscale high-resolution sources if they exceed target canvas (e.g. 4K source to 1080p canvas)
@@ -326,6 +338,11 @@ pub async fn run_render_pipeline(
         src_h = new_h.max(2);
         scale_filter = Some(format!("scale={}:{}", src_w, src_h));
     }
+
+    let multi_scale_vf = format!(
+        "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={:.2}",
+        src_w, src_h, src_w, src_h, src_fps
+    );
 
     let frame_bytes = (src_w * src_h * 3) as usize;
     let estimated_cache_size = estimated_frames * (frame_bytes as u64);
@@ -348,7 +365,11 @@ pub async fn run_render_pipeline(
         percent: 0,
         current_frame: 0,
         total_frames: estimated_frames as u32,
-        message: format!("Extracting {} clip(s) into memory cache...", intervals.len()),
+        message: if is_multi_video {
+            format!("Extracting {} video source(s) into memory cache...", all_scene_paths.len())
+        } else {
+            format!("Extracting {} clip(s) into memory cache...", intervals.len())
+        },
     });
 
     #[cfg(target_os = "windows")]
@@ -365,7 +386,72 @@ pub async fn run_render_pipeline(
 
     let mut total_decoded_bytes = 0u64;
 
-    for (interval_idx, &(start_sec, dur_sec)) in intervals.iter().enumerate() {
+    if is_multi_video {
+        for (v_idx, v_path) in all_scene_paths.iter().enumerate() {
+            if RENDER_CANCEL.load(Ordering::SeqCst) {
+                let _ = std::fs::remove_file(&raw_cache_file);
+                return Err("Render cancelled by user".to_string());
+            }
+
+            let mut cmd = std::process::Command::new(&ffmpeg_bin);
+            cmd.args([
+                "-y",
+                "-i", v_path,
+                "-vf", &multi_scale_vf,
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+                "-an",
+                "-",
+            ]);
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            let mut decode_child = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn ffmpeg decoder for video {}: {e}", v_idx + 1))?;
+
+            let mut stdout = decode_child.stdout.take()
+                .ok_or_else(|| "Failed to pipe stdout from ffmpeg decoder".to_string())?;
+
+            let mut chunk_buf = vec![0u8; 1024 * 1024]; // 1MB streaming buffer
+            loop {
+                if RENDER_CANCEL.load(Ordering::SeqCst) {
+                    let _ = decode_child.kill();
+                    let _ = std::fs::remove_file(&raw_cache_file);
+                    return Err("Render cancelled by user".to_string());
+                }
+
+                let bytes_read = stdout.read(&mut chunk_buf)
+                    .map_err(|e| format!("Failed reading ffmpeg stdout: {e}"))?;
+                if bytes_read == 0 {
+                    break;
+                }
+
+                raw_cache_out.write_all(&chunk_buf[..bytes_read])
+                    .map_err(|e| format!("Failed writing raw cache: {e}"))?;
+                total_decoded_bytes += bytes_read as u64;
+
+                let pct = ((total_decoded_bytes as f64) / (estimated_cache_size as f64) * 100.0).min(99.0) as u32;
+                let current_f = (total_decoded_bytes / (frame_bytes as u64)) as u32;
+                let _ = app.emit("render-progress", RenderProgressPayload {
+                    phase: "DECODING".to_string(),
+                    percent: pct,
+                    current_frame: current_f,
+                    total_frames: estimated_frames as u32,
+                    message: format!("Decoded frame {} (video {}/{})", current_f, v_idx + 1, all_scene_paths.len()),
+                });
+            }
+
+            let decode_status = decode_child.wait()
+                .map_err(|e| format!("Failed to wait for decoder on video {}: {e}", v_idx + 1))?;
+            if !decode_status.success() && total_decoded_bytes == 0 {
+                let _ = std::fs::remove_file(&raw_cache_file);
+                return Err(format!("FFmpeg decoding failed on video {}", v_idx + 1));
+            }
+        }
+    } else {
+        for (interval_idx, &(start_sec, dur_sec)) in intervals.iter().enumerate() {
         if RENDER_CANCEL.load(Ordering::SeqCst) {
             let _ = std::fs::remove_file(&raw_cache_file);
             return Err("Render cancelled by user".to_string());
@@ -433,6 +519,7 @@ pub async fn run_render_pipeline(
             let _ = std::fs::remove_file(&raw_cache_file);
             return Err(format!("FFmpeg decoding failed on clip {}", interval_idx + 1));
         }
+    }
     }
 
     raw_cache_out.flush().map_err(|e| format!("Flush error: {e}"))?;

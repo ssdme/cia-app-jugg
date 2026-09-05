@@ -15,8 +15,9 @@ pub use probe::*;
 pub use render::*;
 
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/ssdme/cia-app-jugg";
-const ABOUT_URLS: [&str; 9] = [
+const ABOUT_URLS: [&str; 10] = [
     PROJECT_REPOSITORY_URL,
+    "https://vocalremover.org/splitter-ai",
     "https://github.com/CP-JKU/beat_this",
     "https://github.com/microsoft/onnxruntime",
     "https://github.com/pdeljanov/Symphonia",
@@ -83,10 +84,12 @@ pub fn run() {
             get_app_version,
             open_about_link,
             probe::pick_file,
+            probe::pick_files,
             probe::probe_media,
             probe::transcribe_audio,
             probe::detect_scenes,
             probe::get_scene_clips,
+            probe::get_multi_scene_clips,
             beat::detect_beats,
             plan::generate_plan,
             plan::save_plan,

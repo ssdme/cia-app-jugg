@@ -79,6 +79,7 @@
 
   // Time Remap State (3 drop zones)
   let scenePath = $state('');
+  let scenePaths = $state([]);
   let sceneError = $state('');
   let drumsPath = $state('');
   let drumsError = $state('');
@@ -323,24 +324,37 @@
     return path.split(/[\\/]/).pop() || path;
   }
 
-  function validateAndSetFile(zone, path) {
-    if (!path) return;
-    const ext = getFileExtension(path);
+  function validateAndSetFiles(zone, paths) {
+    if (!paths || paths.length === 0) return;
     if (zone === 'scene') {
-      if (VIDEO_EXTENSIONS.includes(ext)) {
-        if (scenePath !== path) {
-          scenePath = path;
-          sceneError = '';
-          sceneInfo = null;
-          probedScenePath = '';
-          sceneClipsList = [];
-          selectedClipIndices = new Set();
-          detectedScenes = [];
-        }
+      const valid = paths.filter((p) => VIDEO_EXTENSIONS.includes(getFileExtension(p)));
+      if (valid.length > 0) {
+        scenePaths = valid;
+        scenePath = valid[0];
+        sceneError = '';
+        sceneInfo = null;
+        probedScenePath = '';
+        sceneClipsList = [];
+        selectedClipIndices = new Set();
+        detectedScenes = [];
       } else {
         sceneError = 'Expected: video - mp4/mkv/webm/mov/avi';
       }
     } else if (zone === 'drums') {
+      validateAndSetFile('drums', paths[0]);
+    } else if (zone === 'audio') {
+      validateAndSetFile('audio', paths[0]);
+    }
+  }
+
+  function validateAndSetFile(zone, path) {
+    if (!path) return;
+    if (zone === 'scene') {
+      validateAndSetFiles('scene', [path]);
+      return;
+    }
+    const ext = getFileExtension(path);
+    if (zone === 'drums') {
       if (AUDIO_EXTENSIONS.includes(ext)) {
         if (drumsPath !== path) {
           drumsPath = path;
@@ -371,6 +385,7 @@
   function clearZone(zone, event) {
     if (event) event.stopPropagation();
     if (zone === 'scene') {
+      scenePaths = [];
       scenePath = '';
       sceneError = '';
       sceneInfo = null;
@@ -397,10 +412,17 @@
   async function handlePickFile(zone, event) {
     if (event) event.stopPropagation();
     try {
-      const kind = zone === 'scene' ? 'video' : 'audio';
-      const picked = await invoke('pick_file', { kind });
-      if (picked) {
-        validateAndSetFile(zone, picked);
+      if (zone === 'scene') {
+        const picked = await invoke('pick_files', { kind: 'video' });
+        if (picked && picked.length > 0) {
+          validateAndSetFiles('scene', picked);
+        }
+      } else {
+        const kind = 'audio';
+        const picked = await invoke('pick_file', { kind });
+        if (picked) {
+          validateAndSetFile(zone, picked);
+        }
       }
     } catch (e) {
       showToast(`Selection cancelled or error: ${e}`, 'error');
@@ -440,9 +462,10 @@
   async function handleContinue() {
     if (!scenePath || !drumsPath || !audioPath) return;
 
+    const currentSceneKey = scenePaths.length > 1 ? scenePaths.join('|') : scenePath;
     // Fast-path cache hit: if media files haven't changed and beat detection is cached
     const cacheHit = (
-      scenePath === probedScenePath &&
+      currentSceneKey === probedScenePath &&
       drumsPath === probedDrumsPath &&
       audioPath === probedAudioPath &&
       sceneInfo !== null &&
@@ -452,7 +475,13 @@
     );
 
     if (cacheHit) {
-      if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+      if (scenePaths.length > 1) {
+        if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+          showScenePackGallery = true;
+        } else {
+          navigateTo('settings');
+        }
+      } else if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
         if (longVideoMode === 'scenepack' && sceneClipsList.length > 0) {
           showScenePackGallery = true;
         } else {
@@ -468,9 +497,28 @@
 
     isAnalyzing = true;
     try {
-      analyzingStep = 'Probing scene video...';
-      sceneInfo = await invoke('probe_media', { filePath: scenePath });
-      probedScenePath = scenePath;
+      if (scenePaths.length > 1) {
+        analyzingStep = `Probing ${scenePaths.length} scene videos...`;
+        const clips = await invoke('get_multi_scene_clips', { videoPaths: scenePaths });
+        sceneClipsList = clips || [];
+        selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
+        const totalDur = sceneClipsList.reduce((acc, c) => acc + c.duration, 0);
+        sceneInfo = {
+          duration: totalDur,
+          width: 1920,
+          height: 1080,
+          fps: 30.0,
+          audioChannels: 0,
+          audioSampleRate: 0,
+        };
+        probedScenePath = currentSceneKey;
+        detectedScenes = sceneClipsList.flatMap((c) => [c.startTime, c.endTime]);
+        longVideoMode = 'scenepack';
+      } else {
+        analyzingStep = 'Probing scene video...';
+        sceneInfo = await invoke('probe_media', { filePath: scenePath });
+        probedScenePath = currentSceneKey;
+      }
 
       analyzingStep = 'Probing drums audio...';
       drumsInfo = await invoke('probe_media', { filePath: drumsPath });
@@ -486,7 +534,13 @@
       downbeats = beatResult.downbeats;
       bpm = beatResult.bpm;
 
-      if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+      if (scenePaths.length > 1) {
+        if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+          showScenePackGallery = true;
+        } else {
+          navigateTo('settings');
+        }
+      } else if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
         showLongVideoModal = true;
       } else {
         longVideoMode = 'no_change';
@@ -651,12 +705,17 @@
         },
       };
 
+      const activeScenePaths = (scenePaths.length > 1 && selectedClipIndices.size > 0)
+        ? sceneClipsList.filter((_, i) => selectedClipIndices.has(i)).map((c) => scenePaths[c.index] || scenePaths[0])
+        : (scenePaths.length > 0 ? scenePaths : [scenePath]);
+
       console.log('[RENDER] Launching 3-pass render pipeline...');
       const renderRes = await invoke('run_render_pipeline', {
         planJson,
-        scenePath,
+        scenePath: activeScenePaths[0] || scenePath,
         audioPath,
         echoTrail: false,
+        scenePaths: activeScenePaths,
       });
 
       console.log('[RENDER] Render completed successfully:', renderRes);
@@ -827,7 +886,11 @@
       }
       hoveredZone = null;
       if (targetZone && paths && paths.length > 0) {
-        validateAndSetFile(targetZone, paths[0]);
+        if (targetZone === 'scene') {
+          validateAndSetFiles('scene', paths);
+        } else {
+          validateAndSetFile(targetZone, paths[0]);
+        }
       }
     });
 
@@ -963,8 +1026,7 @@
                 {#if scenePath}
                   <div class="zone-filled-content">
                     <div class="zone-top-bar">
-                      <span class="zone-index mono">01</span>
-                      <span class="zone-tag mono">VIDEO SOURCE</span>
+                      <span class="zone-tag mono">{scenePaths.length > 1 ? `${scenePaths.length} VIDEOS` : 'VIDEO SOURCE'}</span>
                     </div>
                     <div class="zone-filled-body">
                       <div class="zone-filled-icon">
@@ -974,7 +1036,13 @@
                         </svg>
                       </div>
                       <div class="zone-title">SCENE FOOTAGE</div>
-                      <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
+                      <div class="zone-filename mono" title={scenePaths.length > 1 ? scenePaths.map(getFileName).join(', ') : scenePath}>
+                        {#if scenePaths.length > 1}
+                          {scenePaths.length} videos ({getFileName(scenePaths[0])}, +{scenePaths.length - 1})
+                        {:else}
+                          {getFileName(scenePath)}
+                        {/if}
+                      </div>
                     </div>
                     <div class="zone-actions">
                       <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REPLACE</button>
@@ -983,10 +1051,6 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <div class="zone-top-bar">
-                      <span class="zone-index mono">01</span>
-                      <span class="zone-ext-badge mono">MP4 • MKV • WEBM • MOV</span>
-                    </div>
                     <div class="zone-center-body">
                       <div class="zone-icon-wrap">
                         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -994,14 +1058,10 @@
                           <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
                         </svg>
                       </div>
-                      <span class="zone-prompt">DRAG SCENE VIDEO</span>
-                      <span class="zone-browse-hint mono">or click to browse files</span>
+                      <span class="zone-prompt">DRAG SCENE</span>
                       {#if sceneError}
                         <span class="zone-error-msg">{sceneError}</span>
                       {/if}
-                    </div>
-                    <div class="zone-bottom-bar">
-                      <span class="zone-meta-hint mono">PRIMARY TIMELINE FOOTAGE</span>
                     </div>
                   </div>
                 {/if}
@@ -1026,7 +1086,6 @@
                 {#if drumsPath}
                   <div class="zone-filled-content">
                     <div class="zone-top-bar">
-                      <span class="zone-index mono">02</span>
                       <span class="zone-tag mono">DRUMS STEM</span>
                     </div>
                     <div class="zone-filled-body">
@@ -1045,24 +1104,26 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <div class="zone-top-bar">
-                      <span class="zone-index mono">02</span>
-                      <span class="zone-ext-badge mono">MP3 • WAV • FLAC • M4A</span>
-                    </div>
                     <div class="zone-center-body">
                       <div class="zone-icon-wrap">
                         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
                           <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 11v2" />
                         </svg>
                       </div>
-                      <span class="zone-prompt">DRAG DRUMS STEM</span>
-                      <span class="zone-browse-hint mono">or click to browse audio</span>
+                      <span class="zone-prompt">DRAG DRUMS</span>
                       {#if drumsError}
                         <span class="zone-error-msg">{drumsError}</span>
                       {/if}
                     </div>
                     <div class="zone-bottom-bar">
-                      <span class="zone-meta-hint mono">BEAT &amp; TRANSIENT DETECTION</span>
+                      <button
+                        class="zone-link mono"
+                        onclick={(e) => { e.stopPropagation(); openAboutLink('https://vocalremover.org/splitter-ai'); }}
+                        type="button"
+                        title="Open vocal remover AI"
+                      >
+                        https://vocalremover.org/splitter-ai
+                      </button>
                     </div>
                   </div>
                 {/if}
@@ -1087,7 +1148,6 @@
                 {#if audioPath}
                   <div class="zone-filled-content">
                     <div class="zone-top-bar">
-                      <span class="zone-index mono">03</span>
                       <span class="zone-tag mono">MASTER AUDIO</span>
                     </div>
                     <div class="zone-filled-body">
@@ -1106,24 +1166,16 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <div class="zone-top-bar">
-                      <span class="zone-index mono">03</span>
-                      <span class="zone-ext-badge mono">MP3 • WAV • FLAC • M4A</span>
-                    </div>
                     <div class="zone-center-body">
                       <div class="zone-icon-wrap">
                         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
                           <path d="M3 12h2l2-4 3 8 3-6 2 4 2-2h4" />
                         </svg>
                       </div>
-                      <span class="zone-prompt">DRAG MASTER AUDIO</span>
-                      <span class="zone-browse-hint mono">or click to browse audio</span>
+                      <span class="zone-prompt">DRAG FULL AUDIO</span>
                       {#if audioError}
                         <span class="zone-error-msg">{audioError}</span>
                       {/if}
-                    </div>
-                    <div class="zone-bottom-bar">
-                      <span class="zone-meta-hint mono">FINAL SOUNDTRACK MIX</span>
                     </div>
                   </div>
                 {/if}
@@ -2249,38 +2301,9 @@
 
   .zone-top-bar {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
     width: 100%;
-  }
-
-  .zone-index {
-    font-size: 11px;
-    font-weight: 700;
-    color: #3f3f46;
-    letter-spacing: 0.06em;
-    transition: color 0.15s ease;
-  }
-
-  .remap-drop-zone:hover .zone-index {
-    color: #71717a;
-  }
-
-  .zone-ext-badge {
-    font-size: 8.5px;
-    font-weight: 600;
-    color: #52525b;
-    background: #101015;
-    border: 1px solid #1c1c24;
-    border-radius: 4px;
-    padding: 2px 7px;
-    letter-spacing: 0.04em;
-    transition: all 0.15s ease;
-  }
-
-  .remap-drop-zone:hover .zone-ext-badge {
-    color: #a1a1aa;
-    border-color: #2c2c38;
   }
 
   .zone-center-body {
@@ -2290,7 +2313,9 @@
     justify-content: center;
     gap: 8px;
     text-align: center;
-    padding: 24px 0;
+    width: 100%;
+    flex: 1;
+    padding: 12px 0;
   }
 
   .zone-icon-wrap {
@@ -2323,37 +2348,40 @@
     color: #ffffff;
   }
 
-  .zone-browse-hint {
-    font-size: 9.5px;
-    color: #71717a;
-    font-weight: 500;
-    transition: color 0.15s ease;
-  }
-
-  .remap-drop-zone:hover .zone-browse-hint {
-    color: #a1a1aa;
-  }
-
   .zone-bottom-bar {
     display: flex;
     justify-content: center;
     align-items: center;
     width: 100%;
-    padding-top: 10px;
-    border-top: 1px solid #121218;
+    padding-top: 8px;
+    border-top: 1px solid #14141c;
+    pointer-events: auto;
   }
 
-  .zone-meta-hint {
-    font-size: 8px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    color: #3f3f46;
-    text-transform: uppercase;
-    transition: color 0.15s ease;
+  .zone-link {
+    background: transparent;
+    border: none;
+    padding: 3px 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: #38bdf8;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    pointer-events: auto;
+    transition: all 0.15s ease;
+    border-radius: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .remap-drop-zone:hover .zone-meta-hint {
-    color: #52525b;
+  .zone-link:hover {
+    color: #7dd3fc;
+    background: rgba(56, 189, 248, 0.1);
   }
 
   .zone-error-msg {
