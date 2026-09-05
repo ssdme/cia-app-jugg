@@ -2359,8 +2359,6 @@
     justify-content: center;
     align-items: center;
     width: 100%;
-    padding-top: 8px;
-    border-top: 1px solid #14141c;
     pointer-events: auto;
   }
 
