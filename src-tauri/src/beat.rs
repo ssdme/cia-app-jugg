@@ -22,6 +22,34 @@ pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf
             if in_binaries.exists() {
                 return in_binaries;
             }
+            let in_resources_bin = exe_dir.join("resources").join("binaries").join(name);
+            if in_resources_bin.exists() {
+                return in_resources_bin;
+            }
+            let in_resources = exe_dir.join("resources").join(name);
+            if in_resources.exists() {
+                return in_resources;
+            }
+        }
+    }
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let in_res_bin = res_dir.join("binaries").join(name);
+        if in_res_bin.exists() {
+            return in_res_bin;
+        }
+        let direct_res = res_dir.join(name);
+        if direct_res.exists() {
+            return direct_res;
+        }
+    }
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let in_data_bin = data_dir.join("binaries").join(name);
+        if in_data_bin.exists() {
+            return in_data_bin;
+        }
+        let in_data = data_dir.join(name);
+        if in_data.exists() {
+            return in_data;
         }
     }
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -32,12 +60,6 @@ pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf
     let binaries_cwd = cwd.join("binaries").join(name);
     if binaries_cwd.exists() {
         return binaries_cwd;
-    }
-    if let Ok(res_dir) = app.path().resource_dir() {
-        let in_res = res_dir.join("binaries").join(name);
-        if in_res.exists() {
-            return in_res;
-        }
     }
     cwd.join("src-tauri").join("binaries").join(name)
 }

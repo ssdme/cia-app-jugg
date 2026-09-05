@@ -212,6 +212,8 @@ pub struct AmbianceConfig {
     pub tint: TintConfig,
     pub vignette: VignetteConfig,
     pub scanlines: ScanlinesConfig,
+    #[serde(default)]
+    pub cc_deep_dark: bool,
 }
 
 pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
@@ -227,6 +229,7 @@ pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
         tint: TintConfig { offset_rgb: [0; 3], invert_bw: false, downbeat_times: downbeats.to_vec() },
         vignette: VignetteConfig { strength: 0.3 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
+        cc_deep_dark: false,
     }
 }
 
@@ -679,13 +682,27 @@ pub fn blend_full_frames(frames: &[&[u8]], out: &mut [u8]) {
     }
 }
 
-pub const ONE_FRAMER_TYPES: [&str; 6] = [
+pub const ONE_FRAMER_TYPES: [&str; 10] = [
+    "OFFSET_BLUR",
+    "RADIAL_BLUR",
+    "DIRECTIONAL_MINIMAX",
+    "WARP_FISHEYE",
+    "BOKEH_OCTAGON",
+    "TINT_SCENE",
+    "SOFT_TINT_FLASH",
     "FLASH_WHITE",
     "FLASH_BLACK",
     "INVERT",
-    "TINT_SCENE",
+];
+
+pub const ANTI_FLASH_ONE_FRAMER_TYPES: [&str; 7] = [
     "OFFSET_BLUR",
     "RADIAL_BLUR",
+    "DIRECTIONAL_MINIMAX",
+    "WARP_FISHEYE",
+    "BOKEH_OCTAGON",
+    "TINT_SCENE",
+    "SOFT_TINT_FLASH",
 ];
 
 pub fn deterministic_hash_pos(t: f64, salt: u64) -> u64 {
@@ -720,6 +737,113 @@ pub fn apply_one_framer_invert(frame_in: &[u8], frame_out: &mut [u8]) {
         chunk_out[0] = inv;
         chunk_out[1] = inv;
         chunk_out[2] = inv;
+    }
+}
+
+pub fn apply_one_framer_soft_tint_flash(frame_in: &[u8], frame_out: &mut [u8]) {
+    for (chunk_in, chunk_out) in frame_in.chunks_exact(3).zip(frame_out.chunks_exact_mut(3)) {
+        let r = chunk_in[0] as u32;
+        let g = chunk_in[1] as u32;
+        let b = chunk_in[2] as u32;
+        // Warm soft exposure boost
+        chunk_out[0] = ((r * 135 + 4000) / 100).min(255) as u8;
+        chunk_out[1] = ((g * 120 + 2000) / 100).min(255) as u8;
+        chunk_out[2] = ((b * 105 + 500) / 100).min(255) as u8;
+    }
+}
+
+pub fn apply_one_framer_directional_minimax(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let mut temp = vec![0u8; width * height * 3];
+    // Vertical highlight beam dilation
+    for x in 0..width {
+        for y in 0..height {
+            let idx = (y * width + x) * 3;
+            let mut max_r = 0u8;
+            let mut max_g = 0u8;
+            let mut max_b = 0u8;
+            for dy in -12..=12 {
+                let sy = (y as i64 + dy).clamp(0, height as i64 - 1) as usize;
+                let s_idx = (sy * width + x) * 3;
+                max_r = max_r.max(frame_in[s_idx]);
+                max_g = max_g.max(frame_in[s_idx + 1]);
+                max_b = max_b.max(frame_in[s_idx + 2]);
+            }
+            temp[idx] = max_r;
+            temp[idx + 1] = max_g;
+            temp[idx + 2] = max_b;
+        }
+    }
+    // Blend with original frame (Screen / Add mode)
+    for (out, (&orig, &dilated)) in frame_out.iter_mut().zip(frame_in.iter().zip(temp.iter())) {
+        *out = ((orig as u32 * 4 + dilated as u32 * 6) / 10).min(255) as u8;
+    }
+}
+
+pub fn apply_one_framer_warp_fisheye(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let cx = width as f64 * 0.5;
+    let cy = height as f64 * 0.5;
+    let max_r2 = cx * cx + cy * cy;
+
+    for y in 0..height {
+        let dy = y as f64 - cy;
+        let row_offset = y * width * 3;
+        for x in 0..width {
+            let dx = x as f64 - cx;
+            let r2 = (dx * dx + dy * dy) / max_r2;
+            let factor = 1.0 + 0.45 * r2;
+            let sx = (cx + dx * factor).round() as i64;
+            let sy = (cy + dy * factor).round() as i64;
+            let px = sample_pixel_mirrored(frame_in, width, height, sx, sy);
+            let out_idx = row_offset + x * 3;
+            frame_out[out_idx] = px[0];
+            frame_out[out_idx + 1] = px[1];
+            frame_out[out_idx + 2] = px[2];
+        }
+    }
+}
+
+pub fn apply_one_framer_bokeh_octagon(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    // 8-point specular octagon sampling
+    let offsets = [
+        (0i64, -14i64), (10, -10), (14, 0), (10, 10),
+        (0, 14), (-10, 10), (-14, 0), (-10, -10), (0, 0)
+    ];
+    for y in 0..height {
+        let row_offset = y * width * 3;
+        for x in 0..width {
+            let mut sum_r = 0u32;
+            let mut sum_g = 0u32;
+            let mut sum_b = 0u32;
+            for &(ox, oy) in &offsets {
+                let px = sample_pixel_mirrored(frame_in, width, height, x as i64 + ox, y as i64 + oy);
+                // Weight specular highlights
+                let lum = (px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29) >> 8;
+                let w = if lum > 140 { 3 } else { 1 };
+                sum_r += px[0] as u32 * w;
+                sum_g += px[1] as u32 * w;
+                sum_b += px[2] as u32 * w;
+            }
+            let total_w = 9 + 4; // Approx normalization
+            let out_idx = row_offset + x * 3;
+            frame_out[out_idx] = ((sum_r / total_w) * 11 / 10).min(255) as u8;
+            frame_out[out_idx + 1] = ((sum_g / total_w) * 11 / 10).min(255) as u8;
+            frame_out[out_idx + 2] = ((sum_b / total_w) * 11 / 10).min(255) as u8;
+        }
     }
 }
 
@@ -871,6 +995,10 @@ pub fn apply_one_framer(
         "FLASH_WHITE" => apply_one_framer_flash_white(frame_in, frame_out),
         "FLASH_BLACK" => apply_one_framer_flash_black(frame_in, frame_out),
         "INVERT" => apply_one_framer_invert(frame_in, frame_out),
+        "SOFT_TINT_FLASH" => apply_one_framer_soft_tint_flash(frame_in, frame_out),
+        "DIRECTIONAL_MINIMAX" => apply_one_framer_directional_minimax(frame_in, frame_out, width, height),
+        "WARP_FISHEYE" => apply_one_framer_warp_fisheye(frame_in, frame_out, width, height),
+        "BOKEH_OCTAGON" => apply_one_framer_bokeh_octagon(frame_in, frame_out, width, height),
         "TINT_SCENE" => apply_one_framer_tint_scene(frame_in, frame_out, width, height),
         "OFFSET_BLUR" => apply_one_framer_offset_blur(frame_in, frame_out, width, height),
         "RADIAL_BLUR" => apply_one_framer_radial_blur(frame_in, frame_out, width, height),
@@ -1228,5 +1356,95 @@ pub fn apply_ambiance_effects(
                 frame_out[idx + 2] = ((b * combined) >> 8) as u8;
             }
         }
+    }
+
+    if amb.cc_deep_dark {
+        let frame_temp = frame_out.to_vec();
+        apply_cc_deep_dark(&frame_temp, frame_out, width, height, (t * 1000.0) as u64);
+    }
+}
+
+pub fn apply_cc_deep_dark(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    frame_seed: u64,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let n_pixels = width * height;
+    let mut luma_buf = vec![0u8; n_pixels];
+    let mut highlight_buf = vec![0u8; n_pixels];
+
+    for (i, chunk) in frame_in.chunks_exact(3).enumerate().take(n_pixels) {
+        let r = chunk[0] as u32;
+        let g = chunk[1] as u32;
+        let b = chunk[2] as u32;
+        let y = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+
+        let y_dark = ((y * y * 72) / (255 * 100) + (y * 28) / 100).min(255) as u8;
+        luma_buf[i] = y_dark;
+
+        if y > 25 {
+            highlight_buf[i] = ((y - 25) * 255 / 230).min(255) as u8;
+        } else {
+            highlight_buf[i] = 0;
+        }
+    }
+
+    let radius = 10usize.min(width / 4).min(height / 4).max(1);
+    let mut h_blur = vec![0u8; n_pixels];
+
+    for y in 0..height {
+        let row_offset = y * width;
+        let mut sum = 0u32;
+        for x in 0..radius.min(width) {
+            sum += highlight_buf[row_offset + x] as u32;
+        }
+        for x in 0..width {
+            if x + radius < width {
+                sum += highlight_buf[row_offset + x + radius] as u32;
+            }
+            if x > radius {
+                sum -= highlight_buf[row_offset + x - radius - 1] as u32;
+            }
+            let count = (x + radius + 1).min(width) - x.saturating_sub(radius);
+            h_blur[row_offset + x] = if count > 0 { (sum / count as u32) as u8 } else { 0 };
+        }
+    }
+
+    let mut glow_buf = vec![0u8; n_pixels];
+    for x in 0..width {
+        let mut sum = 0u32;
+        for y in 0..radius.min(height) {
+            sum += h_blur[y * width + x] as u32;
+        }
+        for y in 0..height {
+            if y + radius < height {
+                sum += h_blur[(y + radius) * width + x] as u32;
+            }
+            if y > radius {
+                sum -= h_blur[(y - radius - 1) * width + x] as u32;
+            }
+            let count = (y + radius + 1).min(height) - y.saturating_sub(radius);
+            glow_buf[y * width + x] = if count > 0 { (sum / count as u32) as u8 } else { 0 };
+        }
+    }
+
+    let base_hash = frame_seed.wrapping_mul(0x9e3779b97f4a7c15);
+
+    for (i, chunk_out) in frame_out.chunks_exact_mut(3).enumerate().take(n_pixels) {
+        let base = luma_buf[i] as i32;
+        let glow = (glow_buf[i] as i32 * 6) / 10;
+        let pixel_hash = base_hash.wrapping_add(i as u64).wrapping_mul(0xbf58476d1ce4e5b9);
+        let grain = ((pixel_hash % 49) as i32) - 24;
+
+        let val = (base + glow + grain).clamp(0, 255) as u8;
+        chunk_out[0] = val;
+        chunk_out[1] = val;
+        chunk_out[2] = val;
     }
 }

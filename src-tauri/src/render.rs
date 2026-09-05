@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
@@ -128,14 +128,17 @@ pub fn cancel_render() -> Result<(), String> {
 #[tauri::command]
 pub fn open_target_folder(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(format!("Path not found: {path}"));
-    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg(format!("/select,{}", p.display()));
+        if p.exists() {
+            cmd.arg(format!("/select,{}", p.display()));
+        } else if let Some(parent) = p.parent() {
+            cmd.arg(format!("{}", parent.display()));
+        } else {
+            cmd.arg(r"C:\Users\cia\Downloads");
+        }
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn()
             .map_err(|e| format!("Failed to open folder: {e}"))?;
@@ -147,6 +150,133 @@ pub fn open_target_folder(path: String) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextRenderJobSpec {
+    pub audio_path: Option<String>,
+    pub style_method: String,
+    pub text_color: String,
+    pub glow_enabled: bool,
+    pub glow_intensity: f64,
+    pub rapid_word_enabled: bool,
+    pub blocks: serde_json::Value,
+    pub output_path: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextRenderProgress {
+    pub percent: u32,
+    pub current_frame: u32,
+    pub total_frames: u32,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn render_text_video(
+    app: tauri::AppHandle,
+    spec: TextRenderJobSpec,
+) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let out_video = spec.output_path.clone().unwrap_or_else(|| {
+        format!(r"C:\Users\cia\Downloads\jugg_text_{}.mp4", ts)
+    });
+
+    let ffmpeg_bin = crate::probe::get_ffmpeg_binary(&app)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "ffmpeg".to_string());
+
+    let job_json = serde_json::json!({
+        "audioPath": spec.audio_path.unwrap_or_default(),
+        "outputPath": out_video,
+        "styleMethod": spec.style_method,
+        "textColor": spec.text_color,
+        "glowEnabled": spec.glow_enabled,
+        "glowIntensity": spec.glow_intensity,
+        "rapidWordEnabled": spec.rapid_word_enabled,
+        "blocks": spec.blocks,
+        "ffmpegBin": ffmpeg_bin,
+    });
+
+    let temp_dir = std::env::temp_dir();
+    let job_path = temp_dir.join(format!("text_job_{}.json", ts));
+    std::fs::write(&job_path, serde_json::to_string_pretty(&job_json).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Failed to write job file: {e}"))?;
+
+    let script_path = crate::probe::find_script_path("text_renderer.py");
+    let python_bin = crate::probe::find_python_binary();
+
+    let mut cmd = Command::new(&python_bin);
+    cmd.arg(&script_path)
+        .arg(&job_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to launch python renderer ({:?}): {e}", python_bin))?;
+
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            let mut err_lines = Vec::new();
+            for line in reader.lines().flatten() {
+                err_lines.push(line);
+            }
+            err_lines.join("\n")
+        })
+    });
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if line.starts_with("PROGRESS:") {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() >= 4 {
+                    let pct: u32 = parts[1].parse().unwrap_or(0);
+                    let cur: u32 = parts[2].parse().unwrap_or(0);
+                    let tot: u32 = parts[3].parse().unwrap_or(0);
+                    let _ = app.emit("render-text-progress", TextRenderProgress {
+                        percent: pct,
+                        current_frame: cur,
+                        total_frames: tot,
+                        message: format!("Rendering frame {}/{}", cur, tot),
+                    });
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Python render process failed: {e}"))?;
+    let _ = std::fs::remove_file(&job_path);
+    let stderr_msg = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+
+    if !status.success() {
+        return Err(format!("Python rendering failed (code {:?}): {}", status.code(), stderr_msg));
+    }
+
+    let _ = app.emit("render-text-progress", TextRenderProgress {
+        percent: 100,
+        current_frame: 100,
+        total_frames: 100,
+        message: "Render finished successfully".to_string(),
+    });
+
+    Ok(out_video)
+}
+
 
 #[tauri::command]
 pub async fn run_render_pipeline(
@@ -178,39 +308,23 @@ pub async fn run_render_pipeline(
     let mut src_w = scene_info.width;
     let mut src_h = scene_info.height;
     let src_fps = if scene_info.fps > 0.0 { scene_info.fps } else { 30.0 };
+    let intervals: Vec<(f64, f64)> = plan.source_intervals.clone().unwrap_or_else(|| {
+        vec![(0.0, scene_info.duration.min(plan.video_duration))]
+    });
 
-    let estimated_frames = (scene_info.duration * src_fps).ceil() as u64;
-    const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+    let total_extract_duration: f64 = intervals.iter().map(|(_, dur)| *dur).sum();
+    let estimated_frames = (total_extract_duration * src_fps).ceil().max(1.0) as u64;
 
-    // Adaptive decode resolution: scale down if cache would exceed 4 GB
+    // Optional scale filter: only downscale high-resolution sources if they exceed target canvas (e.g. 4K source to 1080p canvas)
+    let max_target_dim = (plan.aspect.w.max(plan.aspect.h) as u32).max(1080);
     let mut scale_filter: Option<String> = None;
-    {
-        let raw_frame_bytes = (src_w as u64) * (src_h as u64) * 3;
-        let raw_cache = estimated_frames * raw_frame_bytes;
-        if raw_cache > MAX_CACHE_BYTES {
-            let s = ((MAX_CACHE_BYTES as f64) / (raw_cache as f64)).sqrt();
-            let long_side = src_w.max(src_h) as f64;
-            let floor_scale = 1080.0 / long_side;
-            let s_clamped = s.max(floor_scale).min(1.0);
-
-            let new_w = ((src_w as f64 * s_clamped) as u32) & !1;
-            let new_h = ((src_h as f64 * s_clamped) as u32) & !1;
-
-            let floor_frame_bytes = (new_w as u64) * (new_h as u64) * 3;
-            let floor_cache = estimated_frames * floor_frame_bytes;
-            if floor_cache > MAX_CACHE_BYTES {
-                let max_frames_at_floor = MAX_CACHE_BYTES / floor_frame_bytes;
-                let max_seconds = (max_frames_at_floor as f64) / src_fps;
-                return Err(format!(
-                    "Source too long for beta renderer (max ~{:.0}s at this resolution)",
-                    max_seconds
-                ));
-            }
-
-            src_w = new_w;
-            src_h = new_h;
-            scale_filter = Some(format!("scale={}:{}", new_w, new_h));
-        }
+    if src_w > max_target_dim || src_h > max_target_dim {
+        let s = (max_target_dim as f64) / (src_w.max(src_h) as f64);
+        let new_w = ((src_w as f64 * s) as u32) & !1;
+        let new_h = ((src_h as f64 * s) as u32) & !1;
+        src_w = new_w.max(2);
+        src_h = new_h.max(2);
+        scale_filter = Some(format!("scale={}:{}", src_w, src_h));
     }
 
     let frame_bytes = (src_w * src_h * 3) as usize;
@@ -222,23 +336,48 @@ pub async fn run_render_pipeline(
         .unwrap_or_else(|_| std::env::temp_dir());
     std::fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+
+    // Auto-clean any stale raw cache files from previously aborted or interrupted runs
+    cleanup_stale_cache_files(&cache_dir);
+
     let raw_cache_file = cache_dir.join(format!("frames_{}.raw", std::process::id()));
 
-    // Phase 1: DECODE
+    // Phase 1: DECODE (Extract only the exact intervals required by plan)
     let _ = app.emit("render-progress", RenderProgressPayload {
         phase: "DECODING".to_string(),
         percent: 0,
         current_frame: 0,
         total_frames: estimated_frames as u32,
-        message: "Decoding source video frames into memory cache...".to_string(),
+        message: format!("Extracting {} clip(s) into memory cache...", intervals.len()),
     });
 
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
 
-    let mut decode_child = {
+    use std::io::{Read, Write};
+
+    let mut raw_cache_out = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&raw_cache_file)
+        .map_err(|e| format!("Failed to open cache file: {e}"))?;
+
+    let mut total_decoded_bytes = 0u64;
+
+    for (interval_idx, &(start_sec, dur_sec)) in intervals.iter().enumerate() {
+        if RENDER_CANCEL.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&raw_cache_file);
+            return Err("Render cancelled by user".to_string());
+        }
+
         let mut cmd = std::process::Command::new(&ffmpeg_bin);
-        cmd.args(["-y", "-i", &scene_path]);
+        cmd.args([
+            "-y",
+            "-ss", &format!("{:.3}", start_sec),
+            "-t", &format!("{:.3}", dur_sec),
+            "-i", &scene_path,
+        ]);
         if let Some(ref vf) = scale_filter {
             cmd.args(["-vf", vf]);
         }
@@ -246,43 +385,58 @@ pub async fn run_render_pipeline(
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
             "-an",
-            &raw_cache_file.to_string_lossy(),
+            "-",
         ]);
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd.spawn()
-            .map_err(|e| format!("Failed to spawn ffmpeg decoder: {e}"))?
-    };
 
-    while let Ok(None) = decode_child.try_wait() {
-        if RENDER_CANCEL.load(Ordering::SeqCst) {
-            let _ = decode_child.kill();
-            let _ = std::fs::remove_file(&raw_cache_file);
-            return Err("Render cancelled by user".to_string());
-        }
-        if let Ok(meta) = std::fs::metadata(&raw_cache_file) {
-            let decoded_bytes = meta.len();
-            let pct = ((decoded_bytes as f64) / (estimated_cache_size as f64) * 100.0).min(99.0) as u32;
-            let current_f = (decoded_bytes / (frame_bytes as u64)) as u32;
+        let mut decode_child = cmd.spawn()
+            .map_err(|e| format!("Failed to spawn ffmpeg decoder for clip {}: {e}", interval_idx + 1))?;
+
+        let mut stdout = decode_child.stdout.take()
+            .ok_or_else(|| "Failed to pipe stdout from ffmpeg decoder".to_string())?;
+
+        let mut chunk_buf = vec![0u8; 1024 * 1024]; // 1MB streaming buffer
+        loop {
+            if RENDER_CANCEL.load(Ordering::SeqCst) {
+                let _ = decode_child.kill();
+                let _ = std::fs::remove_file(&raw_cache_file);
+                return Err("Render cancelled by user".to_string());
+            }
+
+            let bytes_read = stdout.read(&mut chunk_buf)
+                .map_err(|e| format!("Failed reading ffmpeg stdout: {e}"))?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            raw_cache_out.write_all(&chunk_buf[..bytes_read])
+                .map_err(|e| format!("Failed writing raw cache: {e}"))?;
+            total_decoded_bytes += bytes_read as u64;
+
+            let pct = ((total_decoded_bytes as f64) / (estimated_cache_size as f64) * 100.0).min(99.0) as u32;
+            let current_f = (total_decoded_bytes / (frame_bytes as u64)) as u32;
             let _ = app.emit("render-progress", RenderProgressPayload {
                 phase: "DECODING".to_string(),
                 percent: pct,
                 current_frame: current_f,
                 total_frames: estimated_frames as u32,
-                message: format!("Decoded frame {}/{}", current_f, estimated_frames),
+                message: format!("Decoded frame {}/{} (clip {}/{})", current_f, estimated_frames, interval_idx + 1, intervals.len()),
             });
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let decode_status = decode_child.wait()
+            .map_err(|e| format!("Failed to wait for decoder on clip {}: {e}", interval_idx + 1))?;
+        if !decode_status.success() && total_decoded_bytes == 0 {
+            let _ = std::fs::remove_file(&raw_cache_file);
+            return Err(format!("FFmpeg decoding failed on clip {}", interval_idx + 1));
+        }
     }
 
-    let decode_status = decode_child.wait()
-        .map_err(|e| format!("Failed to wait for decoder: {e}"))?;
-    if !decode_status.success() {
-        let _ = std::fs::remove_file(&raw_cache_file);
-        return Err("FFmpeg decoding failed".to_string());
-    }
+    raw_cache_out.flush().map_err(|e| format!("Flush error: {e}"))?;
+    drop(raw_cache_out);
 
     let total_cached_bytes = std::fs::metadata(&raw_cache_file)
         .map_err(|e| format!("Failed to check decoded cache file: {e}"))?
@@ -290,7 +444,7 @@ pub async fn run_render_pipeline(
     let total_source_frames = (total_cached_bytes / (frame_bytes as u64)) as usize;
     if total_source_frames == 0 {
         let _ = std::fs::remove_file(&raw_cache_file);
-        return Err("No video frames were decoded".to_string());
+        return Err("No video frames were decoded from selected intervals".to_string());
     }
 
     let _ = app.emit("render-progress", RenderProgressPayload {
@@ -656,3 +810,17 @@ pub async fn run_render_pipeline(
 
     Ok(stats)
 }
+
+fn cleanup_stale_cache_files(cache_dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("frames_") && name.ends_with(".raw") {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+}
+

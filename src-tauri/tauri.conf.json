@@ -14,6 +14,9 @@
     "targets": ["nsis"],
     "shortDescription": "cia app desktop shell.",
     "longDescription": "cia app desktop application shell and about interface.",
+    "resources": [
+      "binaries/*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -34,7 +37,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwREI5RTEwM0VEQTM2QzQKUldURU50bytFSjdiSURuejUrUjJ1N2JOMjJxS1pMYzBKN1JmN003YUhQaFU4MDNGT3dHcVVMVXYK",
       "endpoints": [
-        "https://github.com/cia213/cia-app/releases/latest/download/latest.json"
+        "https://github.com/ssdme/cia-app-jugg/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

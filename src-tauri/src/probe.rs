@@ -166,6 +166,10 @@ pub fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
 }
 
 pub fn get_ffprobe_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let direct = get_binary_path(app, "ffprobe.exe");
+    if direct.exists() {
+        return Ok(direct);
+    }
     // Derive ffprobe path from ffmpeg path (they ship together)
     let ffmpeg_path = get_ffmpeg_binary(app)?;
     let ffprobe_path = ffmpeg_path.with_file_name("ffprobe.exe");
@@ -266,6 +270,182 @@ pub fn download_and_extract_ffmpeg(app: &tauri::AppHandle) -> Result<std::path::
     } else {
         Err("FFmpeg binary could not be located".to_string())
     }
+}
+
+pub fn detect_scenes_internal(
+    app: &tauri::AppHandle,
+    video_path: &str,
+    video_duration: f64,
+) -> Result<Vec<f64>, String> {
+    let mut scene_cuts = vec![0.0];
+
+    if let Ok(ffmpeg_path) = get_ffmpeg_binary(app) {
+        #[cfg(target_os = "windows")]
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = std::process::Command::new(ffmpeg_path);
+        cmd.arg("-hide_banner")
+            .arg("-nostats")
+            .arg("-i")
+            .arg(video_path)
+            .arg("-filter_complex")
+            .arg("select='gt(scene,0.30)',showinfo")
+            .arg("-f")
+            .arg("null")
+            .arg("-");
+
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        if let Ok(output) = cmd.output() {
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            for line in stderr_str.lines() {
+                if line.contains("showinfo") && line.contains("pts_time:") {
+                    if let Some(pos) = line.find("pts_time:") {
+                        let sub = &line[pos + 9..];
+                        let num_str = sub.split_whitespace().next().unwrap_or("");
+                        if let Ok(t) = num_str.parse::<f64>() {
+                            if t > 0.5 && t < video_duration - 0.5 {
+                                if let Some(&last) = scene_cuts.last() {
+                                    if t - last >= 1.0 {
+                                        scene_cuts.push((t * 100.0).round() / 100.0);
+                                    }
+                                } else {
+                                    scene_cuts.push((t * 100.0).round() / 100.0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if *scene_cuts.last().unwrap() < video_duration - 0.1 {
+        scene_cuts.push((video_duration * 100.0).round() / 100.0);
+    }
+
+    Ok(scene_cuts)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneClipInfo {
+    pub index: usize,
+    pub start_time: f64,
+    pub end_time: f64,
+    pub duration: f64,
+    pub thumbnail: String,
+}
+
+pub fn extract_frame_thumbnail(
+    ffmpeg_path: &std::path::Path,
+    video_path: &str,
+    time_sec: f64,
+) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    const THUMB_W: usize = 320;
+    const THUMB_H: usize = 180;
+    const FRAME_BYTES: usize = THUMB_W * THUMB_H * 3;
+
+    let mut cmd = std::process::Command::new(ffmpeg_path);
+    cmd.args([
+        "-ss",
+        &format!("{:.3}", time_sec),
+        "-i",
+        video_path,
+        "-vframes",
+        "1",
+        "-vf",
+        "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-an",
+        "-",
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    if let Ok(output) = cmd.output() {
+        if output.status.success() && output.stdout.len() >= FRAME_BYTES {
+            return Some(crate::preview::rgb_to_bmp_data_url(
+                &output.stdout[..FRAME_BYTES],
+                THUMB_W as u32,
+                THUMB_H as u32,
+            ));
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn get_scene_clips(
+    app: tauri::AppHandle,
+    video_path: String,
+    video_duration: f64,
+) -> Result<Vec<SceneClipInfo>, String> {
+    let cuts = detect_scenes_internal(&app, &video_path, video_duration)?;
+    let ffmpeg_path = get_ffmpeg_binary(&app).ok();
+
+    let mut clips = Vec::new();
+    let num_cuts = cuts.len();
+    if num_cuts >= 2 {
+        for i in 0..num_cuts - 1 {
+            let start = cuts[i];
+            let end = cuts[i + 1];
+            let duration = ((end - start) * 100.0).round() / 100.0;
+            if duration <= 0.05 {
+                continue;
+            }
+
+            let sample_t = (start + 0.08).min(end - 0.02);
+            let thumbnail = if let Some(ref p) = ffmpeg_path {
+                extract_frame_thumbnail(p, &video_path, sample_t)
+                    .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
+            } else {
+                crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
+            };
+
+            clips.push(SceneClipInfo {
+                index: clips.len(),
+                start_time: start,
+                end_time: end,
+                duration,
+                thumbnail,
+            });
+        }
+    }
+
+    if clips.is_empty() {
+        let thumbnail = if let Some(ref p) = ffmpeg_path {
+            extract_frame_thumbnail(p, &video_path, 0.0)
+                .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
+        } else {
+            crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
+        };
+        clips.push(SceneClipInfo {
+            index: 0,
+            start_time: 0.0,
+            end_time: video_duration,
+            duration: video_duration,
+            thumbnail,
+        });
+    }
+
+    Ok(clips)
+}
+
+#[tauri::command]
+pub fn detect_scenes(
+    app: tauri::AppHandle,
+    video_path: String,
+    video_duration: f64,
+) -> Result<Vec<f64>, String> {
+    detect_scenes_internal(&app, &video_path, video_duration)
 }
 
 #[tauri::command]
@@ -545,3 +725,172 @@ pub fn probe_audio_symphonia(file_path: &str, ext: &str) -> Result<MediaInfo, St
         audio_sample_rate,
     })
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WordTimestamp {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
+    pub probability: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentTimestamp {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+    pub words: Vec<WordTimestamp>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptResult {
+    pub text: String,
+    pub language: String,
+    pub duration: f64,
+    pub segments: Vec<SegmentTimestamp>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeProgressPayload {
+    pub percent: u32,
+    pub message: String,
+}
+
+pub fn find_python_binary() -> std::path::PathBuf {
+    let candidates = [
+        r"C:\Users\cia\AppData\Local\Programs\Python\Python311\python.exe",
+        r"C:\Users\cia\AppData\Local\Python\pythoncore-3.14-64\python.exe",
+    ];
+    for p in candidates {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return pb;
+        }
+    }
+    std::path::PathBuf::from("python")
+}
+
+pub fn find_script_path(script_name: &str) -> std::path::PathBuf {
+    // 1. Check relative to current working directory
+    let local = std::env::current_dir().unwrap_or_default().join("src-tauri").join("src").join(script_name);
+    if local.exists() {
+        return local;
+    }
+    // 2. Check known dev path
+    let dev = std::path::PathBuf::from(r"c:\Users\cia\Music\cia-app-jugg\src-tauri\src").join(script_name);
+    if dev.exists() {
+        return dev;
+    }
+    // 3. Check relative to current exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p1 = parent.join(script_name);
+            if p1.exists() {
+                return p1;
+            }
+            let p2 = parent.join("src").join(script_name);
+            if p2.exists() {
+                return p2;
+            }
+        }
+    }
+    std::path::PathBuf::from(script_name)
+}
+
+#[tauri::command]
+pub async fn read_media_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("Failed to read media file '{path}': {e}"))
+}
+
+#[tauri::command]
+pub async fn transcribe_audio(
+    app: tauri::AppHandle,
+    audio_path: String,
+) -> Result<TranscriptResult, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use tauri::Emitter;
+
+    let script_path = find_script_path("transcribe.py");
+    let python_bin = find_python_binary();
+
+    let mut cmd = Command::new(&python_bin);
+    cmd.arg(&script_path)
+        .arg(&audio_path)
+        .arg("large-v3-turbo")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Python process ({:?}): {e}", python_bin))?;
+    let mut final_result = None;
+    let mut last_error_msg = String::new();
+
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            let mut err_lines = Vec::new();
+            for line in reader.lines().flatten() {
+                err_lines.push(line);
+            }
+            err_lines.join("\n")
+        })
+    });
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if line.starts_with("PROGRESS:") {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() >= 3 {
+                    let pct: u32 = parts[1].parse().unwrap_or(0);
+                    let msg = parts[2].to_string();
+                    let _ = app.emit("transcribe-progress", TranscribeProgressPayload {
+                        percent: pct,
+                        message: msg,
+                    });
+                }
+            } else if line.starts_with("RESULT:") {
+                let json_str = &line["RESULT:".len()..];
+                #[derive(serde::Deserialize)]
+                struct RawErrorCheck {
+                    error: Option<String>,
+                }
+                if let Ok(err_chk) = serde_json::from_str::<RawErrorCheck>(json_str) {
+                    if let Some(err) = err_chk.error {
+                        last_error_msg = err;
+                    }
+                }
+                if let Ok(res) = serde_json::from_str::<TranscriptResult>(json_str) {
+                    final_result = Some(res);
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Transcription process wait failed: {e}"))?;
+    let stderr_output = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+
+    if !status.success() {
+        return Err(format!("Transcription failed (code {:?}): {}\n{}", status.code(), last_error_msg, stderr_output));
+    }
+
+    if let Some(res) = final_result {
+        Ok(res)
+    } else if !last_error_msg.is_empty() {
+        Err(last_error_msg)
+    } else {
+        Err(format!("Failed to parse transcription output.\nStderr: {}", stderr_output))
+    }
+}
+
+

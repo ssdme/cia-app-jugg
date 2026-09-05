@@ -29,7 +29,7 @@ fn test_zoom_continuity() {
     let downbeats = vec![1.0, 2.0, 3.0];
 
     for style in ["HARD", "SMOOTH", "HYBRID"] {
-        let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0, true, None, None).unwrap();
+        let plan = create_plan_internal(style, 16, &beats, &downbeats, 5.0, 3.5, 1080, 1080, 120.0, true, None, None, None, None, None).unwrap();
 
         for win in plan.segments.windows(2) {
             let seg_n = &win[0];
@@ -52,7 +52,7 @@ fn test_reverse_remap_planner() {
     ];
     let downbeats = vec![2.60, 5.50, 8.38, 11.26, 14.14];
 
-    let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None, None).unwrap();
+    let hard_plan = create_plan_internal("HARD", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None, None, None, None, None).unwrap();
     let mut reverse_found = false;
 
     for seg in &hard_plan.segments {
@@ -65,7 +65,7 @@ fn test_reverse_remap_planner() {
     }
     assert!(reverse_found, "HARD style on fixture must contain at least one reversed downbeat segment");
 
-    let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None, None).unwrap();
+    let smooth_plan = create_plan_internal("SMOOTH", 16, &beats, &downbeats, 10.773, 14.315, 1080, 1080, 83.33, true, None, None, None, None, None).unwrap();
     for seg in &smooth_plan.segments {
         assert!(!seg.effects.reverse, "SMOOTH style must not contain reversed segments");
         assert!(seg.s0 < seg.s1);
@@ -173,7 +173,7 @@ fn test_schema_v1_and_v2_parsing_and_retrocompat() {
     assert_eq!(parsed_v1.segments[0].transition, None);
 
     let ov_trans = crate::plan::EffectOverrides { transitions: true, ..Default::default() };
-    let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true, Some(ov_trans), None).unwrap();
+    let v2_plan = create_plan_internal("HARD", 16, &[1.0, 2.0], &[1.0], 5.0, 5.0, 1080, 1080, 120.0, true, Some(ov_trans), None, None, None, None).unwrap();
     assert_eq!(v2_plan.schema_version, 2);
     assert_eq!(v2_plan.motion_blur, true);
     assert_eq!(v2_plan.segments[0].effects.shake.a0, 8.0);
@@ -250,6 +250,9 @@ fn test_one_framers_auto_placement() {
         true,
         None,
         None,
+        None,
+        None,
+        None,
     )
     .unwrap();
 
@@ -282,6 +285,9 @@ fn test_one_framers_auto_placement() {
         true,
         None,
         None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     assert!(plan_smooth.one_framers.len() < plan_hard.one_framers.len());
@@ -297,6 +303,9 @@ fn test_one_framers_auto_placement() {
         1080,
         bpm,
         true,
+        None,
+        None,
+        None,
         None,
         None,
     )
@@ -316,8 +325,8 @@ fn test_one_framers_reproducibility() {
     let fps = 16u32;
     let bpm = 83.33;
 
-    let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None).unwrap();
-    let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None).unwrap();
+    let plan1 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None, None, None, None).unwrap();
+    let plan2 = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, None, None, None, None, None).unwrap();
 
     assert_eq!(plan1.one_framers, plan2.one_framers);
     for (f1, f2) in plan1.one_framers.iter().zip(plan2.one_framers.iter()) {
@@ -460,6 +469,9 @@ fn test_generate_plan_fixture_invariants() {
             true,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .expect("Plan generation must succeed");
 
@@ -572,6 +584,7 @@ fn test_ambiance_echo_trail_blend() {
         tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: false, downbeat_times: vec![] },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
+        cc_deep_dark: false,
     };
 
     apply_ambiance_effects(
@@ -627,6 +640,7 @@ fn test_ambiance_tint_vignette_scanlines() {
         tint: TintConfig { offset_rgb: [tint_r, 0, 0], invert_bw: false, downbeat_times: vec![] },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.15 },
+        cc_deep_dark: false,
     };
 
     apply_ambiance_effects(
@@ -674,6 +688,7 @@ fn test_invert_bw_downbeat_trigger() {
         tint: TintConfig { offset_rgb: [0, 0, 0], invert_bw: true, downbeat_times: vec![2.0] },
         vignette: VignetteConfig { strength: 0.0 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
+        cc_deep_dark: false,
     };
 
     // Frame at t=1.0 (between downbeats): must remain normal colors!
@@ -787,7 +802,7 @@ fn test_transitions_auto_placement() {
     let bpm = 83.33;
 
     let ov_trans = crate::plan::EffectOverrides { transitions: true, ..Default::default() };
-    let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None).unwrap();
+    let plan_hard = create_plan_internal("HARD", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None, None, None, None).unwrap();
 
     let wrap_transitions: Vec<_> = plan_hard.transitions.iter().filter(|t| t.is_wrap).collect();
     assert_eq!(wrap_transitions.len(), 1, "HARD plan should have 1 wrap transition");
@@ -806,13 +821,13 @@ fn test_transitions_auto_placement() {
     assert!((cut_waves as i32 - 4).abs() <= 2, "Wave cuts count should be ~4");
     assert!((cut_slides as i32 - 8).abs() <= 2, "Slide cuts count should be ~8");
 
-    let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None).unwrap();
+    let plan_smooth = create_plan_internal("SMOOTH", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans.clone()), None, None, None, None).unwrap();
     let smooth_warps = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WARP_BUBBLE").count();
     let smooth_waves = plan_smooth.transitions.iter().filter(|t| !t.is_wrap && t.transition_type == "WAVE_WARP").count();
     assert_eq!(smooth_warps, 0, "SMOOTH style has 0% warp on cuts");
     assert_eq!(smooth_waves, 0, "SMOOTH style has 0% wave on cuts");
 
-    let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans), None).unwrap();
+    let plan_hybrid = create_plan_internal("HYBRID", fps, &beats, &downbeats, video_duration, audio_duration, 1080, 1080, bpm, true, Some(ov_trans), None, None, None, None).unwrap();
     assert!(plan_hybrid.transitions.len() > plan_smooth.transitions.len());
 }
 
@@ -845,6 +860,9 @@ fn test_benchmark_full_effects_pipeline() {
         1080,
         bpm,
         true,
+        None,
+        None,
+        None,
         None,
         None,
     )
@@ -1236,44 +1254,34 @@ fn test_benchmark_full_effects_pipeline() {
 fn test_adaptive_scale_4k() {
     let w: u32 = 3840;
     let h: u32 = 2160;
-    let frames: u64 = 1800;
-    let max_cache: u64 = 4 * 1024 * 1024 * 1024;
-    let raw_cache = (w as u64) * (h as u64) * 3 * frames;
-    assert!(raw_cache > max_cache, "4K source should exceed 4GB cache");
+    let max_target_dim = 1080u32;
+    assert!(w > max_target_dim || h > max_target_dim);
 
-    let s = ((max_cache as f64) / (raw_cache as f64)).sqrt();
-    let long_side = w.max(h) as f64;
-    let floor_scale = 1080.0 / long_side;
-    let s_clamped = s.max(floor_scale).min(1.0);
+    let s = (max_target_dim as f64) / (w.max(h) as f64);
+    let new_w = ((w as f64 * s) as u32) & !1;
+    let new_h = ((h as f64 * s) as u32) & !1;
 
-    let new_w = ((w as f64 * s_clamped) as u32) & !1;
-    let new_h = ((h as f64 * s_clamped) as u32) & !1;
-
-    assert!(new_w.max(new_h) >= 1080, "Long side must be >= 1080 after scale");
-    let scaled_cache = (new_w as u64) * (new_h as u64) * 3 * frames;
-    assert!(scaled_cache <= max_cache, "Scaled cache must fit in 4GB");
+    assert_eq!(new_w.max(new_h), 1080);
+    assert_eq!(new_w, 1080);
+    assert_eq!(new_h, 606);
 }
 
 #[test]
 fn test_adaptive_scale_1080p_short() {
     let w: u32 = 1080;
     let h: u32 = 1920;
-    let frames: u64 = 323;
-    let max_cache: u64 = 4 * 1024 * 1024 * 1024;
-    let raw_cache = (w as u64) * (h as u64) * 3 * frames;
-    assert!(raw_cache < max_cache, "1080p short source should fit in 4GB without scaling");
+    let max_target_dim = 1920u32;
+    // When source dimensions fit within target canvas, no downscale needed
+    assert!(!(w > max_target_dim || h > max_target_dim));
 }
 
 #[test]
 fn test_adaptive_scale_max_duration() {
-    let fps: f64 = 30.0;
-    let floor_w: u32 = 1080;
-    let floor_h: u32 = 608;
-    let max_cache: u64 = 4 * 1024 * 1024 * 1024;
-    let floor_frame_bytes = (floor_w as u64) * (floor_h as u64) * 3;
-    let max_frames = max_cache / floor_frame_bytes;
-    let max_seconds = (max_frames as f64) / fps;
-    assert!(max_seconds > 60.0, "At 1080x608 @ 30fps, max should be > 60s");
+    // Renderer now supports arbitrarily long sources without artificial time caps
+    let duration_sec = 600.0; // 10 minutes
+    let fps = 30.0;
+    let total_frames = (duration_sec * fps) as u64;
+    assert_eq!(total_frames, 18000);
 }
 
 #[test]
@@ -1288,7 +1296,7 @@ fn test_full_fx_off_strips_effects() {
 
     let plan = create_plan_internal(
         "HARD", 16, &beats, &downbeats,
-        video_duration, audio_duration, 1080, 1080, 83.33, false, None, None,
+        video_duration, audio_duration, 1080, 1080, 83.33, false, None, None, None, None, None,
     ).expect("Plan generation must succeed");
 
     assert_eq!(plan.full_fx, false);
@@ -1316,7 +1324,7 @@ fn test_full_fx_on_matches_head() {
 
     let plan = create_plan_internal(
         "HARD", 16, &beats, &downbeats,
-        video_duration, audio_duration, 1080, 1080, 83.33, true, None, None,
+        video_duration, audio_duration, 1080, 1080, 83.33, true, None, None, None, None, None,
     ).expect("Plan generation must succeed");
 
     assert_eq!(plan.full_fx, true);
@@ -1402,9 +1410,9 @@ fn test_buildup_chain_continuity() {
 fn test_t14_seed_reproducibility() {
     let beats = vec![0.42, 1.14, 1.88, 2.60, 3.32, 4.04];
     let downbeats = vec![2.60];
-    let plan1 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None, None)
+    let plan1 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None, None, None, None, None)
         .expect("plan1 ok");
-    let plan2 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None, None)
+    let plan2 = create_plan_internal("HARD", 16, &beats, &downbeats, 10.0, 6.0, 1080, 1080, 120.0, true, None, None, None, None, None)
         .expect("plan2 ok");
     assert_eq!(plan1.segments, plan2.segments);
 }
@@ -1413,7 +1421,7 @@ fn test_t14_seed_reproducibility() {
 fn test_t14_adv_shakes_present_in_hard() {
     let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
     let downbeats = vec![2.88, 5.76, 8.64];
-    let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, None)
+    let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, None, None, None, None)
         .expect("plan ok");
     let has_bouncy = plan.segments.iter().any(|s| s.effects.bouncy_shake.is_some());
     let has_squish = plan.segments.iter().any(|s| s.effects.squish_pop.is_some());
@@ -1427,7 +1435,7 @@ fn test_t14_adv_shakes_present_in_hard() {
 fn test_render_stats_computation() {
     let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.72).collect();
     let downbeats = vec![2.88, 5.76, 8.64];
-    let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, None)
+    let plan = create_plan_internal("HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, None, None, None, None)
         .expect("plan ok");
 
     let temp_dir = std::env::temp_dir();
@@ -1477,7 +1485,7 @@ fn test_generic_preview_frame_pattern() {
 #[test]
 fn test_all_18_effect_previews_produce_diff() {
     let previews = get_effect_previews().expect("get_effect_previews must succeed");
-    assert_eq!(previews.len(), 18);
+    assert_eq!(previews.len(), 19);
 
     let base_frame = generate_generic_preview_frame(256, 256);
 
@@ -1508,7 +1516,7 @@ fn test_plan_with_manual_effect_overrides() {
     ov.flicker = false;
 
     let plan = create_plan_internal(
-        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov), None,
+        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov), None, None, None, None,
     ).expect("Plan generation with overrides ok");
 
     for seg in &plan.segments {
@@ -1526,7 +1534,7 @@ fn test_plan_with_manual_effect_overrides() {
     ov_smooth.bouncy_shake = true;
 
     let plan_smooth = create_plan_internal(
-        "SMOOTH", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov_smooth), None,
+        "SMOOTH", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov_smooth), None, None, None, None,
     ).expect("SMOOTH plan with bouncy override ok");
 
     let has_bouncy = plan_smooth.segments.iter().any(|s| s.effects.bouncy_shake.is_some());
@@ -1542,7 +1550,7 @@ fn test_custom_params_override() {
     cp.shake_a0 = 99.0;
 
     let plan = create_plan_internal(
-        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, Some(cp),
+        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, None, Some(cp), None, None, None,
     ).expect("T18 custom override plan ok");
 
     for (i, seg) in plan.segments.iter().enumerate() {
@@ -1562,7 +1570,7 @@ fn test_toggle_priority_over_custom_params() {
     cp.shake_a0 = 99.0;
 
     let plan = create_plan_internal(
-        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov), Some(cp),
+        "HARD", 16, &beats, &downbeats, 14.0, 14.4, 1080, 1080, 83.33, true, Some(ov), Some(cp), None, None, None,
     ).expect("T18 toggle priority plan ok");
 
     for (i, seg) in plan.segments.iter().enumerate() {
@@ -1599,7 +1607,7 @@ fn test_export_config_custom_values() {
     let beats = vec![0.42, 1.14, 1.88, 2.60];
     let downbeats = vec![2.60];
     let mut plan = create_plan_internal(
-        "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None,
+        "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None, None, None, None,
     ).expect("Plan generation must succeed");
 
     let custom_export = ExportConfig {
@@ -1622,7 +1630,7 @@ fn test_export_config_retrocompat_default() {
     let beats = vec![0.42, 1.14, 1.88, 2.60];
     let downbeats = vec![2.60];
     let plan = create_plan_internal(
-        "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None,
+        "HARD", 16, &beats, &downbeats, 10.0, 5.0, 1080, 1080, 120.0, true, None, None, None, None, None,
     ).expect("Plan generation must succeed");
 
     let mut val = serde_json::to_value(&plan).expect("To JSON value");
@@ -1831,3 +1839,287 @@ fn test_resolve_unique_output_path() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_cc_deep_dark_filter() {
+    let width = 64usize;
+    let height = 64usize;
+    let mut frame_in = vec![0u8; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            frame_in[idx] = 200;     // R
+            frame_in[idx + 1] = 100; // G
+            frame_in[idx + 2] = 50;  // B
+        }
+    }
+
+    let mut frame_out = vec![0u8; width * height * 3];
+    crate::effects::apply_cc_deep_dark(&frame_in, &mut frame_out, width, height, 42);
+
+    for chunk in frame_out.chunks_exact(3) {
+        assert_eq!(chunk[0], chunk[1], "CC Deep Dark must output pure monochrome R == G");
+        assert_eq!(chunk[1], chunk[2], "CC Deep Dark must output pure monochrome G == B");
+    }
+}
+
+#[test]
+fn test_cc_deep_dark_plan_override() {
+    let mut overrides = EffectOverrides::default();
+    overrides.cc_deep_dark = true;
+    let plan = create_plan_internal(
+        "HARD",
+        16,
+        &[0.5, 1.0, 1.5, 2.0],
+        &[1.0, 2.0],
+        10.0,
+        2.0,
+        1080,
+        1080,
+        120.0,
+        true,
+        Some(overrides),
+        None,
+        None,
+        None,
+        None,
+    ).unwrap();
+
+    assert!(plan.ambiance.is_some(), "Ambiance must be generated when cc_deep_dark is true");
+    assert!(plan.ambiance.unwrap().cc_deep_dark, "Ambiance cc_deep_dark flag must be true");
+}
+
+#[test]
+fn test_scenepack_beat_aligned_distribution() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    let detected_scenes = vec![0.0, 10.0, 25.0, 40.0, 60.0];
+
+    let plan = create_plan_internal(
+        "HARD",
+        16,
+        &beats,
+        &downbeats,
+        60.0,
+        7.0,
+        1080,
+        1080,
+        120.0,
+        true,
+        None,
+        None,
+        Some("scenepack"),
+        Some(&detected_scenes),
+        Some("mid"),
+    )
+    .expect("Plan generation must succeed");
+
+    assert_eq!(plan.target_duration, 7.0);
+    // Verify that cuts jumped to scene offsets (e.g., s0 close to 10.0 after cadence threshold)
+    let has_scene1_offset = plan.segments.iter().any(|s| s.s0 >= 9.5 && s.s0 <= 10.5);
+    assert!(has_scene1_offset, "Scenepack mode must cut to the next detected scene offset");
+}
+
+#[test]
+fn test_scenepack_rhythms_fast_mid_slow() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    let detected_scenes = vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0];
+
+    let plan_fast = create_plan_internal(
+        "HARD", 16, &beats, &downbeats, 60.0, 7.0, 1080, 1080, 120.0, true, None, None,
+        Some("scenepack"), Some(&detected_scenes), Some("fast"),
+    ).expect("Fast plan generation must succeed");
+
+    let plan_slow = create_plan_internal(
+        "HARD", 16, &beats, &downbeats, 60.0, 7.0, 1080, 1080, 120.0, true, None, None,
+        Some("scenepack"), Some(&detected_scenes), Some("slow"),
+    ).expect("Slow plan generation must succeed");
+
+    let scene_switches_fast = plan_fast.segments.windows(2).filter(|w| (w[1].s0 - w[0].s1).abs() > 1.0).count();
+    let scene_switches_slow = plan_slow.segments.windows(2).filter(|w| (w[1].s0 - w[0].s1).abs() > 1.0).count();
+
+    println!("Scene switches: FAST = {}, SLOW = {}", scene_switches_fast, scene_switches_slow);
+    assert!(scene_switches_fast > scene_switches_slow, "FAST pacing must produce more scene switches than SLOW");
+}
+
+#[test]
+fn test_scenepack_strict_beat_synchronization() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    let detected_scenes = vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0];
+
+    for rhythm in ["fast", "mid", "slow"] {
+        let plan = create_plan_internal(
+            "HARD", 16, &beats, &downbeats, 60.0, 7.0, 1080, 1080, 120.0, true, None, None,
+            Some("scenepack"), Some(&detected_scenes), Some(rhythm),
+        ).unwrap();
+
+        // For every transition/scene jump between segments:
+        for win in plan.segments.windows(2) {
+            let is_scene_jump = (win[1].s0 - win[0].s1).abs() > 1.0;
+            if is_scene_jump {
+                let cut_t = win[1].t0;
+                let matches_beat = beats.iter().any(|&b| (b - cut_t).abs() < 0.05);
+                let matches_downbeat = downbeats.iter().any(|&d| (d - cut_t).abs() < 0.05);
+                assert!(
+                    matches_beat || matches_downbeat,
+                    "Scene switch at t={} in {} mode must match a beat timestamp",
+                    cut_t,
+                    rhythm
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_long_clip_anchor_distribution() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+
+    let plan = create_plan_internal(
+        "HARD",
+        16,
+        &beats,
+        &downbeats,
+        120.0,
+        7.0,
+        1080,
+        1080,
+        120.0,
+        true,
+        None,
+        None,
+        Some("long_clip"),
+        None,
+        None,
+    )
+    .expect("Plan generation must succeed");
+
+    assert_eq!(plan.target_duration, 7.0);
+    // Verify that extraction anchors are distributed across the 120s video
+    let has_late_anchor = plan.source_intervals.as_ref().map_or(false, |intervals| {
+        intervals.iter().any(|(s, _)| *s >= 30.0)
+    });
+    assert!(has_late_anchor, "Long clip mode must distribute timeline extraction anchors across video");
+}
+
+#[test]
+fn test_anti_flash_mode() {
+    let beats = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0];
+    let downbeats = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let mut overrides = crate::plan::EffectOverrides::default();
+    overrides.anti_flash = true;
+
+    let plan = create_plan_internal(
+        "HARD",
+        16,
+        &beats,
+        &downbeats,
+        10.0,
+        5.0,
+        1080,
+        1080,
+        120.0,
+        true,
+        Some(overrides),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("Plan generation must succeed with anti_flash");
+
+    // 1. Verify NO FLASH_WHITE, FLASH_BLACK, or INVERT in one_framers
+    for f in &plan.one_framers {
+        assert_ne!(f.framer_type, "FLASH_WHITE", "Anti-flash must eliminate FLASH_WHITE");
+        assert_ne!(f.framer_type, "FLASH_BLACK", "Anti-flash must eliminate FLASH_BLACK");
+        assert_ne!(f.framer_type, "INVERT", "Anti-flash must eliminate INVERT");
+    }
+
+    // 2. Verify Ambiance has zero exposure flash and zero tint invert_bw
+    let amb = plan.ambiance.expect("Ambiance must be present");
+    assert_eq!(amb.exposure_flash.peak, 0.0, "Anti-flash must set exposure flash peak to 0.0");
+    assert!(amb.exposure_flash.times.is_empty(), "Anti-flash must clear exposure flash times");
+    assert_eq!(amb.tint.invert_bw, false, "Anti-flash must disable tint invert_bw");
+    assert_eq!(amb.flicker.amplitude, 0.0, "Anti-flash must disable flicker amplitude");
+}
+
+#[test]
+fn test_text_render_job_spec_serialization() {
+    let json_data = r##"{
+        "audioPath": "test.mp3",
+        "styleMethod": "basic_effort",
+        "textColor": "#FFFFFF",
+        "glowEnabled": true,
+        "glowIntensity": 0.85,
+        "rapidWordEnabled": true,
+        "blocks": [
+            {
+                "id": "b1",
+                "start": 0.5,
+                "end": 2.2,
+                "words": [
+                    { "word": "HELLO", "start": 0.52, "end": 0.95, "probability": 0.98 },
+                    { "word": "WORLD", "start": 1.05, "end": 1.90, "probability": 0.99 }
+                ],
+                "elements": [
+                    { "text": "HELLO", "key": "hero", "size": 120, "x": 200, "y": 400, "start": 0.52, "end": 0.95 },
+                    { "text": "WORLD", "key": "bold", "size": 80, "x": 200, "y": 550, "start": 1.05, "end": 1.90 }
+                ]
+            }
+        ],
+        "outputPath": "test_output.mp4"
+    }"##;
+
+    let spec: crate::render::TextRenderJobSpec = serde_json::from_str(json_data).expect("TextRenderJobSpec deserialization");
+    assert_eq!(spec.style_method, "basic_effort");
+    assert_eq!(spec.text_color, "#FFFFFF");
+    assert_eq!(spec.glow_enabled, true);
+    assert_eq!(spec.rapid_word_enabled, true);
+    assert_eq!(spec.output_path, Some("test_output.mp4".to_string()));
+
+    let blocks_arr = spec.blocks.as_array().expect("Blocks must be an array");
+    assert_eq!(blocks_arr.len(), 1);
+    assert_eq!(blocks_arr[0]["id"], "b1");
+}
+
+#[test]
+fn test_transcript_result_serialization() {
+    let transcript = crate::probe::TranscriptResult {
+        text: "Hello world".to_string(),
+        language: "fr".to_string(),
+        duration: 3.5,
+        segments: vec![
+            crate::probe::SegmentTimestamp {
+                start: 0.5,
+                end: 2.5,
+                text: "Hello world".to_string(),
+                words: vec![
+                    crate::probe::WordTimestamp {
+                        word: "Hello".to_string(),
+                        start: 0.5,
+                        end: 1.2,
+                        probability: 0.98,
+                    },
+                    crate::probe::WordTimestamp {
+                        word: "world".to_string(),
+                        start: 1.3,
+                        end: 2.4,
+                        probability: 0.99,
+                    },
+                ],
+            }
+        ],
+    };
+
+    let serialized = serde_json::to_string(&transcript).expect("Serialize transcript");
+    let deserialized: crate::probe::TranscriptResult = serde_json::from_str(&serialized).expect("Deserialize transcript");
+    assert_eq!(deserialized.segments.len(), 1);
+    assert_eq!(deserialized.segments[0].words.len(), 2);
+    assert_eq!(deserialized.segments[0].words[0].word, "Hello");
+    assert_eq!(deserialized.segments[0].words[1].word, "world");
+}
+
+

@@ -34,12 +34,12 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia app v${version}\n- Integrated automatic delta update\n- Step-by-step progress during RIFE installation\n- Fail-fast GPU/CUDA validation\n- Updated application branding & icons`,
+  notes: `cia app v${version}\n- Embedded beat detection (beat_this ONNX runtime) and media processing tools (FFmpeg/FFprobe)\n- Pure Rust matrix effects engine (Ambiance, CC Deep Dark, Anti-Flash, Shake, Optical Flow)\n- 100% offline standalone installer for clean Windows installations`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
       signature: signature,
-      url: `https://github.com/cia213/cia-app/releases/download/v${version}/cia.app_${version}_x64-setup.exe`
+      url: `https://github.com/ssdme/cia-app-jugg/releases/download/v${version}/cia.app_${version}_x64-setup.exe`
     }
   }
 };

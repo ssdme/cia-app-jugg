@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
+  import TextStudio from './TextStudio.svelte';
   import appLogo from '../src-tauri/icons/128x128@2x.png';
 
   const appWindow =
@@ -14,7 +15,9 @@
       ? getCurrentWindow()
       : null;
 
-  let activePage = $state('remap'); // 'remap' | 'settings' | 'about'
+  let activePage = $state('remap'); // 'remap' | 'settings' | 'text' | 'about'
+  // Beta features toggle (false for public release distribution)
+  const SHOW_BETA_TEXT_STUDIO = false;
   let toast = $state({ show: false, message: '', type: 'info' });
   let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
@@ -91,7 +94,7 @@
       shakes: true,
       zoom: true,
       flicker: true,
-      oneFramers: fullFx && (isHard || isHybrid),
+      oneFramers: fullFx,
       transitions: false,
       tint: fullFx,
       vignette: fullFx,
@@ -106,7 +109,63 @@
       buildupChain: true,
       warpStretch: isHard || isHybrid,
       zoomBeatOffset: true,
+      ccDeepDark: false,
+      cc_deep_dark: false,
+      antiFlash: false,
+      anti_flash: false,
     };
+  }
+
+  let showLongVideoModal = $state(false);
+  let longVideoMode = $state('no_change'); // 'no_change' | 'scenepack' | 'long_clip'
+  let detectedScenes = $state([]);
+  let isDetectingScenes = $state(false);
+  let sceneDetectProgress = $state('');
+
+  // ScenePack Gallery & Clip Filtering State
+  let showScenePackGallery = $state(false);
+  let sceneClipsList = $state([]);
+  let selectedClipIndices = $state(new Set());
+  let hoveredSceneClip = $state(null);
+  let hoverScenePos = $state({ x: 0, y: 0 });
+  let scenePackRhythm = $state('mid'); // 'fast' | 'mid' | 'slow'
+
+  function formatTimecode(sec) {
+    if (isNaN(sec) || sec == null) return '0:00.0';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    const ms = Math.floor((sec % 1) * 10);
+    return `${m}:${s < 10 ? '0' : ''}${s}.${ms}`;
+  }
+
+  function toggleClipSelection(idx) {
+    const next = new Set(selectedClipIndices);
+    if (next.has(idx)) {
+      next.delete(idx);
+    } else {
+      next.add(idx);
+    }
+    selectedClipIndices = next;
+  }
+
+  function handleSelectAllClips() {
+    selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
+  }
+
+  function handleDeselectAllClips() {
+    selectedClipIndices = new Set();
+  }
+
+  function handleApplyScenePack() {
+    if (selectedClipIndices.size === 0) {
+      showToast('Please select at least 1 clip for rendering', 'error');
+      return;
+    }
+    const chosen = sceneClipsList.filter((_, i) => selectedClipIndices.has(i));
+    detectedScenes = chosen.flatMap((c) => [c.startTime, c.endTime]);
+    showScenePackGallery = false;
+    navigateTo('settings');
+    showToast(`${chosen.length} clip(s) selected for ScenePack render`, 'success');
   }
 
   let effectOverrides = $state(getDefaultOverrides('HARD', true));
@@ -135,8 +194,16 @@
   }
 
   function handleToggleFullFx() {
+    const prevCc = Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
+    const prevAntiFlash = Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash);
     fullFxEnabled = !fullFxEnabled;
-    effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+    effectOverrides = {
+      ...getDefaultOverrides(selectedStyle, fullFxEnabled),
+      ccDeepDark: prevCc,
+      cc_deep_dark: prevCc,
+      antiFlash: prevAntiFlash,
+      anti_flash: prevAntiFlash,
+    };
   }
 
   function handleSelectAllEffects() {
@@ -281,6 +348,36 @@
     }
   }
 
+  async function selectLongVideoMode(mode) {
+    longVideoMode = mode;
+    if (mode === 'scenepack') {
+      isDetectingScenes = true;
+      sceneDetectProgress = 'Analyzing scene cuts and generating clip previews...';
+      try {
+        const clips = await invoke('get_scene_clips', {
+          videoPath: scenePath,
+          videoDuration: sceneInfo.duration,
+        });
+        sceneClipsList = clips || [];
+        selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
+        showLongVideoModal = false;
+        showScenePackGallery = true;
+      } catch (err) {
+        console.warn('Scene detection error:', err);
+        detectedScenes = [0.0, sceneInfo.duration];
+        showToast('Scene detection fallback to single clip', 'warning');
+        showLongVideoModal = false;
+        navigateTo('settings');
+      } finally {
+        isDetectingScenes = false;
+      }
+    } else {
+      detectedScenes = [];
+      showLongVideoModal = false;
+      navigateTo('settings');
+    }
+  }
+
   async function handleContinue() {
     if (!scenePath || !drumsPath || !audioPath) return;
     isAnalyzing = true;
@@ -300,7 +397,13 @@
       downbeats = beatResult.downbeats;
       bpm = beatResult.bpm;
 
-      navigateTo('settings');
+      if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
+        showLongVideoModal = true;
+      } else {
+        longVideoMode = 'no_change';
+        detectedScenes = [];
+        navigateTo('settings');
+      }
     } catch (err) {
       console.error('Processing error:', err);
       const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
@@ -408,13 +511,22 @@
         aspectH,
         bpm: bpm || 120.0,
         fullFx: fullFxEnabled,
-        effectOverrides,
+        effectOverrides: {
+          ...effectOverrides,
+          ccDeepDark: Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark),
+          cc_deep_dark: Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark),
+          antiFlash: Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash),
+          anti_flash: Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash),
+        },
         customParams: customParams || null,
         exportConfig: {
           codec: selectedCodec,
           bitrateMbps: bitrateValue,
           format: selectedFormat,
         },
+        longVideoMode,
+        detectedScenes: detectedScenes.length > 0 ? detectedScenes : null,
+        scenepackRhythm: scenePackRhythm,
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -521,7 +633,11 @@
   }
 
   function navigateTo(page) {
-    if (activePage !== page) activePage = page;
+    let target = page;
+    if (target === 'text' && !SHOW_BETA_TEXT_STUDIO) {
+      target = 'remap';
+    }
+    if (activePage !== target) activePage = target;
   }
 
   async function openAboutLink(url) {
@@ -702,6 +818,9 @@
 
   <nav class="tab-bar">
     <button class:active={activePage === 'remap' || activePage === 'settings'} onclick={() => navigateTo('remap')}>TIME REMAP</button>
+    {#if SHOW_BETA_TEXT_STUDIO}
+      <button class:active={activePage === 'text'} onclick={() => navigateTo('text')}>TEXT</button>
+    {/if}
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
@@ -861,8 +980,16 @@
                         class="style-card"
                         class:selected={selectedStyle === style.id}
                         onclick={() => {
+                          const prevCc = Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
+                          const prevAntiFlash = Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash);
                           selectedStyle = style.id;
-                          effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+                          effectOverrides = {
+                            ...getDefaultOverrides(selectedStyle, fullFxEnabled),
+                            ccDeepDark: prevCc,
+                            cc_deep_dark: prevCc,
+                            antiFlash: prevAntiFlash,
+                            anti_flash: prevAntiFlash,
+                          };
                         }}
                         type="button"
                       >
@@ -988,6 +1115,95 @@
                     </button>
                   </div>
                 </div>
+
+                <!-- 6. Color Correction (CC) -->
+                <div class="control-group">
+                  <div class="toggle-row">
+                    <div class="toggle-row-label">
+                      <span class="group-label">COLOR CORRECTION (CC)</span>
+                      <span class="toggle-row-desc">Deep tone curve, highlight bloom glow (10px), 19% film grain noise. Grayscale monochrome.</span>
+                    </div>
+                    <button
+                      id="toggle-cc-deep-dark"
+                      class="toggle-btn"
+                      class:active={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                      onclick={() => {
+                        const val = !(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
+                        effectOverrides.ccDeepDark = val;
+                        effectOverrides.cc_deep_dark = val;
+                      }}
+                      type="button"
+                      aria-pressed={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                    >
+                      {(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark) ? 'DEEP DARK [ON]' : 'DEEP DARK [OFF]'}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 6B. Anti Flash Mode -->
+                <div class="control-group">
+                  <div class="toggle-row">
+                    <div class="toggle-row-label">
+                      <span class="group-label">ANTI FLASH</span>
+                      <span class="toggle-row-desc">Eliminates all white/black flashes, brightness strobes, and color inversions. Safe for photosensitive viewers.</span>
+                    </div>
+                    <button
+                      id="toggle-anti-flash"
+                      class="toggle-btn"
+                      class:active={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                      onclick={() => {
+                        const val = !(effectOverrides.antiFlash || effectOverrides.anti_flash);
+                        effectOverrides.antiFlash = val;
+                        effectOverrides.anti_flash = val;
+                      }}
+                      type="button"
+                      aria-pressed={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                    >
+                      {(effectOverrides.antiFlash || effectOverrides.anti_flash) ? 'ANTI FLASH [ON]' : 'ANTI FLASH [OFF]'}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 7. ScenePack Rhythm (visible when longVideoMode === 'scenepack') -->
+                {#if longVideoMode === 'scenepack'}
+                  <div class="control-group">
+                    <div class="scenepack-rhythm-header">
+                      <span class="group-label">SCENEPACK RHYTHM</span>
+                      <span class="toggle-row-desc">Cadence of scene cuts synchronized to audio beats.</span>
+                    </div>
+                    <div class="scenepack-rhythm-grid">
+                      <button
+                        class="btn-rhythm"
+                        class:active={scenePackRhythm === 'fast'}
+                        onclick={() => scenePackRhythm = 'fast'}
+                        type="button"
+                      >
+                        <div class="rhythm-title">FAST</div>
+                        <div class="rhythm-desc">Cuts on almost every beat (~0.4s)</div>
+                      </button>
+
+                      <button
+                        class="btn-rhythm"
+                        class:active={scenePackRhythm === 'mid'}
+                        onclick={() => scenePackRhythm = 'mid'}
+                        type="button"
+                      >
+                        <div class="rhythm-title">MID</div>
+                        <div class="rhythm-desc">Dynamic cuts (~1.5s - 2s)</div>
+                      </button>
+
+                      <button
+                        class="btn-rhythm"
+                        class:active={scenePackRhythm === 'slow'}
+                        onclick={() => scenePackRhythm = 'slow'}
+                        type="button"
+                      >
+                        <div class="rhythm-title">SLOW</div>
+                        <div class="rhythm-desc">Long takes (~3.5s - 4.5s)</div>
+                      </button>
+                    </div>
+                  </div>
+                {/if}
               </div>
 
               <!-- Render Execution Cards (T6) -->
@@ -1132,6 +1348,9 @@
             </div>
           </section>
 
+        {:else if SHOW_BETA_TEXT_STUDIO && activePage === 'text'}
+          <TextStudio onToast={(msg, type) => showToast(msg, type)} />
+
         {:else if activePage === 'about'}
           <section class="about-page" aria-label="Project credits">
             <header class="about-identity">
@@ -1232,6 +1451,222 @@
             <button class="btn-primary-modal" onclick={installAppUpdate}>UPDATE & RELAUNCH</button>
           {/if}
         </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Long Video Processing Mode Modal -->
+  {#if showLongVideoModal}
+    <div
+      class="modal-backdrop"
+      onclick={(e) => { if (e.target === e.currentTarget && !isDetectingScenes) showLongVideoModal = false; }}
+      role="presentation"
+    >
+      <div
+        class="modal-card long-video-modal-card"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="0"
+      >
+        <div class="modal-header">
+          <div class="modal-header-titles">
+            <h2>LONG FOOTAGE DETECTED</h2>
+            <span class="modal-subtitle">
+              Video ({sceneInfo ? sceneInfo.duration.toFixed(1) : 0}s) is longer than target music ({audioInfo ? audioInfo.duration.toFixed(1) : 0}s). Choose how footage should be distributed:
+            </span>
+          </div>
+          {#if !isDetectingScenes}
+            <button class="btn-close-modal" onclick={() => showLongVideoModal = false} aria-label="Close">✕</button>
+          {/if}
+        </div>
+
+        <div class="modal-body long-video-modal-body">
+          {#if isDetectingScenes}
+            <div class="scene-detect-loading">
+              <div class="scene-detect-spinner"></div>
+              <span class="scene-detect-text mono">{sceneDetectProgress || 'ANALYZING SCENE CUTS WITH FFMPEG...'}</span>
+            </div>
+          {:else}
+            <div class="long-video-options-grid">
+              <!-- Option 1: No Change -->
+              <button
+                class="long-video-card"
+                class:selected={longVideoMode === 'no_change'}
+                onclick={() => selectLongVideoMode('no_change')}
+                type="button"
+              >
+                <div class="long-video-card-top">
+                  <span class="long-video-card-title">NO CHANGE</span>
+                  <span class="long-video-card-tag">DEFAULT</span>
+                </div>
+                <p class="long-video-card-desc">
+                  Sequential playback from 0:00 up to the music duration. Standard sequential timeline behavior.
+                </p>
+              </button>
+
+              <!-- Option 2: Scenepack -->
+              <button
+                class="long-video-card"
+                class:selected={longVideoMode === 'scenepack'}
+                onclick={() => selectLongVideoMode('scenepack')}
+                type="button"
+              >
+                <div class="long-video-card-top">
+                  <span class="long-video-card-title">SCENEPACK</span>
+                  <span class="long-video-card-tag">SMART CUTS</span>
+                </div>
+                <p class="long-video-card-desc">
+                  Detects individual scene cuts. Ensures a ~3s minimum threshold before switching clips strictly on musical downbeats.
+                </p>
+              </button>
+
+              <!-- Option 3: Long Clip -->
+              <button
+                class="long-video-card"
+                class:selected={longVideoMode === 'long_clip'}
+                onclick={() => selectLongVideoMode('long_clip')}
+                type="button"
+              >
+                <div class="long-video-card-top">
+                  <span class="long-video-card-title">LONG CLIP</span>
+                  <span class="long-video-card-tag">TIMELINE ANCHORS</span>
+                </div>
+                <p class="long-video-card-desc">
+                  Evenly distributes anchor points across continuous long video (e.g. 2-min freestyle) and condenses them onto beat-synced intervals.
+                </p>
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- ScenePack Gallery Selection Modal -->
+  {#if showScenePackGallery}
+    <div
+      class="modal-backdrop"
+      onclick={(e) => { if (e.target === e.currentTarget) showScenePackGallery = false; }}
+      role="presentation"
+    >
+      <div
+        class="modal-card scenepack-modal-card"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="0"
+      >
+        <div class="modal-header">
+          <div class="modal-header-titles">
+            <h2>SCENEPACK CLIP SELECTION</h2>
+            <span class="modal-subtitle">
+              Select which detected clips to include in the time remap render. Unchecked clips will be skipped.
+            </span>
+          </div>
+          <button class="btn-close-modal" onclick={() => showScenePackGallery = false} aria-label="Close">✕</button>
+        </div>
+
+        <div class="scenepack-toolbar">
+          <div class="scenepack-toolbar-left">
+            <span class="clips-count-badge mono">{selectedClipIndices.size} / {sceneClipsList.length} CLIPS ACTIVE</span>
+          </div>
+          <div class="scenepack-toolbar-actions">
+            <button class="btn-toolbar" onclick={handleSelectAllClips} type="button">SELECT ALL</button>
+            <button class="btn-toolbar" onclick={handleDeselectAllClips} type="button">DESELECT ALL</button>
+          </div>
+        </div>
+
+        <div class="modal-body scenepack-modal-body">
+          <div class="scenepack-grid">
+            {#each sceneClipsList as clip (clip.index)}
+              <div
+                class="scene-card"
+                class:active={selectedClipIndices.has(clip.index)}
+                onclick={() => toggleClipSelection(clip.index)}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { toggleClipSelection(clip.index); e.preventDefault(); } }}
+              >
+                <div
+                  class="scene-card-thumb-wrap"
+                  role="presentation"
+                  onmouseenter={(e) => {
+                    hoveredSceneClip = clip;
+                    hoverScenePos = { x: e.clientX, y: e.clientY };
+                  }}
+                  onmousemove={(e) => {
+                    hoverScenePos = { x: e.clientX, y: e.clientY };
+                  }}
+                  onmouseleave={() => {
+                    hoveredSceneClip = null;
+                  }}
+                >
+                  <img src={clip.thumbnail} alt={`Clip #${clip.index + 1}`} class="scene-thumb-img" width="320" height="180" />
+                  <span class="hover-hint-badge">HOVER TO ENLARGE</span>
+                </div>
+
+                <div class="scene-card-info">
+                  <div class="scene-card-top">
+                    <div class="scene-card-title-row">
+                      <span class="scene-card-name">CLIP #{clip.index + 1}</span>
+                      <span class="scene-duration-pill mono">{clip.duration.toFixed(1)}s</span>
+                    </div>
+                    <label class="scene-toggle-label">
+                      <input
+                        type="checkbox"
+                        checked={selectedClipIndices.has(clip.index)}
+                        onclick={(e) => e.stopPropagation()}
+                        onchange={() => toggleClipSelection(clip.index)}
+                      />
+                      <span class="scene-toggle-custom"></span>
+                    </label>
+                  </div>
+                  <div class="scene-timecode-row mono">
+                    {formatTimecode(clip.startTime)} &rarr; {formatTimecode(clip.endTime)}
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="modal-footer scenepack-footer">
+          <button
+            class="btn-pro-secondary"
+            onclick={() => { showScenePackGallery = false; showLongVideoModal = true; }}
+            type="button"
+          >
+            &lt; BACK
+          </button>
+          <button
+            class="btn-primary-modal"
+            disabled={selectedClipIndices.size === 0}
+            onclick={handleApplyScenePack}
+            type="button"
+          >
+            APPLY &amp; CONTINUE ({selectedClipIndices.size} CLIPS)
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Floating Large Preview Card for ScenePack Clip Hover -->
+  {#if hoveredSceneClip}
+    <div
+      class="scene-large-preview-overlay"
+      style="left: {Math.min(hoverScenePos.x + 20, window.innerWidth - 360)}px; top: {Math.min(hoverScenePos.y - 120, window.innerHeight - 300)}px;"
+    >
+      <div class="large-preview-header">
+        <span class="large-preview-title">CLIP #{hoveredSceneClip.index + 1}</span>
+        <span class="large-preview-cat mono">{hoveredSceneClip.duration.toFixed(1)}s</span>
+      </div>
+      <img src={hoveredSceneClip.thumbnail} alt={`Clip #${hoveredSceneClip.index + 1}`} class="scene-large-preview-img" width="320" height="180" />
+      <div class="large-preview-footer mono">
+        {formatTimecode(hoveredSceneClip.startTime)} - {formatTimecode(hoveredSceneClip.endTime)} • {selectedClipIndices.has(hoveredSceneClip.index) ? 'ACTIVE IN RENDER' : 'EXCLUDED'}
       </div>
     </div>
   {/if}
@@ -3223,6 +3658,365 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 8px 20px;
+  }
+
+  /* ─── LONG VIDEO MODAL ─────────────────────────────────────────────────── */
+  .long-video-modal-card {
+    width: 680px;
+    max-width: 92vw;
+  }
+
+  .long-video-modal-body {
+    padding: 16px 20px 24px;
+  }
+
+  .long-video-options-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .long-video-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s, transform 0.15s;
+  }
+
+  .long-video-card:hover {
+    background: #141418;
+    border-color: #52525b;
+    transform: translateY(-1px);
+  }
+
+  .long-video-card.selected {
+    background: #18181f;
+    border-color: #ffffff;
+  }
+
+  .long-video-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .long-video-card-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #ffffff;
+  }
+
+  .long-video-card-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #a1a1aa;
+    background: #1f1f26;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid #3f3f46;
+  }
+
+  .long-video-card-desc {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 11px;
+    color: #8e8e93;
+    line-height: 1.4;
+    margin: 0;
+  }
+
+  .scene-detect-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 36px 20px;
+  }
+
+  .scene-detect-spinner {
+    width: 28px;
+    height: 28px;
+    border: 2px solid #27272a;
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin-cw 0.75s linear infinite;
+  }
+
+  .scene-detect-text {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #d4d4d8;
+  }
+
+  @keyframes spin-cw {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ─── SCENEPACK GALLERY MODAL ──────────────────────────────────────────── */
+  .scenepack-modal-card {
+    width: 900px;
+    max-width: 95vw;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .scenepack-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    background: #09090c;
+    border-bottom: 1px solid #1c1c22;
+  }
+
+  .clips-count-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: #e4e4e7;
+    background: #18181c;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid #27272a;
+  }
+
+  .scenepack-toolbar-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .scenepack-modal-body {
+    padding: 16px 18px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 280px;
+  }
+
+  .scenepack-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+
+  .scene-card {
+    background: #0e0e12;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s, transform 0.15s;
+  }
+
+  .scene-card:hover {
+    background: #14141a;
+    border-color: #52525b;
+    transform: translateY(-1px);
+  }
+
+  .scene-card.active {
+    background: #181820;
+    border-color: #ffffff;
+  }
+
+  .scene-card-thumb-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #050507;
+    border: 1px solid #1c1c22;
+  }
+
+  .scene-thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .scene-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .scene-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .scene-card-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .scene-card-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
+  .scene-duration-pill {
+    font-size: 9px;
+    font-weight: 700;
+    color: #a1a1aa;
+    background: #1f1f26;
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid #3f3f46;
+  }
+
+  .scene-timecode-row {
+    font-size: 10px;
+    color: #71717a;
+  }
+
+  .scene-toggle-label {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .scene-toggle-label input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+  }
+
+  .scene-toggle-custom {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #3f3f46;
+    border-radius: 3px;
+    background: #09090c;
+    transition: all 0.15s ease;
+    display: inline-block;
+    position: relative;
+  }
+
+  .scene-toggle-label input:checked + .scene-toggle-custom {
+    background: #ffffff;
+    border-color: #ffffff;
+  }
+
+  .scene-toggle-label input:checked + .scene-toggle-custom::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #000000;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  .scenepack-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 18px;
+    border-top: 1px solid #1c1c22;
+    background: #09090c;
+  }
+
+  .scene-large-preview-overlay {
+    position: fixed;
+    z-index: 1100;
+    pointer-events: none;
+    width: 336px;
+    background: #0e0e12;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.85);
+    padding: 8px;
+    animation: fadeInPreview 0.12s ease-out;
+  }
+
+  .scene-large-preview-img {
+    width: 320px;
+    height: 180px;
+    border-radius: 4px;
+    border: 1px solid #27272a;
+    display: block;
+    object-fit: cover;
+    margin: 6px auto;
+  }
+
+  .scenepack-rhythm-header {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+
+  .scenepack-rhythm-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .btn-rhythm {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 10px 8px;
+    background: #0d0d10;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    cursor: pointer;
+    text-align: center;
+    transition: background-color 0.15s, border-color 0.15s, transform 0.15s;
+  }
+
+  .btn-rhythm:hover {
+    background: #141418;
+    border-color: #52525b;
+    transform: translateY(-1px);
+  }
+
+  .btn-rhythm.active {
+    background: #181820;
+    border-color: #ffffff;
+  }
+
+  .rhythm-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #ffffff;
+  }
+
+  .rhythm-desc {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 10px;
+    color: #8e8e93;
+    line-height: 1.3;
   }
 </style>
 

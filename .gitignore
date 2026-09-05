@@ -44,3 +44,6 @@ __pycache__/
 # from a verified local release kit and are never committed to the source repo.
 /src-tauri/resources/runtime/
 /src-tauri/resources/bootstrap/python-*.exe
+/src-tauri/binaries/ffmpeg.exe
+/src-tauri/binaries/ffprobe.exe
+/vendor/

@@ -5,12 +5,12 @@
   "description": "Local Windows video rendering with smoothie-rs and optional RIFE interpolation.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cia213/cia-app.git"
+    "url": "https://github.com/ssdme/cia-app-jugg.git"
   },
   "bugs": {
-    "url": "https://github.com/cia213/cia-app/issues"
+    "url": "https://github.com/ssdme/cia-app-jugg/issues"
   },
-  "homepage": "https://github.com/cia213/cia-app#readme",
+  "homepage": "https://github.com/ssdme/cia-app-jugg#readme",
   "type": "module",
   "scripts": {
     "dev": "node scripts/free-port.mjs && vite",

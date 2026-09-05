@@ -3,7 +3,7 @@ use crate::effects::{
     default_ambiance, default_segment_effects, deterministic_hash_pos, AmbianceConfig,
     AspectRatio, BuildupChain, BouncyShake, DissolveShake, OneFramer, OpticsBounce,
     SegmentEffects, SegmentTransition, ShakeEffect, SkewShake, SquishPop, TransitionItem,
-    WarpStretch, ZoomEffect, ONE_FRAMER_TYPES,
+    WarpStretch, ZoomEffect, ONE_FRAMER_TYPES, ANTI_FLASH_ONE_FRAMER_TYPES,
 };
 
 fn default_true() -> bool {
@@ -53,6 +53,10 @@ pub struct EffectOverrides {
     pub warp_stretch: bool,
     #[serde(default = "default_true")]
     pub zoom_beat_offset: bool,
+    #[serde(default = "default_false")]
+    pub cc_deep_dark: bool,
+    #[serde(default = "default_false", alias = "antiFlash")]
+    pub anti_flash: bool,
 }
 
 impl Default for EffectOverrides {
@@ -76,6 +80,8 @@ impl Default for EffectOverrides {
             buildup_chain: true,
             warp_stretch: true,
             zoom_beat_offset: true,
+            cc_deep_dark: false,
+            anti_flash: false,
         }
     }
 }
@@ -90,7 +96,7 @@ pub fn default_effects_for_style(style: &str, full_fx: bool) -> EffectOverrides 
         shakes: true,
         zoom: true,
         flicker: true,
-        one_framers: full_fx && (is_hard || is_hybrid),
+        one_framers: full_fx,
         transitions: false,
         tint: full_fx,
         vignette: full_fx,
@@ -105,6 +111,8 @@ pub fn default_effects_for_style(style: &str, full_fx: bool) -> EffectOverrides 
         buildup_chain: true,
         warp_stretch: is_hard || is_hybrid,
         zoom_beat_offset: true,
+        cc_deep_dark: false,
+        anti_flash: false,
     }
 }
 
@@ -382,6 +390,8 @@ pub struct ProjectPlan {
     pub segments: Vec<PlanSegment>,
     #[serde(default)]
     pub export: ExportConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_intervals: Option<Vec<(f64, f64)>>,
 }
 
 pub fn generate_one_framers(
@@ -390,6 +400,7 @@ pub fn generate_one_framers(
     downbeats: &[f64],
     fps: u32,
     target_duration: f64,
+    anti_flash: bool,
 ) -> Vec<OneFramer> {
     if fps == 0 || segments.is_empty() {
         return Vec::new();
@@ -397,6 +408,13 @@ pub fn generate_one_framers(
     let dt = 1.0 / (fps as f64);
     let mut raw_candidates: Vec<OneFramer> = Vec::new();
     let style_upper = style.to_uppercase();
+
+    let framer_pool: &[&str] = if anti_flash {
+        &ANTI_FLASH_ONE_FRAMER_TYPES
+    } else {
+        &ONE_FRAMER_TYPES
+    };
+    let pool_len = framer_pool.len() as u64;
 
     // 1. Cuts: boundaries between segments
     for (seg_idx, seg) in segments.iter().enumerate() {
@@ -415,7 +433,7 @@ pub fn generate_one_framers(
                 let t_pos = t_cut + off;
                 let t_rounded = (t_pos * (fps as f64)).round() / (fps as f64);
                 let seed = deterministic_hash_pos(t_rounded, (seg_idx as u64) * 10 + (idx as u64) + 1);
-                let framer_type = ONE_FRAMER_TYPES[(seed % 6) as usize].to_string();
+                let framer_type = framer_pool[(seed % pool_len) as usize].to_string();
                 raw_candidates.push(OneFramer {
                     t: t_rounded,
                     framer_type,
@@ -436,7 +454,7 @@ pub fn generate_one_framers(
         if place_downbeat {
             let t_rounded = (db * (fps as f64)).round() / (fps as f64);
             let seed = deterministic_hash_pos(t_rounded, (db_idx as u64) * 100 + 777);
-            let framer_type = ONE_FRAMER_TYPES[(seed % 6) as usize].to_string();
+            let framer_type = framer_pool[(seed % pool_len) as usize].to_string();
             raw_candidates.push(OneFramer {
                 t: t_rounded,
                 framer_type,
@@ -604,6 +622,46 @@ pub fn compute_effects_count(plan: &ProjectPlan) -> usize {
     one_framers_count + transitions_count + ambiance_count
 }
 
+pub fn parse_scene_ranges(scenes: &[f64], video_duration: f64) -> Vec<(f64, f64)> {
+    if scenes.is_empty() {
+        return vec![(0.0, video_duration)];
+    }
+
+    // Check if passed as flat pairs [start0, end0, start1, end1, ...]
+    let is_flat_pairs = scenes.len() >= 2
+        && scenes.len() % 2 == 0
+        && (0..scenes.len() / 2).all(|i| scenes[2 * i + 1] > scenes[2 * i]);
+
+    if is_flat_pairs && (scenes.len() == 2 || scenes.windows(2).any(|w| w[0] >= w[1] || (w[0] < w[1] && w[1] != scenes[1]))) {
+        let mut ranges = Vec::new();
+        for chunk in scenes.chunks_exact(2) {
+            let s = chunk[0].clamp(0.0, video_duration);
+            let e = chunk[1].clamp(0.0, video_duration);
+            if e > s + 0.05 {
+                ranges.push((s, e));
+            }
+        }
+        if !ranges.is_empty() {
+            return ranges;
+        }
+    }
+
+    let mut ranges = Vec::new();
+    for win in scenes.windows(2) {
+        let s = win[0].clamp(0.0, video_duration);
+        let e = win[1].clamp(0.0, video_duration);
+        if e > s + 0.05 {
+            ranges.push((s, e));
+        }
+    }
+
+    if ranges.is_empty() {
+        vec![(0.0, video_duration)]
+    } else {
+        ranges
+    }
+}
+
 pub fn create_plan_internal(
     style: &str,
     fps: u32,
@@ -617,6 +675,9 @@ pub fn create_plan_internal(
     full_fx: bool,
     effect_overrides: Option<EffectOverrides>,
     custom_params: Option<CustomParams>,
+    long_video_mode: Option<&str>,
+    detected_scenes: Option<&[f64]>,
+    scenepack_rhythm: Option<&str>,
 ) -> Result<ProjectPlan, String> {
     if fps == 0 {
         return Err("FPS must be greater than 0".to_string());
@@ -688,9 +749,66 @@ pub fn create_plan_internal(
     let zoom_max = custom_params.as_ref().map_or(default_zoom_max, |c| c.zoom_scale_end);
 
     // 4. Build segments and handle video loops
+    let mode_str = long_video_mode.unwrap_or("no_change");
+
+    // Scenepack structure & Virtual Trimmed Source Pipeline
+    let (raw_intervals, scene_ranges, effective_video_dur) = if mode_str == "scenepack" {
+        let raw = if let Some(scenes) = detected_scenes {
+            parse_scene_ranges(scenes, video_duration)
+        } else {
+            vec![(0.0, video_duration)]
+        };
+        let mut compact_ranges = Vec::new();
+        let mut cur_offset = 0.0f64;
+        let mut extract_intervals = Vec::new();
+        for (s, e) in raw {
+            let dur = (e - s).max(0.1);
+            compact_ranges.push((cur_offset, cur_offset + dur));
+            extract_intervals.push((s, dur));
+            cur_offset += dur;
+        }
+        (Some(extract_intervals), compact_ranges, cur_offset.max(0.1))
+    } else if mode_str == "long_clip" && video_duration > audio_duration {
+        let m = ((audio_duration / 3.25).round() as usize).clamp(2, 8);
+        let span_step = (video_duration - 3.5).max(0.0) / ((m - 1) as f64).max(1.0);
+        let mut extract_intervals = Vec::new();
+        let mut compact_ranges = Vec::new();
+        let anchor_span = 4.0f64;
+        for i in 0..m {
+            let src_start = (i as f64) * span_step;
+            let dur = anchor_span.min(video_duration - src_start);
+            let comp_start = (i as f64) * anchor_span;
+            extract_intervals.push((src_start, dur));
+            compact_ranges.push((comp_start, comp_start + dur));
+        }
+        let total_comp = (m as f64) * anchor_span;
+        (Some(extract_intervals), compact_ranges, total_comp)
+    } else {
+        let needed_dur = video_duration.min(audio_duration + 2.0);
+        (Some(vec![(0.0, needed_dur)]), vec![(0.0, needed_dur)], needed_dur)
+    };
+
+    let num_scenes = scene_ranges.len().max(1);
+    let mut current_scene_idx = 0usize;
+    let mut scene_target_start = 0.0f64;
+
+    let long_clip_anchors: Vec<f64> = if mode_str == "long_clip" {
+        scene_ranges.iter().map(|r| r.0).collect()
+    } else {
+        vec![0.0]
+    };
+    let mut current_anchor_idx = 0usize;
+    let mut anchor_target_start = 0.0f64;
+
     let mut segments = Vec::new();
     let mut wrap_indices = Vec::new();
-    let mut s_cursor = 0.0;
+    let mut s_cursor = if mode_str == "scenepack" {
+        scene_ranges[0].0
+    } else if mode_str == "long_clip" {
+        long_clip_anchors[0]
+    } else {
+        0.0
+    };
     let mut loops = 0u32;
     let mut downbeat_count = 0usize;
     let mut seg_index = 0usize;
@@ -698,6 +816,50 @@ pub fn create_plan_internal(
     for win in filtered_bounds.windows(2) {
         let t0 = win[0];
         let t1 = win[1];
+
+        // Check if segment starts on a downbeat or regular beat
+        let is_on_downbeat = downbeats.iter().any(|&d| (d - t0).abs() < 0.03 || (d >= t0 - 1e-4 && d < t1 - 1e-4));
+        let is_on_beat = beats.iter().any(|&b| (b - t0).abs() < 0.03 || (b >= t0 - 1e-4 && b < t1 - 1e-4));
+        let rhythm_mode = scenepack_rhythm.unwrap_or("mid").to_lowercase();
+
+        // Mode-specific scene or anchor switching check
+        if mode_str == "scenepack" && num_scenes > 1 {
+            let elapsed_target = t0 - scene_target_start;
+            let current_scene_end = scene_ranges[current_scene_idx].1;
+            let reached_scene_end = s_cursor >= current_scene_end - 0.05;
+
+            // Strict beat-following rule:
+            // NEVER switch unless on a musical beat/downbeat (the ONLY exception being clip exhaustion).
+            let should_switch = match rhythm_mode.as_str() {
+                "fast" => {
+                    // FAST: switch on EVERY beat
+                    is_on_beat && t0 > 0.0
+                }
+                "slow" => {
+                    // SLOW: switch on downbeats after at least 3.0s of continuous footage
+                    is_on_downbeat && elapsed_target >= 3.0 && t0 > 0.0
+                }
+                _ => {
+                    // MID (default): switch on every downbeat (measure/bar)
+                    is_on_downbeat && t0 > 0.0
+                }
+            };
+
+            if (should_switch || reached_scene_end) && t0 > 0.0 {
+                current_scene_idx = (current_scene_idx + 1) % num_scenes;
+                scene_target_start = t0;
+                s_cursor = scene_ranges[current_scene_idx].0;
+                wrap_indices.push(segments.len());
+            }
+        } else if mode_str == "long_clip" && long_clip_anchors.len() > 1 {
+            let elapsed_target = t0 - anchor_target_start;
+            if elapsed_target >= 3.0 && (is_on_downbeat || elapsed_target >= 4.0) && current_anchor_idx + 1 < long_clip_anchors.len() {
+                current_anchor_idx += 1;
+                anchor_target_start = t0;
+                s_cursor = long_clip_anchors[current_anchor_idx];
+                wrap_indices.push(segments.len());
+            }
+        }
 
         let (curve_name, r) = match style.to_uppercase().as_str() {
             "SMOOTH" => ("saddle".to_string(), 0.75),
@@ -711,10 +873,7 @@ pub fn create_plan_internal(
             _ => ("snap".to_string(), 1.0), // HARD default
         };
 
-        // Check if segment falls on a downbeat
-        let is_on_downbeat = downbeats.iter().any(|&d| d >= t0 - 1e-4 && d < t1 - 1e-4);
         let mut reverse_this_segment = false;
-
         if is_on_downbeat {
             downbeat_count += 1;
             match style.to_uppercase().as_str() {
@@ -891,14 +1050,25 @@ pub fn create_plan_internal(
                 zoom_beat_offset,
             };
 
-            if s_cursor + span <= video_duration + 1e-9 {
+            let current_max_s = if mode_str == "scenepack" {
+                scene_ranges[current_scene_idx].1
+            } else {
+                effective_video_dur
+            };
+
+            if s_cursor + span <= current_max_s + 1e-9 {
                 let mut s0 = s_cursor;
                 let mut s1 = s_cursor + span;
                 s_cursor += span;
 
-                let is_exact_wrap = (s_cursor - video_duration).abs() < 1e-9;
+                let is_exact_wrap = (s_cursor - current_max_s).abs() < 1e-9;
                 if is_exact_wrap {
-                    s_cursor = 0.0;
+                    if mode_str == "scenepack" {
+                        current_scene_idx = (current_scene_idx + 1) % num_scenes;
+                        s_cursor = scene_ranges[current_scene_idx].0;
+                    } else {
+                        s_cursor = 0.0;
+                    }
                     loops += 1;
                 }
 
@@ -918,11 +1088,11 @@ pub fn create_plan_internal(
                 seg_index += 1;
                 seg_t0 = seg_t1;
             } else {
-                let available = video_duration - s_cursor;
+                let available = current_max_s - s_cursor;
                 if available > 1e-6 {
                     let dt_sub = available / r;
                     let mut s0 = s_cursor;
-                    let mut s1 = video_duration;
+                    let mut s1 = current_max_s;
                     if reverse_this_segment {
                         std::mem::swap(&mut s0, &mut s1);
                     }
@@ -939,7 +1109,12 @@ pub fn create_plan_internal(
                     seg_index += 1;
                     seg_t0 += dt_sub;
                 }
-                s_cursor = 0.0;
+                if mode_str == "scenepack" {
+                    current_scene_idx = (current_scene_idx + 1) % num_scenes;
+                    s_cursor = scene_ranges[current_scene_idx].0;
+                } else {
+                    s_cursor = 0.0;
+                }
                 loops += 1;
                 wrap_indices.push(segments.len());
             }
@@ -961,7 +1136,11 @@ pub fn create_plan_internal(
     }
 
     let one_framers = if overrides.one_framers {
-        generate_one_framers(style, &segments, downbeats, fps, target_dur)
+        let mut framers = generate_one_framers(style, &segments, downbeats, fps, target_dur, overrides.anti_flash);
+        if overrides.anti_flash {
+            framers.retain(|f| f.framer_type != "FLASH_WHITE" && f.framer_type != "FLASH_BLACK" && f.framer_type != "INVERT");
+        }
+        framers
     } else {
         vec![]
     };
@@ -976,20 +1155,26 @@ pub fn create_plan_internal(
         || overrides.echo_trail
         || overrides.tint
         || overrides.vignette
-        || overrides.scanlines;
+        || overrides.scanlines
+        || overrides.cc_deep_dark;
 
     let ambiance = if has_any_ambiance {
         let mut a = default_ambiance(style, downbeats);
-        if overrides.tint {
+        a.cc_deep_dark = overrides.cc_deep_dark;
+        if overrides.tint && !overrides.anti_flash {
             a.tint.invert_bw = true;
             a.tint.downbeat_times = downbeats.to_vec();
+            a.tint.offset_rgb = custom_params.as_ref().map_or([0, 0, 0], |c| [c.tint_r_offset, c.tint_g_offset, c.tint_b_offset]);
+        } else if overrides.tint && overrides.anti_flash {
+            a.tint.invert_bw = false;
+            a.tint.downbeat_times.clear();
             a.tint.offset_rgb = custom_params.as_ref().map_or([0, 0, 0], |c| [c.tint_r_offset, c.tint_g_offset, c.tint_b_offset]);
         } else {
             a.tint.invert_bw = false;
             a.tint.downbeat_times.clear();
             a.tint.offset_rgb = [0, 0, 0];
         }
-        if overrides.flicker {
+        if overrides.flicker && !overrides.anti_flash {
             if let Some(c) = custom_params.as_ref() {
                 a.flicker.amplitude = c.flicker_amplitude;
                 a.flicker.f = c.flicker_frequency_hz;
@@ -997,7 +1182,7 @@ pub fn create_plan_internal(
         } else {
             a.flicker.amplitude = 0.0;
         }
-        if overrides.exposure_flash {
+        if overrides.exposure_flash && !overrides.anti_flash {
             if let Some(c) = custom_params.as_ref() {
                 a.exposure_flash.peak = c.exposure_flash_peak;
             }
@@ -1044,7 +1229,7 @@ pub fn create_plan_internal(
         borderless: true,
         bpm: (bpm * 100.0).round() / 100.0,
         target_duration: target_dur,
-        video_duration: (video_duration * 1000.0).round() / 1000.0,
+        video_duration: (effective_video_dur * 1000.0).round() / 1000.0,
         audio_duration: (audio_duration * 1000.0).round() / 1000.0,
         loops,
         motion_blur: true,
@@ -1055,6 +1240,7 @@ pub fn create_plan_internal(
         ambiance,
         segments,
         export: ExportConfig::default(),
+        source_intervals: raw_intervals,
     })
 }
 
@@ -1073,6 +1259,9 @@ pub fn generate_plan(
     effect_overrides: Option<EffectOverrides>,
     custom_params: Option<CustomParams>,
     export_config: Option<ExportConfig>,
+    long_video_mode: Option<String>,
+    detected_scenes: Option<Vec<f64>>,
+    scenepack_rhythm: Option<String>,
 ) -> Result<String, String> {
     let mut plan = create_plan_internal(
         &style,
@@ -1087,6 +1276,9 @@ pub fn generate_plan(
         full_fx,
         effect_overrides,
         custom_params,
+        long_video_mode.as_deref(),
+        detected_scenes.as_deref(),
+        scenepack_rhythm.as_deref(),
     )?;
     if let Some(ec) = export_config {
         plan.export = ec;

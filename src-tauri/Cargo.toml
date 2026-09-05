@@ -8,7 +8,7 @@ license = "MIT"
 
 [lib]
 name = "cia_render_lib"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 tauri = { version = "2.0.0", features = [] }
@@ -30,3 +30,4 @@ opt-level = 2
 
 [profile.dev]
 opt-level = 1
+codegen-units = 1

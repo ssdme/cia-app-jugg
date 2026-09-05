@@ -84,14 +84,19 @@ pub fn run() {
             open_about_link,
             probe::pick_file,
             probe::probe_media,
+            probe::transcribe_audio,
+            probe::detect_scenes,
+            probe::get_scene_clips,
             beat::detect_beats,
             plan::generate_plan,
             plan::save_plan,
             render::cancel_render,
             render::open_target_folder,
             render::run_render_pipeline,
+            render::render_text_video,
             preview::get_effect_previews,
-            plan::cmd_get_style_defaults
+            plan::cmd_get_style_defaults,
+            probe::read_media_file_bytes
         ])
         .run(tauri::generate_context!())
         .expect("error while running cia app");
