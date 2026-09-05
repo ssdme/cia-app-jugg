@@ -32,7 +32,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 ## UX
 
-![cia jugg ux](docs/preview.png)
+![cia jugg ux](docs/preview.png?v=1.0.3)
 
 ---
 
