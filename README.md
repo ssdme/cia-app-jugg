@@ -11,12 +11,6 @@ All processing runs locally on the host machine. The application bundles its own
 
 ---
 
-## UX
-
-![cia app ux](docs/preview.png)
-
----
-
 ## Render Previews
 
 <table>
@@ -33,6 +27,12 @@ All processing runs locally on the host machine. The application bundles its own
     </td>
   </tr>
 </table>
+
+---
+
+## UX
+
+![cia app ux](docs/preview.png)
 
 ---
 
