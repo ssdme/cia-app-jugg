@@ -962,11 +962,20 @@
               >
                 {#if scenePath}
                   <div class="zone-filled-content">
-                    <div class="zone-header">
-                      <span class="zone-tag">VIDEO</span>
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">01</span>
+                      <span class="zone-tag mono">VIDEO SOURCE</span>
                     </div>
-                    <div class="zone-title">SCENE</div>
-                    <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
+                    <div class="zone-filled-body">
+                      <div class="zone-filled-icon">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="2" y="4" width="20" height="16" rx="2" />
+                          <path d="M7 4v16M17 4v16M2 12h20" />
+                        </svg>
+                      </div>
+                      <div class="zone-title">SCENE FOOTAGE</div>
+                      <div class="zone-filename mono" title={scenePath}>{getFileName(scenePath)}</div>
+                    </div>
                     <div class="zone-actions">
                       <button class="btn-zone-action" onclick={(e) => handlePickFile('scene', e)}>REPLACE</button>
                       <button class="btn-zone-action danger" onclick={(e) => clearZone('scene', e)}>REMOVE</button>
@@ -974,11 +983,26 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG SCENE</p>
-                    <span class="zone-sublabel">VIDEO (MP4, MKV, WEBM, MOV, AVI)</span>
-                    {#if sceneError}
-                      <span class="zone-error-msg">{sceneError}</span>
-                    {/if}
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">01</span>
+                      <span class="zone-ext-badge mono">MP4 • MKV • WEBM • MOV</span>
+                    </div>
+                    <div class="zone-center-body">
+                      <div class="zone-icon-wrap">
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="2" y="4" width="20" height="16" rx="2" />
+                          <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+                        </svg>
+                      </div>
+                      <span class="zone-prompt">DRAG SCENE VIDEO</span>
+                      <span class="zone-browse-hint mono">or click to browse files</span>
+                      {#if sceneError}
+                        <span class="zone-error-msg">{sceneError}</span>
+                      {/if}
+                    </div>
+                    <div class="zone-bottom-bar">
+                      <span class="zone-meta-hint mono">PRIMARY TIMELINE FOOTAGE</span>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -1001,11 +1025,19 @@
               >
                 {#if drumsPath}
                   <div class="zone-filled-content">
-                    <div class="zone-header">
-                      <span class="zone-tag">AUDIO</span>
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">02</span>
+                      <span class="zone-tag mono">DRUMS STEM</span>
                     </div>
-                    <div class="zone-title">DRUMS</div>
-                    <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
+                    <div class="zone-filled-body">
+                      <div class="zone-filled-icon">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 11v2" />
+                        </svg>
+                      </div>
+                      <div class="zone-title">DRUMS STEM</div>
+                      <div class="zone-filename mono" title={drumsPath}>{getFileName(drumsPath)}</div>
+                    </div>
                     <div class="zone-actions">
                       <button class="btn-zone-action" onclick={(e) => handlePickFile('drums', e)}>REPLACE</button>
                       <button class="btn-zone-action danger" onclick={(e) => clearZone('drums', e)}>REMOVE</button>
@@ -1013,11 +1045,25 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG DRUMS</p>
-                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
-                    {#if drumsError}
-                      <span class="zone-error-msg">{drumsError}</span>
-                    {/if}
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">02</span>
+                      <span class="zone-ext-badge mono">MP3 • WAV • FLAC • M4A</span>
+                    </div>
+                    <div class="zone-center-body">
+                      <div class="zone-icon-wrap">
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 11v2" />
+                        </svg>
+                      </div>
+                      <span class="zone-prompt">DRAG DRUMS STEM</span>
+                      <span class="zone-browse-hint mono">or click to browse audio</span>
+                      {#if drumsError}
+                        <span class="zone-error-msg">{drumsError}</span>
+                      {/if}
+                    </div>
+                    <div class="zone-bottom-bar">
+                      <span class="zone-meta-hint mono">BEAT &amp; TRANSIENT DETECTION</span>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -1040,11 +1086,19 @@
               >
                 {#if audioPath}
                   <div class="zone-filled-content">
-                    <div class="zone-header">
-                      <span class="zone-tag">AUDIO</span>
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">03</span>
+                      <span class="zone-tag mono">MASTER AUDIO</span>
                     </div>
-                    <div class="zone-title">AUDIO</div>
-                    <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
+                    <div class="zone-filled-body">
+                      <div class="zone-filled-icon">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 12h2l2-4 3 8 3-6 2 4 2-2h4" />
+                        </svg>
+                      </div>
+                      <div class="zone-title">SOUNDTRACK</div>
+                      <div class="zone-filename mono" title={audioPath}>{getFileName(audioPath)}</div>
+                    </div>
                     <div class="zone-actions">
                       <button class="btn-zone-action" onclick={(e) => handlePickFile('audio', e)}>REPLACE</button>
                       <button class="btn-zone-action danger" onclick={(e) => clearZone('audio', e)}>REMOVE</button>
@@ -1052,11 +1106,25 @@
                   </div>
                 {:else}
                   <div class="zone-empty-content">
-                    <p class="zone-prompt">DRAG AUDIO</p>
-                    <span class="zone-sublabel">AUDIO (MP3, WAV, FLAC, M4A, OGG)</span>
-                    {#if audioError}
-                      <span class="zone-error-msg">{audioError}</span>
-                    {/if}
+                    <div class="zone-top-bar">
+                      <span class="zone-index mono">03</span>
+                      <span class="zone-ext-badge mono">MP3 • WAV • FLAC • M4A</span>
+                    </div>
+                    <div class="zone-center-body">
+                      <div class="zone-icon-wrap">
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 12h2l2-4 3 8 3-6 2 4 2-2h4" />
+                        </svg>
+                      </div>
+                      <span class="zone-prompt">DRAG MASTER AUDIO</span>
+                      <span class="zone-browse-hint mono">or click to browse audio</span>
+                      {#if audioError}
+                        <span class="zone-error-msg">{audioError}</span>
+                      {/if}
+                    </div>
+                    <div class="zone-bottom-bar">
+                      <span class="zone-meta-hint mono">FINAL SOUNDTRACK MIX</span>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -2099,7 +2167,7 @@
 
   /* Time Remap Page (3 Drop Zones) */
   .remap-page {
-    width: min(100%, 1100px);
+    width: min(100%, 1240px);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -2128,74 +2196,169 @@
   .remap-drop-zone {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
     height: 100%;
-    min-height: 280px;
-    padding: 24px 16px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
+    min-height: 320px;
+    padding: 16px;
+    border: 1px solid #1c1c24;
     border-radius: 8px;
-    background: #09090c;
+    background: #07070a;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     position: relative;
-    text-align: center;
+    box-sizing: border-box;
   }
 
   @media (max-width: 860px) {
     .remap-drop-zone {
       min-height: 180px;
-      padding: 16px 12px;
+      padding: 14px 12px;
     }
   }
 
-  .remap-drop-zone:hover,
+  .remap-drop-zone:hover {
+    background: #0b0b10;
+    border-color: #2e2e3c;
+  }
+
   .remap-drop-zone.hovering {
-    border-color: rgba(255, 255, 255, 0.4);
-    background: #111116;
-    box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.02);
+    background: #0e0e16;
+    border-color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
   }
 
   .remap-drop-zone.has-error {
-    border-color: rgba(239, 68, 68, 0.5);
-    background: #0c0707;
+    border-color: rgba(239, 68, 68, 0.45);
+    background: #0e0707;
   }
 
   .remap-drop-zone.filled {
-    border-color: rgba(255, 255, 255, 0.28);
-    background: #0d0d11;
+    border-color: #272733;
+    background: #08080c;
     cursor: default;
   }
 
+  /* Empty Zone Layout (3 Tiers: Top, Center, Bottom) */
   .zone-empty-content {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+    width: 100%;
+    pointer-events: none;
+  }
+
+  .zone-top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+
+  .zone-index {
+    font-size: 11px;
+    font-weight: 700;
+    color: #3f3f46;
+    letter-spacing: 0.06em;
+    transition: color 0.15s ease;
+  }
+
+  .remap-drop-zone:hover .zone-index {
+    color: #71717a;
+  }
+
+  .zone-ext-badge {
+    font-size: 8.5px;
+    font-weight: 600;
+    color: #52525b;
+    background: #101015;
+    border: 1px solid #1c1c24;
+    border-radius: 4px;
+    padding: 2px 7px;
+    letter-spacing: 0.04em;
+    transition: all 0.15s ease;
+  }
+
+  .remap-drop-zone:hover .zone-ext-badge {
+    color: #a1a1aa;
+    border-color: #2c2c38;
+  }
+
+  .zone-center-body {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    width: 100%;
+    text-align: center;
+    padding: 24px 0;
+  }
+
+  .zone-icon-wrap {
+    color: #3f3f46;
+    transition: color 0.15s ease, transform 0.15s ease;
+    margin-bottom: 4px;
+  }
+
+  .remap-drop-zone:hover .zone-icon-wrap {
+    color: #a1a1aa;
+    transform: translateY(-2px);
+  }
+
+  .remap-drop-zone.hovering .zone-icon-wrap {
+    color: #ffffff;
+    transform: translateY(-4px);
   }
 
   .zone-prompt {
-    font-size: 15px;
+    font-size: 12.5px;
     font-weight: 700;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     margin: 0;
     color: #e4e4e7;
+    text-transform: uppercase;
+    transition: color 0.15s ease;
   }
 
-  .zone-sublabel {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+  .remap-drop-zone:hover .zone-prompt {
+    color: #ffffff;
+  }
+
+  .zone-browse-hint {
+    font-size: 9.5px;
     color: #71717a;
-    line-height: 1.4;
+    font-weight: 500;
+    transition: color 0.15s ease;
+  }
+
+  .remap-drop-zone:hover .zone-browse-hint {
+    color: #a1a1aa;
+  }
+
+  .zone-bottom-bar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    padding-top: 10px;
+    border-top: 1px solid #121218;
+  }
+
+  .zone-meta-hint {
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: #3f3f46;
+    text-transform: uppercase;
+    transition: color 0.15s ease;
+  }
+
+  .remap-drop-zone:hover .zone-meta-hint {
+    color: #52525b;
   }
 
   .zone-error-msg {
-    margin-top: 10px;
-    padding: 6px 10px;
+    margin-top: 8px;
+    padding: 5px 8px;
     background: rgba(127, 29, 29, 0.35);
     border: 1px solid #7f1d1d;
     border-radius: 4px;
@@ -2206,50 +2369,58 @@
     line-height: 1.35;
   }
 
+  /* Filled Zone Layout */
   .zone-filled-content {
     display: flex;
     flex-direction: column;
-    align-items: center;
     justify-content: space-between;
     height: 100%;
-    width: 100%;
-    gap: 12px;
-  }
-
-  .zone-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     width: 100%;
   }
 
   .zone-tag {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
+    background: #121217;
+    border: 1px solid #24242e;
     border-radius: 4px;
     padding: 2px 6px;
   }
 
+  .zone-filled-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: center;
+    padding: 20px 0;
+  }
+
+  .zone-filled-icon {
+    color: #a1a1aa;
+    margin-bottom: 2px;
+  }
+
   .zone-title {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #ffffff;
+    text-transform: uppercase;
   }
 
   .zone-filename {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    color: #f4f4f5;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    padding: 10px 12px;
+    color: #e4e4e7;
+    background: #040406;
+    border: 1px solid #1c1c24;
+    border-radius: 5px;
+    padding: 8px 10px;
     width: 100%;
     max-width: 100%;
     overflow: hidden;
@@ -2262,32 +2433,35 @@
     display: flex;
     gap: 8px;
     width: 100%;
+    padding-top: 10px;
+    border-top: 1px solid #14141c;
   }
 
   .btn-zone-action {
     flex: 1;
     padding: 7px 10px;
-    background: #141417;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 5px;
-    color: #d4d4d8;
-    cursor: pointer;
-    font-size: 10px;
+    background: #111116;
+    border: 1px solid #24242e;
+    border-radius: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
+    color: #a1a1aa;
+    cursor: pointer;
     transition: all 0.15s ease;
   }
 
   .btn-zone-action:hover {
-    border-color: rgba(255, 255, 255, 0.35);
-    background: #1c1c20;
+    background: #1c1c24;
+    border-color: #3f3f50;
     color: #ffffff;
   }
 
   .btn-zone-action.danger:hover {
-    border-color: #7f1d1d;
-    background: #450a0a;
-    color: #fecaca;
+    background: rgba(239, 68, 68, 0.15);
+    border-color: #ef4444;
+    color: #ef4444;
   }
 
   .continue-row {
