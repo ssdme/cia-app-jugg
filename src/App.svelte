@@ -2289,13 +2289,15 @@
     cursor: default;
   }
 
-  /* Empty Zone Layout (3 Tiers: Top, Center, Bottom) */
+  /* Empty Zone Layout */
   .zone-empty-content {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: center;
+    align-items: center;
     height: 100%;
     width: 100%;
+    position: relative;
     pointer-events: none;
   }
 
@@ -2349,6 +2351,10 @@
   }
 
   .zone-bottom-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
     display: flex;
     justify-content: center;
     align-items: center;
