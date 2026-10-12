@@ -36,7 +36,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - run: npm ci
+      - run: npm run verify:payload
       - run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
