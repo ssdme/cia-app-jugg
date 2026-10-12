@@ -1,27 +1,34 @@
 # Technical Debt & Code Quality
 
-This document catalogs non-blocking technical debt, style improvements, and lint suggestions identified by `cargo clippy`.
+Updated after the 5 October 2026 audit patch. Clippy and formatting are enforced in CI;
+the former warning count from the monolithic `lib.rs` is obsolete.
 
-## Clippy Lint Summary
+## Checks
 
-Total warnings: **37** across `src-tauri/src/lib.rs`.
+`svelte-check` retains strict JavaScript checking, and Rust uses
+`cargo clippy --locked --all-targets -- -D warnings`. Exceptions to argument-count
+lints are local to positional pixel/IPC APIs and explain why their contract is retained.
+Portable integrations generate their own media. Six historical tests that require
+personal files are explicitly ignored instead of reporting a skipped render as a pass.
 
-| Lint Category | Count | Description & Recommended Refactor |
-| --- | --- | --- |
-| `clippy::needless_range_loop` | 7 | Loops indexing arrays/slices via `0..N`. Refactor to idiomatic iterators (`.iter()`, `.chunks()`, `.zip()`). |
-| `clippy::manual_range_contains` | 5 | Range checks (`x >= 0.0 && x <= 6.0`) can be written more succinctly as `(0.0..=6.0).contains(&x)`. |
-| `clippy::too_many_arguments` | 4 | Functions taking 8 to 13 arguments (`apply_transform_stack_cropped`, `create_plan_internal`, `apply_ambiance_effects`, `generate_plan`). Group parameters into contextual structs (e.g., `TransformContext`, `AmbianceParams`). |
-| `clippy::manual_is_multiple_of` | 3 | Parity checks (`val % 2 == 0`) can use `val.is_multiple_of(2)`. |
-| `clippy::manual_checked_division` | 3 | Division guard patterns (`if count > 0 { sum / count } else { 128 }`) can use `checked_div`. |
-| `clippy::unnecessary_cast` | 2 | Redundant casts where variable is already the target type (`k as i32`). |
-| `clippy::assign_op_pattern` | 2 | Manual assignment operations (`scale_x = scale_x * sx`) can use compound operators (`scale_x *= sx`). |
-| `clippy::needless_borrow` | 2 | Redundant references passed where compiler already dereferences automatically. |
-| `clippy::collapse_match` | 2 | Nested `if` statements inside `match` arms can be merged into the match guard or arm pattern. |
-| `clippy::option_map_or_none` | 1 | `map_or` expression that can be simplified. |
-| `clippy::ptr_arg` | 1 | Function accepting `&mut Vec<u8>` where a mutable slice `&mut [u8]` is more flexible. |
-| `clippy::same_item_push` | 1 | Vec population loop where `vec.resize()` or `vec![val; count]` is clearer. |
+## Remaining work
 
-## CI & Future Policy
+- `App.svelte` still owns much of the navigation and media workflow. Typed IPC,
+  contracts and preset helpers are extracted; further component/service separation
+  should preserve the existing screens and be covered by the UI regression harness.
+- Scene thumbnails use a static placeholder if a preview cannot be extracted.
+  Metadata and render failures are errors, rather than fabricated successful sources.
+- Cache budgets bound raw files and frame LRU storage, not total application/FFmpeg RAM.
+  Block eviction can repeat decoding for long reverse/loop-heavy timelines.
+- Normal cancellation and errors clean up owned processes/files. Abrupt application
+  termination is not yet covered by a Windows job object or stale-job recovery.
+- Payload hashes are pinned. The upstream version/build provenance of the existing
+  beat_this executable, model and ONNX DLLs remains unrecorded.
+- Text Studio stays disabled. Its Python/runtime packaging, media transfer sizes,
+  subprocess cancellation and user-specific paths need a separate implementation.
+- Release acceptance still requires installation on a clean Windows machine and
+  an end-to-end signed update between two test versions. Signature verification
+  tests alone do not demonstrate installation or update success.
 
-- Clippy is integrated into `.github/workflows/ci.yml` in non-blocking mode (no `-D warnings`) to ensure visibility without failing builds on style lints.
-- Future refactoring phases can progressively enable strict mode once argument structs are introduced.
+See [the audit](AUDIT_2026-10-05.md), [implementation plan](PATCH_PLAN_2026-10-05.md)
+and [patch report](PATCH_REPORT_2026-10-05.md) for evidence and scope.

@@ -1,11 +1,12 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke, errorMessage } from './lib/native';
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ColorPickerPopup from './ColorPickerPopup.svelte';
   import BlockInspector from './BlockInspector.svelte';
 
+  /** @type {{onToast?: (message: string, type: string) => void}} */
   let {
     onToast = (msg, type) => {}
   } = $props();
@@ -13,10 +14,12 @@
   // Audio File & Playback State
   let audioPath = $state('');
   let audioBlobUrl = $state('');
+  /** @type {HTMLAudioElement | null} */
   let audioElement = $state(null);
   let isPlaying = $state(false);
   let currentTime = $state(0);
   let duration = $state(0);
+  /** @type {number | null} */
   let animFrameId = null;
 
   // Analysis / Whisper State
@@ -24,10 +27,12 @@
   let analyzeProgress = $state(0);
   let analyzeMessage = $state('INITIALIZING WHISPER ENGINE...');
   let isDraggingFile = $state(false);
+  /** @type {import('./lib/contracts').Transcript | null} */
   let transcriptData = $state(null);
   let transcriptText = $state('');
 
   // Blocks & Layout State
+  /** @type {import('./lib/contracts').TextBlock[]} */
   let blocks = $state([]);
   let currentBlockIndex = $state(0);
 
@@ -45,6 +50,7 @@
   let renderedVideoPath = $state('');
   let showRenderDoneModal = $state(false);
 
+  /** @param {string} p */
   function getFileName(p) {
     if (!p) return '';
     const parts = p.split(/[\\/]/);
@@ -52,6 +58,7 @@
   }
 
   // Load audio file into Web Audio / HTML5 Blob URL for seamless local playback
+  /** @param {string} path */
   async function loadAudioMedia(path) {
     try {
       const bytes = await invoke('read_media_file_bytes', { path });
@@ -90,6 +97,7 @@
   }
 
   // Drag and Drop Handlers
+  /** @param {DragEvent} e */
   function handleDragOver(e) {
     e.preventDefault();
     isDraggingFile = true;
@@ -99,6 +107,7 @@
     isDraggingFile = false;
   }
 
+  /** @param {DragEvent} e */
   function handleDrop(e) {
     e.preventDefault();
     isDraggingFile = false;
@@ -108,6 +117,7 @@
   }
 
   // Speech-to-Text with Faster-Whisper via Rust IPC
+  /** @param {string} path */
   async function startRealVocalAnalysis(path) {
     if (!path || isAnalyzing) return;
     isAnalyzing = true;
@@ -135,7 +145,7 @@
       }
     } catch (err) {
       console.error('Whisper transcription error:', err);
-      onToast(`Transcription notice: ${err?.message || err}. Generating rhythmic fallback...`, 'info');
+      onToast(`Transcription notice: ${errorMessage(err)}. Generating rhythmic fallback...`, 'info');
       // Graceful fallback from audio duration
       generateFallbackBlocks(duration || 15.0);
     } finally {
@@ -144,7 +154,9 @@
   }
 
   // Exact Text Measurement via Canvas 2D
+  /** @type {CanvasRenderingContext2D | null} */
   let measureCtx = null;
+  /** @param {string} text @param {number} size */
   function getMeasuredWidth(text, size, isHero = false) {
     if (typeof document !== 'undefined') {
       if (!measureCtx) {
@@ -152,6 +164,7 @@
         measureCtx = c.getContext('2d');
       }
       const fontFam = isHero ? "'Bahnschrift', 'Roboto Condensed', sans-serif" : "'Arial', sans-serif";
+      if (!measureCtx) return Math.round(text.length * size * 0.60);
       measureCtx.font = `700 ${size}px ${fontFam}`;
       const m = measureCtx.measureText(text);
       return Math.round(m.width);
@@ -160,6 +173,7 @@
   }
 
   // High-Fidelity Bounding Box Puzzle Composer for Basic Effort
+  /** @param {string[]} wordsList @param {import('./lib/contracts').TranscriptWord[]} wordsMeta */
   function buildPuzzleElementsForWords(wordsList, variant = 0, wordsMeta = []) {
     if (!wordsList || wordsList.length === 0) return [];
     const upperWords = wordsList.map(w => w.toUpperCase());
@@ -229,14 +243,14 @@
       }
     }
 
-    rowsDef = rowsDef.filter(r => r && (r.words?.length > 0 || r.wordsLeft?.length > 0));
+    rowsDef = rowsDef.filter(r => r && ((r.words?.length || 0) > 0 || (r.wordsLeft?.length || 0) > 0));
 
     const MAX_ROW_WIDTH = 860;
     const rawRows = [];
 
     for (const r of rowsDef) {
       if (r.type === 'hero' || r.type === 'sub' || r.type === 'punch') {
-        const txt = r.words.join(' ');
+        const txt = (r.words || []).join(' ');
         let sz = r.type === 'hero' ? 120 : (r.type === 'punch' ? 65 : 55);
         let w = getMeasuredWidth(txt, sz, r.type === 'hero');
         if (w > MAX_ROW_WIDTH) {
@@ -256,7 +270,7 @@
           end: wEnd
         }]);
       } else if (r.type === 'split' || r.type === 'splitHeroRight') {
-        const tLeft = r.wordsLeft.join(' ');
+        const tLeft = (r.wordsLeft || []).join(' ');
         const tRight = r.wordsRight?.join(' ') || '';
         let szL = r.type === 'split' ? 42 : 48;
         let szR = r.type === 'split' ? 95 : 110;
@@ -348,6 +362,7 @@
   }
 
   // Group Whisper Word Timestamps into Rhythmic Blocks
+  /** @param {import('./lib/contracts').Transcript} transcriptRes */
   function generateBlocksFromWhisper(transcriptRes) {
     const allWords = [];
     if (transcriptRes.segments && transcriptRes.segments.length > 0) {
@@ -358,8 +373,8 @@
             if (clean) {
               allWords.push({
                 word: clean,
-                start: parseFloat(w.start),
-                end: parseFloat(w.end),
+                start: Number(w.start),
+                end: Number(w.end),
                 probability: w.probability ?? 1.0
               });
             }
@@ -408,6 +423,7 @@
       grouped.push(curGroup);
     }
 
+    /** @type {import('./lib/contracts').TextBlock[]} */
     const generatedBlocks = [];
     grouped.forEach((wordGroup, bIdx) => {
       const bStart = wordGroup[0].start;
@@ -438,6 +454,7 @@
     currentBlockIndex = 0;
   }
 
+  /** @param {number} totalDur */
   function generateFallbackBlocks(totalDur) {
     const text = transcriptText || "FREESTYLE VOCALS DEMO TRACK";
     const words = text.split(/\s+/).filter(w => w.length > 0);
@@ -493,6 +510,7 @@
     }
   }
 
+  /** @param {number} targetTime */
   function seekTo(targetTime) {
     currentTime = Math.max(0, Math.min(duration || 10, targetTime));
     if (audioElement) {
@@ -518,6 +536,7 @@
     animFrameId = requestAnimationFrame(loop);
   }
 
+  /** @param {number} idx */
   function handleRegenerateBlock(idx) {
     if (!blocks[idx]) return;
     const b = blocks[idx];
@@ -535,6 +554,7 @@
   }
 
   // Style change handler
+  /** @param {string} style */
   function chooseStyle(style) {
     selectedStyle = style;
     if (style === 'low_effort') {
@@ -545,8 +565,9 @@
   }
 
   // Keyboard Shortcuts (Spacebar: Play/Pause, Left/Right: Seek)
+  /** @param {KeyboardEvent} e */
   function handleWindowKeyDown(e) {
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+    if (e.target instanceof HTMLElement && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
       return;
     }
     if (e.key === ' ' || e.code === 'Space') {
@@ -593,7 +614,7 @@
     } catch (err) {
       console.error('Render error:', err);
       isRendering = false;
-      onToast(`Render error: ${err?.message || err}`, 'error');
+      onToast(`Render error: ${errorMessage(err)}`, 'error');
     }
   }
 
@@ -620,8 +641,12 @@
   }
 
   onMount(() => {
+    let disposed = false;
+    /** @type {(() => void) | null} */
     let unlistenDrag = null;
+    /** @type {(() => void) | null} */
     let unlistenRender = null;
+    /** @type {(() => void) | null} */
     let unlistenTranscribe = null;
 
     listen('tauri://drag-drop', (event) => {
@@ -631,25 +656,26 @@
         loadAudioMedia(paths[0]);
         startRealVocalAnalysis(paths[0]);
       }
-    }).then(u => { unlistenDrag = u; });
+    }).then(u => { if (disposed) u(); else unlistenDrag = u; }).catch(console.error);
 
     listen('transcribe-progress', (event) => {
       if (event.payload) {
         analyzeProgress = event.payload.percent || analyzeProgress;
         analyzeMessage = event.payload.message || analyzeMessage;
       }
-    }).then(u => { unlistenTranscribe = u; });
+    }).then(u => { if (disposed) u(); else unlistenTranscribe = u; }).catch(console.error);
 
     listen('render-text-progress', (event) => {
       if (event.payload) {
         renderProgress = event.payload.percent || 0;
         renderLog = event.payload.message || `Rendering frame ${event.payload.currentFrame}/${event.payload.totalFrames}`;
       }
-    }).then(u => { unlistenRender = u; });
+    }).then(u => { if (disposed) u(); else unlistenRender = u; }).catch(console.error);
 
     window.addEventListener('keydown', handleWindowKeyDown);
 
     return () => {
+      disposed = true;
       if (unlistenDrag) unlistenDrag();
       if (unlistenTranscribe) unlistenTranscribe();
       if (unlistenRender) unlistenRender();

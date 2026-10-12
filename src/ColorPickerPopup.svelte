@@ -24,10 +24,12 @@
   let val = $state(1);
   let alpha = $state(1);
   let isDragging = false;
+  /** @type {HTMLDivElement | null} */
   let svBoxEl = $state(null);
 
+  /** @param {number} h @param {number} s @param {number} v */
   function hsvToHex(h, s, v, a = 1) {
-    let f = (n, k = (n + h / 60) % 6) => v - v * s * Math.max(Math.min(k, 4 - k, 1), 0);
+    let f = (/** @type {number} */ n, k = (n + h / 60) % 6) => v - v * s * Math.max(Math.min(k, 4 - k, 1), 0);
     let r = Math.round(f(5) * 255);
     let g = Math.round(f(3) * 255);
     let b = Math.round(f(1) * 255);
@@ -41,6 +43,7 @@
     return `#${rHex}${gHex}${bHex}`;
   }
 
+  /** @param {string} hexStr */
   function hexToHsv(hexStr) {
     let hex = (hexStr || '').replace('#', '');
     let a = 1;
@@ -82,6 +85,7 @@
     }
   });
 
+  /** @param {MouseEvent} e */
   function handleSvMove(e) {
     if (!svBoxEl) return;
     const rect = svBoxEl.getBoundingClientRect();
@@ -92,6 +96,7 @@
     color = hsvToHex(hue, sat, val, alpha);
   }
 
+  /** @param {MouseEvent} e @param {HTMLElement} el */
   function handleHueMove(e, el) {
     const rect = el.getBoundingClientRect();
     const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
@@ -99,6 +104,7 @@
     color = hsvToHex(hue, sat, val, alpha);
   }
 
+  /** @param {MouseEvent} e @param {HTMLElement} el */
   function handleAlphaMove(e, el) {
     const rect = el.getBoundingClientRect();
     const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
@@ -106,6 +112,7 @@
     color = hsvToHex(hue, sat, val, alpha);
   }
 
+  /** @param {string} presetHex */
   function selectPreset(presetHex) {
     color = presetHex;
     hexToHsv(presetHex);
@@ -127,7 +134,7 @@
       type="text"
       class="color-hex-input mono"
       bind:value={color}
-      onchange={(e) => hexToHsv(e.target.value)}
+      onchange={(e) => hexToHsv(e.currentTarget.value)}
       maxlength="9"
     />
   </div>
@@ -146,7 +153,7 @@
           onmousedown={(e) => {
             isDragging = true;
             handleSvMove(e);
-            const onMouseMove = (me) => handleSvMove(me);
+            const onMouseMove = (/** @type {MouseEvent} */ me) => handleSvMove(me);
             const onMouseUp = () => {
               isDragging = false;
               window.removeEventListener('mousemove', onMouseMove);
@@ -171,7 +178,7 @@
           onmousedown={(e) => {
             handleHueMove(e, e.currentTarget);
             const el = e.currentTarget;
-            const onMouseMove = (me) => handleHueMove(me, el);
+            const onMouseMove = (/** @type {MouseEvent} */ me) => handleHueMove(me, el);
             const onMouseUp = () => {
               window.removeEventListener('mousemove', onMouseMove);
               window.removeEventListener('mouseup', onMouseUp);
@@ -190,7 +197,7 @@
           onmousedown={(e) => {
             handleAlphaMove(e, e.currentTarget);
             const el = e.currentTarget;
-            const onMouseMove = (me) => handleAlphaMove(me, el);
+            const onMouseMove = (/** @type {MouseEvent} */ me) => handleAlphaMove(me, el);
             const onMouseUp = () => {
               window.removeEventListener('mousemove', onMouseMove);
               window.removeEventListener('mouseup', onMouseUp);

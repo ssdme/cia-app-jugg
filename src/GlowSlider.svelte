@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   let {
     value = $bindable(2),
     min = 2,
@@ -6,6 +7,7 @@
     step = 1,
     label = '',
     unit = '',
+    id = '',
     precision = 0
   } = $props();
 
@@ -25,8 +27,10 @@
   let hoverAnim = $state(0);
 
   let lastTime = 0;
+  /** @type {number | undefined} */
   let animFrame;
 
+  /** @param {number} now */
   function updateAnim(now) {
     if (!lastTime) lastTime = now;
     const dt = Math.min((now - lastTime) / 1000, 0.05); // cap dt at 50ms
@@ -40,20 +44,21 @@
     const targetHover = (isHovered || isActive) ? 1.0 : 0.0;
     hoverAnim += (targetHover - hoverAnim) * Math.min(1.0, dt * 10.0);
 
-    animFrame = requestAnimationFrame(updateAnim);
+    if (Math.abs(targetRatio - vizRatio) > 0.0001 || Math.abs(targetHover - hoverAnim) > 0.0001) {
+      animFrame = requestAnimationFrame(updateAnim);
+    } else { vizRatio = targetRatio; hoverAnim = targetHover; animFrame = undefined; }
   }
 
   $effect(() => {
-    vizRatio = (value - min) / (max - min);
-    lastTime = performance.now();
-    animFrame = requestAnimationFrame(updateAnim);
-    return () => {
-      if (animFrame) cancelAnimationFrame(animFrame);
-    };
+    // Wake on interaction/value changes, then stop once the same visual settles.
+    void tempValue; void isHovered; void isActive; void min; void max;
+    untrack(() => { lastTime = performance.now(); animFrame = requestAnimationFrame(updateAnim); });
+    return () => { if (animFrame !== undefined) cancelAnimationFrame(animFrame); };
   });
 
+  /** @param {Event & { currentTarget: HTMLInputElement }} e */
   function handleInput(e) {
-    tempValue = parseFloat(e.target.value);
+    tempValue = parseFloat(e.currentTarget.value);
   }
 
   function handleChange() {
@@ -86,10 +91,11 @@
   >
     <!-- Hidden Native Range Input -->
     <input
+      {id}
       type="range"
       {min}
       {max}
-      step="0.01"
+      {step}
       value={tempValue}
       oninput={handleInput}
       onchange={handleChange}

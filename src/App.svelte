@@ -1,10 +1,11 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke, errorMessage } from './lib/native';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { check } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { onMount } from 'svelte';
+  import { effectKey, withPersistentOptions, analysisKey } from './lib/render-settings';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
   import TextStudio from './TextStudio.svelte';
@@ -22,6 +23,7 @@
   let canGoBack = $derived(historyIndex > 0);
   let canGoForward = $derived(historyIndex < historyStack.length - 1);
 
+  /** @param {string} page */
   function pushNavigation(page) {
     if (page === activePage) return;
     historyStack = [...historyStack.slice(0, historyIndex + 1), page];
@@ -71,6 +73,7 @@
 
   // Auto-Updater State
   let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
+  /** @type {import('@tauri-apps/plugin-updater').Update | null} */
   let availableUpdate = $state(null);
   let updateDownloadedBytes = $state(0);
   let updateContentLength = $state(0);
@@ -79,23 +82,31 @@
 
   // Time Remap State (3 drop zones)
   let scenePath = $state('');
+  /** @type {string[]} */
   let scenePaths = $state([]);
   let sceneError = $state('');
   let drumsPath = $state('');
   let drumsError = $state('');
   let audioPath = $state('');
   let audioError = $state('');
+  /** @type {string | null} */
   let hoveredZone = $state(null);
 
   // Probe & Beat Detection State & Cache
   let probedScenePath = $state('');
   let probedDrumsPath = $state('');
   let probedAudioPath = $state('');
+  /** @type {import('./lib/contracts').MediaInfo | null} */
   let sceneInfo = $state(null);
+  /** @type {import('./lib/contracts').MediaInfo | null} */
   let drumsInfo = $state(null);
+  /** @type {import('./lib/contracts').MediaInfo | null} */
   let audioInfo = $state(null);
+  /** @type {number[] | null} */
   let beats = $state(null);
+  /** @type {number[] | null} */
   let downbeats = $state(null);
+  /** @type {number | null} */
   let bpm = $state(null);
   let isAnalyzing = $state(false);
   let analyzingStep = $state('');
@@ -109,6 +120,7 @@
   let customArError = $state('');
   let borderless = $state(true); // always true internally
   let fullFxEnabled = $state(true);    // T13 full fx, default ON
+  /** @type {import('./lib/contracts').RenderStats | null} */
   let renderStats = $state(null);      // T16 render logs & stats
 
   // T19 Export Options State
@@ -118,60 +130,33 @@
 
   // T17 Generic Effect Preview and Toggleable Overrides
   let showDetailsModal = $state(false);
+  /** @type {import('./lib/contracts').EffectPreview[]} */
   let availableEffects = $state([]);
+  /** @type {import('./lib/contracts').EffectPreview | null} */
   let hoveredPreview = $state(null);
   let hoverPos = $state({ x: 0, y: 0 });
 
-  function getDefaultOverrides(style, fullFx) {
-    return {
-      shakes: true,
-      zoom: true,
-      flicker: true,
-      oneFramers: true,
-      one_framers: true,
-      transitions: false,
-      tint: true,
-      vignette: true,
-      scanlines: false,
-      exposureFlash: true,
-      exposure_flash: true,
-      bouncyShake: true,
-      bouncy_shake: true,
-      dissolveShake: true,
-      dissolve_shake: true,
-      skewShake: true,
-      skew_shake: true,
-      squishPop: true,
-      squish_pop: true,
-      opticsBounce: true,
-      optics_bounce: true,
-      buildupChain: true,
-      buildup_chain: true,
-      warpStretch: true,
-      warp_stretch: true,
-      zoomBeatOffset: true,
-      zoom_beat_offset: true,
-      ccDeepDark: false,
-      cc_deep_dark: false,
-      antiFlash: false,
-      anti_flash: false,
-    };
-  }
-
   let showLongVideoModal = $state(false);
   let longVideoMode = $state('no_change'); // 'no_change' | 'scenepack' | 'long_clip'
+  /** @type {number[]} */
   let detectedScenes = $state([]);
   let isDetectingScenes = $state(false);
   let sceneDetectProgress = $state('');
 
   // ScenePack Gallery & Clip Filtering State
   let showScenePackGallery = $state(false);
+  /** @type {import('./lib/contracts').SceneClip[]} */
   let sceneClipsList = $state([]);
   let selectedClipIndices = $state(new Set());
+  /** @type {import('./lib/contracts').SceneClip | null} */
   let hoveredSceneClip = $state(null);
   let hoverScenePos = $state({ x: 0, y: 0 });
   let scenePackRhythm = $state('fast'); // 'fast' | 'mid' | 'slow'
+  let noRepetitiveScene = $state(true);
+  let activeSceneAnalysisJobId = $state('');
+  let cancellingSceneAnalysis = $state(false);
 
+  /** @param {number} sec */
   function formatTimecode(sec) {
     if (isNaN(sec) || sec == null) return '0:00.0';
     const m = Math.floor(sec / 60);
@@ -180,6 +165,7 @@
     return `${m}:${s < 10 ? '0' : ''}${s}.${ms}`;
   }
 
+  /** @param {number} idx */
   function toggleClipSelection(idx) {
     const next = new Set(selectedClipIndices);
     if (next.has(idx)) {
@@ -191,7 +177,7 @@
   }
 
   function handleSelectAllClips() {
-    selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
+    selectedClipIndices = new Set(sceneClipsList.map(clip => clip.index));
   }
 
   function handleDeselectAllClips() {
@@ -203,69 +189,69 @@
       showToast('Please select at least 1 clip for rendering', 'error');
       return;
     }
-    const chosen = sceneClipsList.filter((_, i) => selectedClipIndices.has(i));
+    const chosen = sceneClipsList.filter(clip => selectedClipIndices.has(clip.index));
     detectedScenes = chosen.flatMap((c) => [c.startTime, c.endTime]);
     showScenePackGallery = false;
     navigateTo('settings');
     showToast(`${chosen.length} clip(s) selected for ScenePack render`, 'success');
   }
 
-  let effectOverrides = $state(getDefaultOverrides('HARD', true));
+  /** @type {import('./lib/contracts').EffectOverrides | null} */
+  let effectOverrides = $state(null);
 
   // T18 Custom Params â€” per-effect numeric overrides
+  /** @type {import('./lib/contracts').CustomParams | null} */
   let customParams = $state(null); // null = use style preset defaults
 
-  // Fetch style defaults from Rust when style changes or when opening DETAILS
+  let presetGeneration = 0;
+  let pendingPreset = Promise.resolve();
+  async function loadPreset(resetParams = true, preserve = true) {
+    const generation = ++presetGeneration;
+    const style = selectedStyle;
+    const fullFx = fullFxEnabled;
+    const preset = await invoke('cmd_get_style_preset', { style, fullFx });
+    if (generation !== presetGeneration) return;
+    effectOverrides = preserve && effectOverrides
+      ? withPersistentOptions(preset.effects, effectOverrides) : preset.effects;
+    if (resetParams || customParams === null) customParams = preset.params;
+  }
+  function requestPreset(resetParams = true, preserve = true) {
+    pendingPreset = loadPreset(resetParams, preserve).catch((error) => {
+      showToast(`Failed to load preset: ${error}`, 'error');
+      throw error;
+    });
+    // The render awaits the same promise; event handlers must not leak rejections.
+    void pendingPreset.catch(() => {});
+  }
   async function loadCustomParamsDefaults() {
-    try {
-      const defaults = await invoke('cmd_get_style_defaults', { style: selectedStyle });
-      if (customParams === null) {
-        customParams = defaults;
-      }
-    } catch (e) {
-      console.error('[T18] Failed to load style defaults:', e);
-    }
+    if (customParams === null) await loadPreset();
   }
-
-  async function handleResetToStyleDefaults() {
-    try {
-      customParams = await invoke('cmd_get_style_defaults', { style: selectedStyle });
-    } catch (e) {
-      console.error('[T18] Failed to reset custom params:', e);
-    }
-  }
-
+  function handleResetToStyleDefaults() { requestPreset(); }
   function handleToggleFullFx() {
-    const prevCc = Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
-    const prevAntiFlash = Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash);
     fullFxEnabled = !fullFxEnabled;
-    effectOverrides = {
-      ...getDefaultOverrides(selectedStyle, fullFxEnabled),
-      ccDeepDark: prevCc,
-      cc_deep_dark: prevCc,
-      antiFlash: prevAntiFlash,
-      anti_flash: prevAntiFlash,
-    };
+    requestPreset(false);
   }
 
   function handleSelectAllEffects() {
+    if (!effectOverrides) return;
     const next = { ...effectOverrides };
-    for (const key of Object.keys(next)) {
-      next[key] = true;
+    for (const effect of availableEffects) {
+      next[effectKey(effect.id)] = true;
     }
     effectOverrides = next;
   }
 
   function handleDeselectAllEffects() {
+    if (!effectOverrides) return;
     const next = { ...effectOverrides };
-    for (const key of Object.keys(next)) {
-      next[key] = false;
+    for (const effect of availableEffects) {
+      next[effectKey(effect.id)] = false;
     }
     effectOverrides = next;
   }
 
   function handleResetEffectsToPreset() {
-    effectOverrides = getDefaultOverrides(selectedStyle, fullFxEnabled);
+    requestPreset(false, false);
   }
 
   const STYLE_OPTIONS = [
@@ -313,19 +299,23 @@
   ];
   const PROJECT_REPOSITORY_URL = 'https://github.com/ssdme/cia-app-jugg';
 
+  /** @param {string} path */
   function getFileExtension(path) {
     if (!path) return '';
     const parts = path.split('.');
-    return parts.length > 1 ? parts.pop().toLowerCase() : '';
+    return parts.length > 1 ? (parts.pop() || '').toLowerCase() : '';
   }
 
+  /** @param {string} path */
   function getFileName(path) {
     if (!path) return '';
     return path.split(/[\\/]/).pop() || path;
   }
 
+  /** @param {string} zone @param {string[]} paths */
   function validateAndSetFiles(zone, paths) {
     if (!paths || paths.length === 0) return;
+    invalidateAnalysis();
     if (zone === 'scene') {
       const valid = paths.filter((p) => VIDEO_EXTENSIONS.includes(getFileExtension(p)));
       if (valid.length > 0) {
@@ -347,8 +337,10 @@
     }
   }
 
+  /** @param {string} zone @param {string} path */
   function validateAndSetFile(zone, path) {
     if (!path) return;
+    invalidateAnalysis();
     if (zone === 'scene') {
       validateAndSetFiles('scene', [path]);
       return;
@@ -382,7 +374,9 @@
     }
   }
 
-  function clearZone(zone, event) {
+  /** @param {string} zone @param {Event | undefined} event */
+  function clearZone(zone, event = undefined) {
+    invalidateAnalysis();
     if (event) event.stopPropagation();
     if (zone === 'scene') {
       scenePaths = [];
@@ -409,7 +403,8 @@
     }
   }
 
-  async function handlePickFile(zone, event) {
+  /** @param {string} zone @param {Event | undefined} event */
+  async function handlePickFile(zone, event = undefined) {
     if (event) event.stopPropagation();
     try {
       if (zone === 'scene') {
@@ -429,28 +424,34 @@
     }
   }
 
+  /** @param {string} mode */
   async function selectLongVideoMode(mode) {
+    if (!sceneInfo) return;
+    const videoDuration = sceneInfo.duration;
+    const generation = analysisGeneration;
     longVideoMode = mode;
     if (mode === 'scenepack') {
       isDetectingScenes = true;
+      activeSceneAnalysisJobId = crypto.randomUUID();
+      cancellingSceneAnalysis = false;
       sceneDetectProgress = 'Analyzing scene cuts and generating clip previews...';
       try {
         const clips = await invoke('get_scene_clips', {
           videoPath: scenePath,
-          videoDuration: sceneInfo.duration,
+          videoDuration,
+          jobId: activeSceneAnalysisJobId,
         });
+        if (generation !== analysisGeneration) return;
         sceneClipsList = clips || [];
-        selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
+        selectedClipIndices = new Set(sceneClipsList.map(clip => clip.index));
         showLongVideoModal = false;
         showScenePackGallery = true;
       } catch (err) {
-        console.warn('Scene detection error:', err);
-        detectedScenes = [0.0, sceneInfo.duration];
-        showToast('Scene detection fallback to single clip', 'warning');
-        showLongVideoModal = false;
-        navigateTo('settings');
+        if (generation === analysisGeneration) showToast(`Scene analysis: ${errorMessage(err)}`, 'error');
       } finally {
         isDetectingScenes = false;
+        activeSceneAnalysisJobId = '';
+        cancellingSceneAnalysis = false;
       }
     } else {
       detectedScenes = [];
@@ -459,104 +460,86 @@
     }
   }
 
-  async function handleContinue() {
-    if (!scenePath || !drumsPath || !audioPath) return;
-
-    const currentSceneKey = scenePaths.length > 1 ? scenePaths.join('|') : scenePath;
-    // Fast-path cache hit: if media files haven't changed and beat detection is cached
-    const cacheHit = (
-      currentSceneKey === probedScenePath &&
-      drumsPath === probedDrumsPath &&
-      audioPath === probedAudioPath &&
-      sceneInfo !== null &&
-      drumsInfo !== null &&
-      audioInfo !== null &&
-      beats !== null
-    );
-
-    if (cacheHit) {
-      if (scenePaths.length > 1) {
-        if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
-          showScenePackGallery = true;
-        } else {
-          navigateTo('settings');
-        }
-      } else if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
-        if (longVideoMode === 'scenepack' && sceneClipsList.length > 0) {
-          showScenePackGallery = true;
-        } else {
-          showLongVideoModal = true;
-        }
-      } else {
-        longVideoMode = 'no_change';
-        detectedScenes = [];
-        navigateTo('settings');
-      }
-      return;
+  let analysisGeneration = 0;
+  let lastAnalysisKey = '';
+  function invalidateAnalysis() {
+    analysisGeneration += 1; lastAnalysisKey = '';
+    if (activeSceneAnalysisJobId) void invoke('cancel_scene_analysis', { jobId: activeSceneAnalysisJobId }).catch(console.error);
+  }
+  async function handleCancelSceneAnalysis() {
+    if (!activeSceneAnalysisJobId || cancellingSceneAnalysis) return;
+    cancellingSceneAnalysis = true;
+    try { await invoke('cancel_scene_analysis', { jobId: activeSceneAnalysisJobId }); }
+    catch (error) { showToast(`Unable to cancel analysis: ${errorMessage(error)}`, 'error'); }
+  }
+  function finishAnalysisNavigation() {
+    if (!sceneInfo || !audioInfo) return;
+    if (scenePaths.length > 1) {
+      if (sceneInfo.duration > audioInfo.duration + 0.5) showScenePackGallery = true;
+      else navigateTo('settings');
+    } else if (sceneInfo.duration > audioInfo.duration + 0.5) {
+      if (longVideoMode === 'scenepack' && sceneClipsList.length > 0) showScenePackGallery = true;
+      else showLongVideoModal = true;
+    } else {
+      longVideoMode = 'no_change'; detectedScenes = []; navigateTo('settings');
     }
-
+  }
+  async function handleContinue() {
+    if (!scenePath || !drumsPath || !audioPath || isAnalyzing) return;
+    const generation = ++analysisGeneration;
+    const paths = scenePaths.length ? [...scenePaths] : [scenePath];
+    const drums = drumsPath;
+    const audio = audioPath;
+    const inputPaths = [...paths, drums, audio];
     isAnalyzing = true;
     try {
-      if (scenePaths.length > 1) {
-        analyzingStep = `Probing ${scenePaths.length} scene videos...`;
-        const clips = await invoke('get_multi_scene_clips', { videoPaths: scenePaths });
-        sceneClipsList = clips || [];
-        selectedClipIndices = new Set(sceneClipsList.map((_, i) => i));
-        const totalDur = sceneClipsList.reduce((acc, c) => acc + c.duration, 0);
-        sceneInfo = {
-          duration: totalDur,
-          width: 1920,
-          height: 1080,
-          fps: 30.0,
-          audioChannels: 0,
-          audioSampleRate: 0,
-        };
-        probedScenePath = currentSceneKey;
-        detectedScenes = sceneClipsList.flatMap((c) => [c.startTime, c.endTime]);
-        longVideoMode = 'scenepack';
-      } else {
-        analyzingStep = 'Probing scene video...';
-        sceneInfo = await invoke('probe_media', { filePath: scenePath });
-        probedScenePath = currentSceneKey;
+      const fingerprints = await invoke('media_fingerprints', { paths: inputPaths });
+      if (generation !== analysisGeneration) return;
+      const key = analysisKey(fingerprints);
+      if (key === lastAnalysisKey && sceneInfo && drumsInfo && audioInfo && beats) {
+        finishAnalysisNavigation(); return;
       }
-
+      analyzingStep = 'Probing scene videos...';
+      activeSceneAnalysisJobId = crypto.randomUUID();
+      cancellingSceneAnalysis = false;
+      const clips = paths.length > 1 ? await invoke('get_multi_scene_clips', { videoPaths: paths, jobId: activeSceneAnalysisJobId }) : [];
+      activeSceneAnalysisJobId = '';
+      const video = paths.length > 1 ? {
+        duration: clips.reduce((sum, clip) => sum + clip.sourceDuration, 0), width: 1920, height: 1080,
+        fps: 30, audioChannels: 0, audioSampleRate: 0,
+      } : await invoke('probe_media', { filePath: paths[0] });
+      if (generation !== analysisGeneration) return;
       analyzingStep = 'Probing drums audio...';
-      drumsInfo = await invoke('probe_media', { filePath: drumsPath });
-      probedDrumsPath = drumsPath;
-
+      const drumsMetadata = await invoke('probe_media', { filePath: drums });
+      if (generation !== analysisGeneration) return;
       analyzingStep = 'Probing target audio...';
-      audioInfo = await invoke('probe_media', { filePath: audioPath });
-      probedAudioPath = audioPath;
-
+      const audioMetadata = await invoke('probe_media', { filePath: audio });
+      if (generation !== analysisGeneration) return;
       analyzingStep = 'Detecting beats with ONNX model...';
-      const beatResult = await invoke('detect_beats', { audioPath: drumsPath });
-      beats = beatResult.beats;
-      downbeats = beatResult.downbeats;
-      bpm = beatResult.bpm;
-
-      if (scenePaths.length > 1) {
-        if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
-          showScenePackGallery = true;
-        } else {
-          navigateTo('settings');
-        }
-      } else if (sceneInfo && audioInfo && sceneInfo.duration > audioInfo.duration + 0.5) {
-        showLongVideoModal = true;
-      } else {
-        longVideoMode = 'no_change';
-        detectedScenes = [];
-        navigateTo('settings');
+      const beatResult = await invoke('detect_beats', { audioPath: drums });
+      const after = await invoke('media_fingerprints', { paths: inputPaths });
+      if (generation !== analysisGeneration) return;
+      if (key !== analysisKey(after)) throw new Error('A media file changed during analysis. Please analyze it again.');
+      sceneInfo = video; drumsInfo = drumsMetadata; audioInfo = audioMetadata;
+      beats = beatResult.beats; downbeats = beatResult.downbeats; bpm = beatResult.bpm;
+      lastAnalysisKey = key;
+      if (paths.length > 1) {
+        sceneClipsList = clips;
+        selectedClipIndices = new Set(clips.map(clip => clip.index));
+        detectedScenes = clips.flatMap((clip) => [clip.startTime, clip.endTime]);
+        longVideoMode = 'scenepack';
       }
-    } catch (err) {
-      console.error('Processing error:', err);
-      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
-      showToast(`Analysis failed: ${msg}`, 'error');
+      finishAnalysisNavigation();
+    } catch (error) {
+      if (generation === analysisGeneration) showToast(`Analysis failed: ${error}`, 'error');
     } finally {
-      isAnalyzing = false;
-      analyzingStep = '';
+      // A source selection can invalidate a job while it is still finishing.
+      isAnalyzing = false; analyzingStep = '';
+      activeSceneAnalysisJobId = ''; cancellingSceneAnalysis = false;
     }
   }
 
+  /** @param {string} ar */
   function handleAspectRatioSelect(ar) {
     selectedAspectRatio = ar;
     if (ar === 'CUSTOM') {
@@ -577,6 +560,7 @@
   }
 
   // Plan Summary State (T5)
+  /** @type {import('./lib/contracts').PlanSummary | null} */
   let planSummary = $state(null);
 
   // Render Execution State (T6)
@@ -591,17 +575,21 @@
   let renderOutputMp4 = $state('');
   let renderError = $state('');
 
+  /** @param {Event & { currentTarget: HTMLInputElement }} e */
   function handleCustomWidthInput(e) {
-    customWidth = parseInt(e.target.value, 10) || 0;
+    customWidth = parseInt(e.currentTarget.value, 10) || 0;
     validateCustomDimensions();
   }
 
+  /** @param {Event & { currentTarget: HTMLInputElement }} e */
   function handleCustomHeightInput(e) {
-    customHeight = parseInt(e.target.value, 10) || 0;
+    customHeight = parseInt(e.currentTarget.value, 10) || 0;
     validateCustomDimensions();
   }
 
+  let activeJobId = '';
   async function handleRunProcess() {
+    if (renderState === 'running' || renderState === 'cancelling') return;
     if (selectedAspectRatio === 'CUSTOM') {
       validateCustomDimensions();
       if (customArError) {
@@ -615,6 +603,24 @@
       return;
     }
 
+    const activeScenePaths = scenePaths.length > 0 ? [...scenePaths] : [scenePath];
+    const renderMode = longVideoMode;
+    const targetAudioPath = audioPath;
+    const sourceDuration = sceneInfo.duration;
+    const targetDuration = audioInfo.duration;
+    const selectedClips = sceneClipsList.filter(clip => selectedClipIndices.has(clip.index));
+    const selections = renderMode === 'scenepack' && sceneClipsList.length > 0
+      ? selectedClips.map(clip => ({ sceneId: clip.index, sourceId: clip.sourceId,
+        start: activeScenePaths.length > 1 ? 0 : clip.startTime,
+        end: activeScenePaths.length > 1 ? clip.sourceDuration : clip.endTime }))
+      : [{ sceneId: 0, sourceId: 0, start: 0, end: sourceDuration }];
+    const selectedRanges = renderMode === 'scenepack' && sceneClipsList.length > 0
+      ? selectedClips.flatMap(clip => clip.usableRanges.map(range => ({ ...range })))
+      : [{ sourceId: 0, start: 0, duration: sourceDuration }];
+    const timing = { beats: [...(beats || [])], downbeats: [...(downbeats || [])], bpm: bpm || 120.0 };
+    const repeatPolicy = noRepetitiveScene;
+    const rhythm = scenePackRhythm;
+    activeJobId = crypto.randomUUID();
     renderState = 'running';
     renderError = '';
     renderOutputMp4 = '';
@@ -627,6 +633,9 @@
     };
 
     try {
+      await pendingPreset;
+      if (!effectOverrides) await loadPreset();
+      if (renderState === 'cancelling') throw new Error('Render cancelled by user');
       let aspectW = 1080;
       let aspectH = 1080;
       if (selectedAspectRatio === '16:9') {
@@ -643,33 +652,40 @@
         aspectH = customHeight;
       }
 
+      /** @type {import('./lib/contracts').PreparedScene[] | null} */
+      let preparedScenes = null;
+      if (renderMode === 'scenepack' || renderMode === 'long_clip') {
+        renderProgress = { ...renderProgress, phase: 'ANALYZING', message: 'Analyzing scene motion...' };
+        preparedScenes = await invoke('prepare_scene_selection', { videoPaths: activeScenePaths, selections, mode: renderMode, jobId: activeJobId });
+        if (renderState === 'cancelling') throw new Error('Render cancelled by user');
+        renderProgress = { ...renderProgress, phase: 'PLANNING', percent: 0, message: 'Choosing motion-guided shots...' };
+      }
+
       const planJson = await invoke('generate_plan', {
         style: selectedStyle,
         fps: fpsValue,
-        beats: beats || [],
-        downbeats: downbeats || [],
-        videoDuration: sceneInfo.duration,
-        audioDuration: audioInfo.duration,
+        beats: timing.beats,
+        downbeats: timing.downbeats,
+        videoDuration: sourceDuration,
+        audioDuration: targetDuration,
         aspectW,
         aspectH,
-        bpm: bpm || 120.0,
+        bpm: timing.bpm,
         fullFx: fullFxEnabled,
-        effectOverrides: {
-          ...effectOverrides,
-          ccDeepDark: Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark),
-          cc_deep_dark: Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark),
-          antiFlash: Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash),
-          anti_flash: Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash),
-        },
+        effectOverrides,
         customParams: customParams || null,
         exportConfig: {
           codec: selectedCodec,
           bitrateMbps: bitrateValue,
           format: selectedFormat,
         },
-        longVideoMode,
+        longVideoMode: renderMode,
         detectedScenes: detectedScenes.length > 0 ? detectedScenes : null,
-        scenepackRhythm: scenePackRhythm,
+        scenepackRhythm: rhythm,
+        scenesFormat: 'pairs',
+        preparedScenes,
+        noRepetitiveScene: repeatPolicy,
+        sourceRanges: selectedRanges,
       });
 
       console.log('[PLAN] Generated plan:', planJson);
@@ -677,9 +693,9 @@
       console.log('[PLAN] Saved project.json to:', savedPath);
 
       const parsed = JSON.parse(planJson);
-      const hasReverse = parsed.segments.some((s) => s.effects && s.effects.reverse);
+      const hasReverse = parsed.segments.some(/** @param {{effects?: {reverse?: boolean}, transition?: unknown}} s */ (s) => s.effects && s.effects.reverse);
       const hasOneFramers = parsed.one_framers && parsed.one_framers.length > 0;
-      const hasTransitions = (parsed.transitions && parsed.transitions.length > 0) || parsed.segments.some((s) => s.transition);
+      const hasTransitions = (parsed.transitions && parsed.transitions.length > 0) || parsed.segments.some(/** @param {{effects?: {reverse?: boolean}, transition?: unknown}} s */ (s) => s.transition);
       const hasAmbiance = !!parsed.ambiance;
       planSummary = {
         segmentsCount: parsed.segments.length,
@@ -705,33 +721,25 @@
         },
       };
 
-      const activeScenePaths = (scenePaths.length > 1 && selectedClipIndices.size > 0)
-        ? sceneClipsList.filter((_, i) => selectedClipIndices.has(i)).map((c) => scenePaths[c.index] || scenePaths[0])
-        : (scenePaths.length > 0 ? scenePaths : [scenePath]);
-
-      console.log('[RENDER] Launching 3-pass render pipeline...');
+      if (renderState === 'cancelling') throw new Error('Render cancelled by user');
+      console.log('[RENDER] Launching render pipeline...');
       const renderRes = await invoke('run_render_pipeline', {
         planJson,
+        jobId: activeJobId,
         scenePath: activeScenePaths[0] || scenePath,
-        audioPath,
+        audioPath: targetAudioPath,
         echoTrail: false,
         scenePaths: activeScenePaths,
       });
 
       console.log('[RENDER] Render completed successfully:', renderRes);
-      renderStats = typeof renderRes === 'object' && renderRes !== null ? renderRes : {
-        outputPath: renderRes,
-        renderTimeSecs: 0,
-        fileSizeMb: 0,
-        targetFps: fpsValue,
-        effectsCount: 0
-      };
+      renderStats = renderRes;
       renderOutputMp4 = renderStats.outputPath;
       renderState = 'done';
       showToast('Render completed successfully!', 'success');
     } catch (err) {
       console.error('Render process failed:', err);
-      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      const msg = errorMessage(err);
       if (msg.includes('cancelled') || msg.includes('Cancel')) {
         renderState = 'idle';
         showToast('Render cancelled by user', 'info');
@@ -744,13 +752,11 @@
   }
 
   async function handleCancelRender() {
-    try {
-      await invoke('cancel_render');
-      renderState = 'idle';
-      showToast('Render cancelled', 'info');
-    } catch (e) {
-      console.error('Failed to cancel render:', e);
-    }
+    if (renderState !== 'running') return;
+    renderState = 'cancelling';
+    renderProgress = { ...renderProgress, message: 'Cancelling render...' };
+    try { await invoke('cancel_render', { jobId: activeJobId }); }
+    catch (error) { console.error('Failed to cancel render:', error); }
   }
 
   async function handleOpenTargetFolder() {
@@ -763,7 +769,13 @@
       showToast(`Unable to open folder: ${e}`, 'error');
     }
   }
+  async function handleOpenOutputFile() {
+    if (!renderOutputMp4) return;
+    try { await invoke('open_output_file', { path: renderOutputMp4 }); }
+    catch (error) { showToast(`Unable to open file: ${errorMessage(error)}`, 'error'); }
+  }
 
+  /** @param {string} message */
   function showToast(message, type = 'info') {
     toast = { show: true, message, type };
     setTimeout(() => { toast.show = false; }, 4000);
@@ -780,6 +792,7 @@
     }
   }
 
+  /** @param {string} page */
   function navigateTo(page) {
     let target = page;
     if (target === 'text' && !SHOW_BETA_TEXT_STUDIO) {
@@ -791,6 +804,7 @@
     pushNavigation(target);
   }
 
+  /** @param {string} url */
   async function openAboutLink(url) {
     try {
       await invoke('open_about_link', { url });
@@ -799,6 +813,7 @@
     }
   }
 
+  /** @param {number} bytes */
   function formatBytes(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
@@ -828,7 +843,7 @@
       }
     } catch (err) {
       console.error('Update check failed:', err);
-      updateErrorMessage = String(err?.message || err);
+      updateErrorMessage = errorMessage(err);
       updateState = 'error';
       if (manual) {
         showToast(`Update check failed: ${updateErrorMessage}`, 'error');
@@ -866,7 +881,7 @@
       await relaunch();
     } catch (err) {
       console.error('Update install failed:', err);
-      updateErrorMessage = String(err?.message || err);
+      updateErrorMessage = errorMessage(err);
       updateState = 'error';
       showToast(`Update installation failed: ${updateErrorMessage}`, 'error');
     }
@@ -880,7 +895,7 @@
       if (!targetZone && position) {
         const el = document.elementFromPoint(position.x, position.y);
         const dropZoneEl = el?.closest('.remap-drop-zone');
-        if (dropZoneEl && dropZoneEl.dataset && dropZoneEl.dataset.zone) {
+        if (dropZoneEl instanceof HTMLElement && dropZoneEl.dataset && dropZoneEl.dataset.zone) {
           targetZone = dropZoneEl.dataset.zone;
         }
       }
@@ -899,14 +914,19 @@
     });
 
     return () => {
-      u1.then(f => f());
-      u2.then(f => f());
+      u1.then(f => f()).catch(console.error);
+      u2.then(f => f()).catch(console.error);
     };
   });
 
+  /** @type {(() => void) | null} */
   let unlistenProgress = null;
+  /** @type {(() => void) | null} */
+  let unlistenSceneAnalysis = null;
 
-  onMount(async () => {
+  onMount(() => {
+    let disposed = false;
+    void (async () => {
     try {
       appVersion = await invoke('get_app_version');
     } catch (e) {
@@ -924,13 +944,28 @@
 
     try {
       unlistenProgress = await listen('render-progress', (event) => {
-        if (event.payload) {
-          renderProgress = event.payload;
+        const payload = /** @type {import('./lib/contracts').RenderProgress} */ (event.payload);
+        if (!disposed && payload?.jobId === activeJobId && renderState === 'running') {
+          renderProgress = payload;
         }
       });
+      if (disposed) unlistenProgress();
     } catch (e) {
       console.error('Failed to listen to render-progress:', e);
     }
+    try {
+      unlistenSceneAnalysis = await listen('scene-analysis-progress', (event) => {
+        const payload = /** @type {import('./lib/contracts').AnalysisProgress} */ (event.payload);
+        if (disposed) return;
+        if (payload.jobId === activeSceneAnalysisJobId) {
+          if (isDetectingScenes) sceneDetectProgress = `${payload.message} ${payload.percent}%`;
+          else if (isAnalyzing) analyzingStep = `${payload.message} ${payload.percent}%`;
+        } else if (payload.jobId === activeJobId && renderState === 'running' && renderProgress.phase === 'ANALYZING') {
+          renderProgress = { ...renderProgress, phase: 'ANALYZING', percent: payload.percent, message: payload.message };
+        }
+      });
+      if (disposed) unlistenSceneAnalysis();
+    } catch (error) { console.error('Failed to listen to scene analysis:', error); }
 
     if (appWindow) {
       try {
@@ -942,8 +977,11 @@
 
     checkForAppUpdates(false);
 
+    })().catch(console.error);
     return () => {
+      disposed = true;
       if (unlistenProgress) unlistenProgress();
+      if (unlistenSceneAnalysis) unlistenSceneAnalysis();
     };
   });
 </script>
@@ -1196,6 +1234,11 @@
                     CONTINUE &gt;
                   {/if}
                 </button>
+                {#if isAnalyzing && activeSceneAnalysisJobId}
+                  <button class="btn-pro-secondary" onclick={handleCancelSceneAnalysis} disabled={cancellingSceneAnalysis} type="button">
+                    {cancellingSceneAnalysis ? 'CANCELLING...' : 'CANCEL'}
+                  </button>
+                {/if}
               </div>
             {/if}
           </section>
@@ -1204,7 +1247,7 @@
           <section class="settings-page" aria-label="Settings configuration">
             <div class="settings-container">
               <!-- Controls Card -->
-              <div class="settings-controls-card">
+              <div class="settings-controls-card" inert={renderState === 'running' || renderState === 'cancelling'}>
                 <!-- 1. Style Selector (HARD / SMOOTH / HYBRID) -->
                 <div class="control-group">
                   <span class="group-label">REMAP STYLE</span>
@@ -1214,16 +1257,8 @@
                         class="style-card"
                         class:selected={selectedStyle === style.id}
                         onclick={() => {
-                          const prevCc = Boolean(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
-                          const prevAntiFlash = Boolean(effectOverrides.antiFlash || effectOverrides.anti_flash);
                           selectedStyle = style.id;
-                          effectOverrides = {
-                            ...getDefaultOverrides(selectedStyle, fullFxEnabled),
-                            ccDeepDark: prevCc,
-                            cc_deep_dark: prevCc,
-                            antiFlash: prevAntiFlash,
-                            anti_flash: prevAntiFlash,
-                          };
+                          requestPreset();
                         }}
                         type="button"
                       >
@@ -1337,16 +1372,15 @@
                   <button
                     id="toggle-cc-deep-dark"
                     class="toggle-btn"
-                    class:active={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                    class:active={effectOverrides?.ccDeepDark}
                     onclick={() => {
-                      const val = !(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark);
-                      effectOverrides.ccDeepDark = val;
-                      effectOverrides.cc_deep_dark = val;
+                      const val = !(effectOverrides?.ccDeepDark);
+                      if (effectOverrides) effectOverrides.ccDeepDark = val;
                     }}
                     type="button"
-                    aria-pressed={effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark}
+                    aria-pressed={effectOverrides?.ccDeepDark}
                   >
-                    {(effectOverrides.ccDeepDark || effectOverrides.cc_deep_dark) ? 'DEEP DARK [ON]' : 'DEEP DARK [OFF]'}
+                    {(effectOverrides?.ccDeepDark) ? 'DEEP DARK [ON]' : 'DEEP DARK [OFF]'}
                   </button>
                 </div>
 
@@ -1359,21 +1393,24 @@
                   <button
                     id="toggle-anti-flash"
                     class="toggle-btn"
-                    class:active={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                    class:active={effectOverrides?.antiFlash}
                     onclick={() => {
-                      const val = !(effectOverrides.antiFlash || effectOverrides.anti_flash);
-                      effectOverrides.antiFlash = val;
-                      effectOverrides.anti_flash = val;
+                      const val = !(effectOverrides?.antiFlash);
+                      if (effectOverrides) effectOverrides.antiFlash = val;
                     }}
                     type="button"
-                    aria-pressed={effectOverrides.antiFlash || effectOverrides.anti_flash}
+                    aria-pressed={effectOverrides?.antiFlash}
                   >
-                    {(effectOverrides.antiFlash || effectOverrides.anti_flash) ? 'ANTI FLASH [ON]' : 'ANTI FLASH [OFF]'}
+                    {(effectOverrides?.antiFlash) ? 'ANTI FLASH [ON]' : 'ANTI FLASH [OFF]'}
                   </button>
                 </div>
 
                 <!-- 7. ScenePack Controls (visible when longVideoMode === 'scenepack') -->
                 {#if longVideoMode === 'scenepack'}
+                  <label class="scene-option" title="Adapt shot lengths to motion and avoid early repeats.">
+                    <input id="scene-no-repeat-settings" type="checkbox" bind:checked={noRepetitiveScene} />
+                    <span>no repeatitive scene</span>
+                  </label>
                   <div class="toggle-row">
                     <div class="toggle-row-left" title="Clips currently selected for ScenePack rendering. Click to modify selection.">
                       <span class="toggle-row-title">SCENEPACK CLIPS</span>
@@ -1400,7 +1437,7 @@
                         type="button"
                       >
                         <div class="rhythm-title">FAST</div>
-                        <div class="rhythm-desc">Cuts on almost every beat (~0.4s)</div>
+                        <div class="rhythm-desc">Fast pacing, adapted to available action</div>
                       </button>
 
                       <button
@@ -1410,7 +1447,7 @@
                         type="button"
                       >
                         <div class="rhythm-title">MID</div>
-                        <div class="rhythm-desc">Dynamic cuts (~1.5s - 2s)</div>
+                        <div class="rhythm-desc">Balanced pacing on musical accents</div>
                       </button>
 
                       <button
@@ -1420,7 +1457,7 @@
                         type="button"
                       >
                         <div class="rhythm-title">SLOW</div>
-                        <div class="rhythm-desc">Long takes (~3.5s - 4.5s)</div>
+                        <div class="rhythm-desc">Longer action-focused takes</div>
                       </button>
                     </div>
                   </div>
@@ -1428,7 +1465,7 @@
               </div>
 
               <!-- Render Execution Cards (T6) -->
-              {#if renderState === 'running'}
+              {#if renderState === 'running' || renderState === 'cancelling'}
                 <div class="render-progress-card">
                   <div class="render-progress-header">
                     <div class="phase-badge-row">
@@ -1447,8 +1484,8 @@
 
                   <div class="render-progress-footer">
                     <span class="render-msg mono" title={renderProgress.message}>{renderProgress.message || 'Processing...'}</span>
-                    <button class="btn-cancel-render" onclick={handleCancelRender} type="button">
-                      CANCEL
+                    <button class="btn-cancel-render" onclick={handleCancelRender} disabled={renderState === 'cancelling'} type="button">
+                      {renderState === 'cancelling' ? 'CANCELLING...' : 'CANCEL'}
                     </button>
                   </div>
                 </div>
@@ -1474,7 +1511,7 @@
                     </div>
                     <div class="render-stat-item">
                       <span class="stat-label">AVG FPS</span>
-                      <span class="stat-value mono">{renderStats.targetFps} FPS</span>
+                      <span class="stat-value mono">{Math.round(renderStats.actualFps)} FPS</span>
                     </div>
                     <div class="render-stat-item">
                       <span class="stat-label">EFFECTS APPLIED</span>
@@ -1492,7 +1529,8 @@
                     <button class="btn-open-folder" onclick={handleOpenTargetFolder} type="button">
                       OPEN FOLDER
                     </button>
-                    <button class="btn-pro-secondary" onclick={() => { renderState = 'idle'; }} type="button">
+                    <button class="btn-pro-secondary" onclick={handleOpenOutputFile} type="button">OPEN FILE</button>
+                    <button class="btn-pro-secondary" onclick={handleRunProcess} type="button">
                       RENDER AGAIN
                     </button>
                   </div>
@@ -1513,7 +1551,7 @@
               {/if}
 
               <!-- Footer Actions (only when idle/error) -->
-              {#if renderState !== 'running' && renderState !== 'done'}
+              {#if renderState !== 'running' && renderState !== 'cancelling' && renderState !== 'done'}
                 <div class="settings-actions-footer">
                   <button class="btn-pro-secondary" onclick={() => pushNavigation('remap')}>
                     &lt; BACK TO SOURCES
@@ -1527,7 +1565,7 @@
           </section>
 
         {:else if SHOW_BETA_TEXT_STUDIO && activePage === 'text'}
-          <TextStudio onToast={(msg, type) => showToast(msg, type)} />
+          <TextStudio onToast={showToast} />
 
         {:else if activePage === 'about'}
           <section class="about-page" aria-label="Project credits">
@@ -1575,7 +1613,7 @@
 
   <!-- Auto-Updater Modal Overlay -->
   {#if showUpdateModal && availableUpdate}
-    <div class="modal-backdrop" onclick={(e) => { if (e.target === e.currentTarget && updateState !== 'downloading') showUpdateModal = false; }} role="presentation">
+    <div class="modal-backdrop" onclick={(e) => { if (e.currentTarget === e.currentTarget && updateState !== 'downloading') showUpdateModal = false; }} role="presentation">
       <div class="modal-card update-modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
           <h2>UPDATE AVAILABLE - V{availableUpdate.version}</h2>
@@ -1637,7 +1675,7 @@
   {#if showLongVideoModal}
     <div
       class="modal-backdrop"
-      onclick={(e) => { if (e.target === e.currentTarget && !isDetectingScenes) showLongVideoModal = false; }}
+      onclick={(e) => { if (e.currentTarget === e.currentTarget && !isDetectingScenes) showLongVideoModal = false; }}
       role="presentation"
     >
       <div
@@ -1665,6 +1703,9 @@
             <div class="scene-detect-loading">
               <div class="scene-detect-spinner"></div>
               <span class="scene-detect-text mono">{sceneDetectProgress || 'ANALYZING SCENE CUTS WITH FFMPEG...'}</span>
+              <button class="btn-pro-secondary" onclick={handleCancelSceneAnalysis} disabled={cancellingSceneAnalysis} type="button">
+                {cancellingSceneAnalysis ? 'CANCELLING...' : 'CANCEL'}
+              </button>
             </div>
           {:else}
             <div class="long-video-options-grid">
@@ -1696,7 +1737,7 @@
                   <span class="long-video-card-tag">SMART CUTS</span>
                 </div>
                 <p class="long-video-card-desc">
-                  Detects individual scene cuts. Ensures a ~3s minimum threshold before switching clips strictly on musical downbeats.
+                  Detects scenes and adapts shot lengths to motion, musical timing, and available footage.
                 </p>
               </button>
 
@@ -1712,7 +1753,7 @@
                   <span class="long-video-card-tag">TIMELINE ANCHORS</span>
                 </div>
                 <p class="long-video-card-desc">
-                  Evenly distributes anchor points across continuous long video (e.g. 2-min freestyle) and condenses them onto beat-synced intervals.
+                  Finds active passages across a long video and places motion-guided remapping on musical beats.
                 </p>
               </button>
             </div>
@@ -1726,7 +1767,7 @@
   {#if showScenePackGallery}
     <div
       class="modal-backdrop"
-      onclick={(e) => { if (e.target === e.currentTarget) showScenePackGallery = false; }}
+      onclick={(e) => { if (e.currentTarget === e.currentTarget) showScenePackGallery = false; }}
       role="presentation"
     >
       <div
@@ -1750,6 +1791,10 @@
         <div class="scenepack-toolbar">
           <div class="scenepack-toolbar-left">
             <span class="clips-count-badge mono">{selectedClipIndices.size} / {sceneClipsList.length} CLIPS ACTIVE</span>
+            <label class="scene-option" title="Adapt shot lengths to motion and avoid early repeats.">
+              <input id="scene-no-repeat-gallery" type="checkbox" bind:checked={noRepetitiveScene} />
+              <span>no repeatitive scene</span>
+            </label>
           </div>
           <div class="scenepack-toolbar-actions">
             <button class="btn-toolbar" onclick={handleSelectAllClips} type="button">SELECT ALL</button>
@@ -1853,7 +1898,7 @@
   {#if showDetailsModal}
     <div
       class="modal-backdrop"
-      onclick={(e) => { if (e.target === e.currentTarget) showDetailsModal = false; }}
+      onclick={(e) => { if (e.currentTarget === e.currentTarget) showDetailsModal = false; }}
       role="presentation"
     >
       <div
@@ -1874,7 +1919,7 @@
 
         <div class="details-toolbar">
           <div class="details-toolbar-left">
-            <span class="effects-count-badge">{availableEffects.filter(e => effectOverrides[e.id]).length} / {availableEffects.length} ACTIVE</span>
+            <span class="effects-count-badge">{availableEffects.filter(e => effectOverrides?.[effectKey(e.id)]).length} / {availableEffects.length} ACTIVE</span>
           </div>
           <div class="details-toolbar-actions">
             <button class="btn-toolbar" onclick={handleSelectAllEffects} type="button">SELECT ALL</button>
@@ -1891,11 +1936,11 @@
             {#each availableEffects as effect (effect.id)}
               <div
                 class="effect-card"
-                class:active={effectOverrides[effect.id]}
-                onclick={() => effectOverrides[effect.id] = !effectOverrides[effect.id]}
+                class:active={effectOverrides?.[effectKey(effect.id)]}
+                onclick={() => effectOverrides && (effectOverrides[effectKey(effect.id)] = !effectOverrides[effectKey(effect.id)])}
                 role="button"
                 tabindex="0"
-                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { effectOverrides[effect.id] = !effectOverrides[effect.id]; e.preventDefault(); } }}
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { effectOverrides && (effectOverrides[effectKey(effect.id)] = !effectOverrides[effectKey(effect.id)]); e.preventDefault(); } }}
               >
                 <div
                   class="effect-card-thumb-wrap"
@@ -1924,9 +1969,9 @@
                     <label class="effect-toggle-label">
                       <input
                         type="checkbox"
-                        checked={effectOverrides[effect.id]}
+                        checked={effectOverrides?.[effectKey(effect.id)]}
                         onclick={(e) => e.stopPropagation()}
-                        onchange={(e) => effectOverrides[effect.id] = e.target.checked}
+                        onchange={(e) => effectOverrides && (effectOverrides[effectKey(effect.id)] = e.currentTarget.checked)}
                       />
                       <span class="effect-toggle-custom"></span>
                     </label>
@@ -1953,7 +1998,7 @@
                 <GlowSlider id="cp-shake-omega" label="Harmonic Frequency (Ï‰)" bind:value={customParams.shakeOmega} min={0} max={30} step={0.1} precision={2} />
                 <GlowSlider id="cp-shake-k" label="Harmonic Decay (k)" bind:value={customParams.shakeK} min={0} max={10} step={0.01} precision={3} />
                 <GlowSlider id="cp-bouncy-amp" label="Bouncy Amplitude (px)" bind:value={customParams.bouncyAmplitude} min={0} max={60} step={0.5} precision={1} />
-                <GlowSlider id="cp-dissolve-pct" label="Dissolve %" bind:value={customParams.dissolvePct} min={0} max={1} step={0.01} precision={2} />
+                <GlowSlider id="cp-dissolve-pct" label="Dissolve %" bind:value={customParams.dissolvePct} min={0} max={100} step={1} precision={0} />
                 <GlowSlider id="cp-skew-s0" label="Skew Degrees" bind:value={customParams.skewS0} min={0} max={30} step={0.5} precision={1} />
                 <GlowSlider id="cp-squish-ymin" label="Squish scale_y_min" bind:value={customParams.squishScaleYMin} min={0.5} max={1} step={0.01} precision={2} />
                 <GlowSlider id="cp-squish-xmax" label="Squish scale_x_max" bind:value={customParams.squishScaleXMax} min={1} max={1.5} step={0.01} precision={2} />
@@ -1994,7 +2039,7 @@
                 <GlowSlider id="cp-warp-amp" label="Warp Bubble Amplitude" bind:value={customParams.warpBubbleAmplitude} min={0} max={1} step={0.01} precision={2} />
                 <GlowSlider id="cp-warp-freq" label="Warp Bubble Frequency" bind:value={customParams.warpBubbleFrequency} min={0.5} max={5} step={0.1} precision={1} />
                 <GlowSlider id="cp-wave-height" label="Wave Warp Height (px)" bind:value={customParams.waveWarpHeight} min={0} max={600} step={5} precision={0} />
-                <GlowSlider id="cp-wave-speed" label="Wave Warp Speed" bind:value={customParams.waveWarpSpeed} min={0.5} max={4} step={0.1} precision={1} />
+                <GlowSlider id="cp-wave-speed" label="Wave Warp Speed" bind:value={customParams.waveWarpSpeed} min={0} max={40} step={0.5} precision={1} />
                 <GlowSlider id="cp-slide-px" label="Slide Shake Pixels" bind:value={customParams.slideShakePixels} min={0} max={200} step={5} precision={0} />
               </div>
             </div>
@@ -4037,6 +4082,29 @@
     padding: 10px 18px;
     background: #09090c;
     border-bottom: 1px solid #1c1c22;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .scenepack-toolbar-left {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .scene-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #e4e4e7;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .scene-option input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: #fff;
+    cursor: pointer;
   }
 
   .clips-count-badge {

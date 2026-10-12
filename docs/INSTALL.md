@@ -5,7 +5,7 @@ cia app is a standalone Windows desktop application for beat-synced video editin
 ## Prerequisites
 
 - Windows 10 / 11 (64-bit).
-- Built-in or system-available FFmpeg/FFprobe binaries (bundled in release installer).
+- FFmpeg/FFprobe and the ONNX beat runtime are bundled in the installer.
 - Standard audio/video media files:
   - Video: `mp4`, `mkv`, `webm`, `mov`, `avi`
   - Audio: `mp3`, `wav`, `flac`, `m4a`, `ogg`
@@ -19,6 +19,11 @@ cia app is a standalone Windows desktop application for beat-synced video editin
    - **Target Audio**: The soundtrack to accompany the rendered output.
 3. Choose your **Remap Style** (`HARD`, `SMOOTH`, or `HYBRID`), target framerate, aspect ratio, FX mode, and export options.
 4. Click **RUN PROCESS** to generate the plan and render the finished video.
+5. **CANCEL** remains in **CANCELLING...** until the native job stops and cleans up.
+   A new render becomes available after that confirmation.
+
+WEBM requires VP9. H.264 and H.265 use MP4 or MKV. Custom output dimensions must
+be even; invalid export settings report an error before rendering.
 
 ## Output naming and preservation
 

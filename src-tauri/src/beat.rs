@@ -64,8 +64,9 @@ pub fn get_binary_path(app: &tauri::AppHandle, name: &str) -> std::path::PathBuf
     cwd.join("src-tauri").join("binaries").join(name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn detect_beats(app: tauri::AppHandle, audio_path: String) -> Result<BeatResult, String> {
+    let _permit = crate::analysis::AnalysisPermit::acquire()?;
     let audio_file = std::path::Path::new(&audio_path);
     if !audio_file.exists() {
         return Err(format!("Audio file not found: {audio_path}"));

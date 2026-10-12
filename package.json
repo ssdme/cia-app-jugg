@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.3",
   "author": "cia213",
-  "description": "Local Windows video rendering with smoothie-rs and optional RIFE interpolation.",
+  "description": "Local Windows video time remapping with beat_this ONNX and FFmpeg.",
   "repository": {
     "type": "git",
     "url": "https://github.com/ssdme/cia-app-jugg.git"
@@ -14,25 +14,41 @@
   "homepage": "https://github.com/ssdme/cia-app-jugg#readme",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/free-port.mjs && vite",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:update": "node scripts/build-update.mjs"
+    "build:update": "node scripts/build-update.mjs",
+    "check": "svelte-check --tsconfig ./jsconfig.json",
+    "test": "node --experimental-strip-types --test tests/frontend/*.test.mjs",
+    "test:media": "node scripts/generate-test-media.mjs",
+    "verify:payload": "node scripts/prepare-native.mjs",
+    "test:ui": "node tests/ui/regression.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "benchmark:baseline": "node scripts/benchmark-baseline.mjs"
   },
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/api": "2.11.0",
+    "@tauri-apps/plugin-process": "2.3.1",
     "@tauri-apps/plugin-shell": "^2.0.0",
-    "@tauri-apps/plugin-updater": "^2.10.1"
+    "@tauri-apps/plugin-updater": "2.10.1"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tauri-apps/cli": "^2.0.0",
-    "svelte": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "playwright": "1.63.0",
+    "svelte": "^5.46.4",
+    "svelte-check": "^4.4.0",
     "typescript": "^5.0.0",
-    "vite": "^5.0.0"
+    "vite": "8.3.2"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "@tauri-apps/api": "$@tauri-apps/api"
   }
 }

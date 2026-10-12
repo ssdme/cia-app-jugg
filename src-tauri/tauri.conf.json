@@ -5,17 +5,25 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run verify:payload && npm run build",
     "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "shortDescription": "cia jugg desktop shell.",
     "longDescription": "cia jugg beat-synchronized time remap application.",
     "resources": [
-      "binaries/*"
+      "binaries/ffmpeg.exe",
+      "binaries/ffprobe.exe",
+      "binaries/beat_this.exe",
+      "binaries/beat_this.onnx",
+      "binaries/beat_this_api.dll",
+      "binaries/onnxruntime.dll",
+      "binaries/licenses/*"
     ],
     "icon": [
       "icons/32x32.png",
@@ -58,6 +66,8 @@
         "dragDropEnabled": true
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; font-src 'self' data:; media-src 'self' blob: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173 ws://127.0.0.1:5173; object-src 'none'; base-uri 'self'"
+    }
   }
 }

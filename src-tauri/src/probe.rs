@@ -1,4 +1,27 @@
 use tauri::Manager;
+
+#[tauri::command(async)]
+pub fn media_fingerprints(paths: Vec<String>) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let canonical =
+                std::fs::canonicalize(path).map_err(|e| format!("Cannot locate media: {e}"))?;
+            let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+            let modified = metadata
+                .modified()
+                .map_err(|e| e.to_string())?
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_nanos();
+            Ok(format!(
+                "{}:{}:{modified}",
+                canonical.display(),
+                metadata.len()
+            ))
+        })
+        .collect()
+}
 use crate::beat::get_binary_path;
 
 #[cfg(target_os = "windows")]
@@ -43,7 +66,13 @@ pub fn mirror_coordinate(coord: i64, max_dim: usize) -> usize {
 }
 
 #[inline(always)]
-pub fn sample_pixel_mirrored(frame_data: &[u8], width: usize, height: usize, x: i64, y: i64) -> [u8; 3] {
+pub fn sample_pixel_mirrored(
+    frame_data: &[u8],
+    width: usize,
+    height: usize,
+    x: i64,
+    y: i64,
+) -> [u8; 3] {
     let w_i = width as i64;
     let h_i = height as i64;
     let (mx, my) = if x >= 0 && x < w_i && y >= 0 && y < h_i {
@@ -60,7 +89,13 @@ pub fn sample_pixel_mirrored(frame_data: &[u8], width: usize, height: usize, x: 
 }
 
 #[inline(always)]
-pub fn sample_bilinear_mirrored(frame_data: &[u8], width: usize, height: usize, fx: f64, fy: f64) -> [u8; 3] {
+pub fn sample_bilinear_mirrored(
+    frame_data: &[u8],
+    width: usize,
+    height: usize,
+    fx: f64,
+    fy: f64,
+) -> [u8; 3] {
     let x0 = fx.floor() as i64;
     let y0 = fy.floor() as i64;
     let x1 = x0 + 1;
@@ -83,7 +118,12 @@ pub fn sample_bilinear_mirrored(frame_data: &[u8], width: usize, height: usize, 
     out
 }
 
-pub fn compute_borderless_scale(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (f64, f64) {
+pub fn compute_borderless_scale(
+    src_w: u32,
+    src_h: u32,
+    target_w: u32,
+    target_h: u32,
+) -> (f64, f64) {
     if src_w == 0 || src_h == 0 {
         return (1.0, 1.0);
     }
@@ -122,7 +162,12 @@ pub fn compute_crop_to_fill(src_w: u32, src_h: u32, aspect_w: u32, aspect_h: u32
 }
 
 pub fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    // 1. Check in app_data_dir/binaries/ffmpeg.exe
+    // Prefer the packaged executable before an old downloaded app-data fallback.
+    let direct = get_binary_path(app, "ffmpeg.exe");
+    if direct.exists() {
+        return Ok(direct);
+    }
+    // Legacy app-data layouts remain readable if no packaged binary is found.
     if let Ok(data_dir) = app.path().app_data_dir() {
         let in_data = data_dir.join("binaries").join("ffmpeg.exe");
         if in_data.exists() {
@@ -132,12 +177,6 @@ pub fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         if in_data_root.exists() {
             return Ok(in_data_root);
         }
-    }
-
-    // 2. Check local binaries dir
-    let direct = get_binary_path(app, "ffmpeg.exe");
-    if direct.exists() {
-        return Ok(direct);
     }
 
     // 3. Check system PATH
@@ -161,8 +200,11 @@ pub fn get_ffmpeg_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         }
     }
 
-    // 4. Download and extract ffmpeg-release-essentials
-    download_and_extract_ffmpeg(app)
+    // Runtime never downloads an unverified executable.
+    Err(
+        "FFmpeg is missing. Restore the verified native payload or reinstall the application."
+            .into(),
+    )
 }
 
 pub fn get_ffprobe_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -197,79 +239,6 @@ pub fn get_ffprobe_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, 
         }
     }
     Err("ffprobe binary not found (required for fallback probe)".to_string())
-}
-
-pub fn download_and_extract_ffmpeg(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    let bin_dir = data_dir.join("binaries");
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("Failed to create directory {}: {e}", bin_dir.display()))?;
-
-    let ffmpeg_dest = bin_dir.join("ffmpeg.exe");
-    if ffmpeg_dest.exists() {
-        return Ok(ffmpeg_dest);
-    }
-
-    // Check temp extracted folder if already downloaded
-    let temp_extracted = std::env::temp_dir().join("ffmpeg-essentials");
-    if temp_extracted.exists() {
-        if let Ok(entries) = std::fs::read_dir(&temp_extracted) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin").join("ffmpeg.exe");
-                if bin.exists() {
-                    let _ = std::fs::copy(&bin, &ffmpeg_dest);
-                    if ffmpeg_dest.exists() {
-                        return Ok(ffmpeg_dest);
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback: download essentials zip from gyan.dev
-    let zip_url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-    let zip_dest = data_dir.join("ffmpeg-download.zip");
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let script = format!(
-            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'; Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-            zip_url,
-            zip_dest.display(),
-            zip_dest.display(),
-            bin_dir.display()
-        );
-        let status = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map_err(|e| format!("Failed to download ffmpeg: {e}"))?;
-
-        if !status.success() {
-            return Err("Failed to download or extract FFmpeg".to_string());
-        }
-
-        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
-            for entry in entries.flatten() {
-                let p = entry.path().join("bin").join("ffmpeg.exe");
-                if p.exists() {
-                    let _ = std::fs::copy(&p, &ffmpeg_dest);
-                    let _ = std::fs::remove_file(&zip_dest);
-                    return Ok(ffmpeg_dest);
-                }
-            }
-        }
-    }
-
-    if ffmpeg_dest.exists() {
-        Ok(ffmpeg_dest)
-    } else {
-        Err("FFmpeg binary could not be located".to_string())
-    }
 }
 
 pub fn detect_scenes_internal(
@@ -336,6 +305,9 @@ pub struct SceneClipInfo {
     pub end_time: f64,
     pub duration: f64,
     pub thumbnail: String,
+    pub source_id: usize,
+    pub source_duration: f64,
+    pub usable_ranges: Vec<crate::sources::SourceRange>,
 }
 
 pub fn extract_frame_thumbnail(
@@ -382,118 +354,208 @@ pub fn extract_frame_thumbnail(
     None
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_scene_clips(
     app: tauri::AppHandle,
     video_path: String,
     video_duration: f64,
+    job_id: Option<String>,
 ) -> Result<Vec<SceneClipInfo>, String> {
-    let cuts = detect_scenes_internal(&app, &video_path, video_duration)?;
-    let ffmpeg_path = get_ffmpeg_binary(&app).ok();
-
+    if !video_duration.is_finite() || video_duration <= 0.0 {
+        return Err("Invalid scene duration".into());
+    }
+    let job = gallery_job(job_id)?;
+    let _permit = crate::analysis::AnalysisPermit::acquire_cancelled(&job.cancelled)?;
+    let ffmpeg = get_ffmpeg_binary(&app)?;
+    let ffprobe = get_ffprobe_binary(&app)?;
+    let analysis = crate::scene_analysis::analyze_source(
+        &ffmpeg,
+        &ffprobe,
+        std::path::Path::new(&video_path),
+        true,
+        job.cancelled.clone(),
+        &mut |fraction| {
+            crate::scene_analysis::emit_progress(
+                &app,
+                &job.id,
+                fraction,
+                "Filtering frames and detecting scene motion...",
+            );
+        },
+    )?;
     let mut clips = Vec::new();
-    let num_cuts = cuts.len();
-    if num_cuts >= 2 {
-        for i in 0..num_cuts - 1 {
-            let start = cuts[i];
-            let end = cuts[i + 1];
-            let duration = ((end - start) * 100.0).round() / 100.0;
-            if duration <= 0.05 {
-                continue;
-            }
-
-            let sample_t = (start + 0.08).min(end - 0.02);
-            let thumbnail = if let Some(ref p) = ffmpeg_path {
-                extract_frame_thumbnail(p, &video_path, sample_t)
-                    .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
-            } else {
-                crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
-            };
-
-            clips.push(SceneClipInfo {
-                index: clips.len(),
-                start_time: start,
-                end_time: end,
-                duration,
-                thumbnail,
-            });
+    for (index, bounds) in analysis.cuts.windows(2).enumerate() {
+        crate::analysis::check_cancelled(&job.cancelled)?;
+        let request = crate::scene_analysis::SceneSelection {
+            scene_id: index,
+            source_id: 0,
+            start: bounds[0],
+            end: bounds[1],
+        };
+        if let Some(scene) = analysis.prepare(&request) {
+            clips.push(gallery_clip(
+                &ffmpeg,
+                &video_path,
+                &scene,
+                index,
+                bounds[0],
+                bounds[1],
+                analysis.info.duration,
+                job.cancelled.clone(),
+            ));
         }
     }
-
-    if clips.is_empty() {
-        let thumbnail = if let Some(ref p) = ffmpeg_path {
-            extract_frame_thumbnail(p, &video_path, 0.0)
-                .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
-        } else {
-            crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
-        };
-        clips.push(SceneClipInfo {
-            index: 0,
-            start_time: 0.0,
-            end_time: video_duration,
-            duration: video_duration,
-            thumbnail,
-        });
+    crate::analysis::check_cancelled(&job.cancelled)?;
+    if crate::analysis::fingerprint(std::path::Path::new(&video_path))? != analysis.fingerprint {
+        return Err("Source changed during analysis".into());
     }
-
+    if clips.is_empty() {
+        return Err("Video contains only pure black or white frames".into());
+    }
     Ok(clips)
 }
 
-#[tauri::command]
+fn gallery_job(id: Option<String>) -> Result<crate::analysis::AnalysisJob, String> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    crate::analysis::AnalysisJob::begin(id.unwrap_or_else(|| {
+        format!(
+            "gallery-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gallery_clip(
+    ffmpeg: &std::path::Path,
+    path: &str,
+    scene: &crate::scene_analysis::PreparedScene,
+    index: usize,
+    start_time: f64,
+    end_time: f64,
+    source_duration: f64,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> SceneClipInfo {
+    let time = scene
+        .actions
+        .iter()
+        .max_by(|a, b| a.activity.total_cmp(&b.activity))
+        .map(|window| window.peak)
+        .unwrap_or(scene.fragments[0].start);
+    let thumbnail = thumbnail_cancelled(ffmpeg, path, time, cancelled).unwrap_or_else(|_| {
+        crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
+    });
+    SceneClipInfo {
+        index,
+        start_time,
+        end_time,
+        duration: scene.duration(),
+        thumbnail,
+        source_id: scene.source_id,
+        source_duration,
+        usable_ranges: scene.fragments.clone(),
+    }
+}
+
+fn thumbnail_cancelled(
+    ffmpeg: &std::path::Path,
+    path: &str,
+    time: f64,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<String, String> {
+    use std::io::Read;
+    let mut command = std::process::Command::new(ffmpeg);
+    command.args(["-nostdin", "-v", "error", "-ss", &format!("{time:.9}"), "-i", path, "-frames:v", "1",
+        "-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black", "-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "pipe:1"])
+        .stdout(std::process::Stdio::piped());
+    let mut child = crate::process::ManagedChild::spawn(&mut command, cancelled.clone())?;
+    let mut frame = vec![0u8; 320 * 180 * 3];
+    child
+        .stdout
+        .take()
+        .ok_or("Missing thumbnail stream")?
+        .read_exact(&mut frame)
+        .map_err(|error| error.to_string())?;
+    crate::analysis::check_cancelled(&cancelled)?;
+    child.wait_success("Scene thumbnail")?;
+    Ok(crate::preview::rgb_to_bmp_data_url(&frame, 320, 180))
+}
+
+#[tauri::command(async)]
 pub fn detect_scenes(
     app: tauri::AppHandle,
     video_path: String,
     video_duration: f64,
 ) -> Result<Vec<f64>, String> {
+    let _permit = crate::analysis::AnalysisPermit::acquire()?;
     detect_scenes_internal(&app, &video_path, video_duration)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_multi_scene_clips(
     app: tauri::AppHandle,
     video_paths: Vec<String>,
+    job_id: Option<String>,
 ) -> Result<Vec<SceneClipInfo>, String> {
-    let ffprobe_bin = get_ffprobe_binary(&app).ok();
-    let ffmpeg_path = get_ffmpeg_binary(&app).ok();
+    let job = gallery_job(job_id)?;
+    let _permit = crate::analysis::AnalysisPermit::acquire_cancelled(&job.cancelled)?;
+    let ffprobe = get_ffprobe_binary(&app)?;
+    let ffmpeg = get_ffmpeg_binary(&app)?;
     let mut clips = Vec::new();
     let mut current_offset = 0.0f64;
-
-    for path in &video_paths {
-        let probe = probe_media_internal(path, ffprobe_bin.as_deref()).unwrap_or_else(|_| MediaInfo {
-            duration: 5.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
-            audio_channels: 0,
-            audio_sample_rate: 0,
-        });
-
-        let duration = ((probe.duration) * 100.0).round() / 100.0;
-        let sample_t = (duration * 0.25).min(1.0).max(0.0);
-        let thumbnail = if let Some(ref p) = ffmpeg_path {
-            extract_frame_thumbnail(p, path, sample_t)
-                .unwrap_or_else(|| crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180))
-        } else {
-            crate::preview::rgb_to_bmp_data_url(&vec![18u8; 320 * 180 * 3], 320, 180)
+    let mut stamps = Vec::new();
+    for (source_id, path) in video_paths.iter().enumerate() {
+        let analysis = crate::scene_analysis::analyze_source(
+            &ffmpeg,
+            &ffprobe,
+            std::path::Path::new(path),
+            true,
+            job.cancelled.clone(),
+            &mut |fraction| {
+                crate::scene_analysis::emit_progress(
+                    &app,
+                    &job.id,
+                    (source_id as f64 + fraction) / video_paths.len() as f64,
+                    "Filtering source frames...",
+                );
+            },
+        )?;
+        let end = current_offset + analysis.info.duration;
+        let request = crate::scene_analysis::SceneSelection {
+            scene_id: source_id,
+            source_id,
+            start: 0.0,
+            end: analysis.info.duration,
         };
-
-        let start = current_offset;
-        let end = current_offset + duration;
+        if let Some(scene) = analysis.prepare(&request) {
+            clips.push(gallery_clip(
+                &ffmpeg,
+                path,
+                &scene,
+                source_id,
+                current_offset,
+                end,
+                analysis.info.duration,
+                job.cancelled.clone(),
+            ));
+        }
+        stamps.push(analysis.fingerprint.clone());
         current_offset = end;
-
-        clips.push(SceneClipInfo {
-            index: clips.len(),
-            start_time: start,
-            end_time: end,
-            duration,
-            thumbnail,
-        });
     }
-
+    crate::analysis::check_cancelled(&job.cancelled)?;
+    for (path, stamp) in video_paths.iter().zip(stamps) {
+        if crate::analysis::fingerprint(std::path::Path::new(path))? != stamp {
+            return Err("Source changed during analysis".into());
+        }
+    }
+    if clips.is_empty() {
+        return Err("Selected videos contain only pure black or white frames".into());
+    }
     Ok(clips)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_files(kind: String) -> Result<Option<Vec<String>>, String> {
     let mut dialog = rfd::FileDialog::new();
     match kind.as_str() {
@@ -519,10 +581,15 @@ pub fn pick_files(kind: String) -> Result<Option<Vec<String>>, String> {
         }
     }
     let files = dialog.pick_files();
-    Ok(files.map(|paths| paths.into_iter().map(|path| path.to_string_lossy().to_string()).collect()))
+    Ok(files.map(|paths| {
+        paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect()
+    }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_file(kind: String) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new();
     match kind.as_str() {
@@ -551,13 +618,17 @@ pub fn pick_file(kind: String) -> Result<Option<String>, String> {
     Ok(file.map(|path| path.to_string_lossy().to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn probe_media(app: tauri::AppHandle, file_path: String) -> Result<MediaInfo, String> {
+    let _permit = crate::analysis::AnalysisPermit::acquire()?;
     let ffprobe_bin = get_ffprobe_binary(&app).ok();
     probe_media_internal(&file_path, ffprobe_bin.as_deref())
 }
 
-pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Path>) -> Result<MediaInfo, String> {
+pub fn probe_media_internal(
+    file_path: &str,
+    ffprobe_bin: Option<&std::path::Path>,
+) -> Result<MediaInfo, String> {
     let path = std::path::Path::new(file_path);
     if !path.exists() {
         return Err(format!("File not found: {file_path}"));
@@ -571,7 +642,7 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
 
     // 1. MP4 / MOV containers (via mp4 crate)
     if ext == "mp4" || ext == "mov" || ext == "m4a" {
-        if let Ok(file) = std::fs::File::open(&file_path) {
+        if let Ok(file) = std::fs::File::open(file_path) {
             let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
             let reader = std::io::BufReader::new(file);
             if let Ok(mp4_reader) = mp4::Mp4Reader::read_header(reader, file_size) {
@@ -612,7 +683,7 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
                 }
 
                 // Complement with symphonia for audio if needed
-                if let Ok(audio_info) = probe_audio_symphonia(&file_path, &ext) {
+                if let Ok(audio_info) = probe_audio_symphonia(file_path, &ext) {
                     if audio_channels == 0 {
                         audio_channels = audio_info.audio_channels;
                     }
@@ -639,17 +710,23 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
     }
 
     // 2. ffprobe fallback for video files when pure-Rust probe missed dimensions
-    let video_exts = ["mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "ts", "m2ts", "mxf"];
+    let video_exts = [
+        "mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "ts", "m2ts", "mxf",
+    ];
     if video_exts.contains(&ext.as_str()) {
         if let Some(ffprobe_bin) = ffprobe_bin {
             #[cfg(target_os = "windows")]
             use std::os::windows::process::CommandExt;
             let mut cmd = std::process::Command::new(ffprobe_bin);
             cmd.args([
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,duration",
-                "-of", "json",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,avg_frame_rate,r_frame_rate,duration",
+                "-of",
+                "json",
                 file_path,
             ]);
             #[cfg(target_os = "windows")]
@@ -667,7 +744,9 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
                                 for key in ["avg_frame_rate", "r_frame_rate"] {
                                     if let Some(rate_str) = stream[key].as_str() {
                                         if let Some((num, den)) = rate_str.split_once('/') {
-                                            if let (Ok(n), Ok(d)) = (num.parse::<f64>(), den.parse::<f64>()) {
+                                            if let (Ok(n), Ok(d)) =
+                                                (num.parse::<f64>(), den.parse::<f64>())
+                                            {
                                                 if d > 0.0 {
                                                     fps = n / d;
                                                     if (fps - fps.round()).abs() < 0.05 {
@@ -682,9 +761,12 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
                                 let duration_str = stream["duration"].as_str().unwrap_or("0");
                                 let probe_dur = duration_str.parse::<f64>().unwrap_or(0.0);
                                 // Complement with symphonia for audio info
-                                let (audio_ch, audio_sr, sym_dur) = if let Ok(ai) = probe_audio_symphonia(file_path, &ext) {
-                                    (ai.audio_channels, ai.audio_sample_rate, ai.duration)
-                                } else { (0, 0, 0.0) };
+                                let (audio_ch, audio_sr, sym_dur) =
+                                    if let Ok(ai) = probe_audio_symphonia(file_path, &ext) {
+                                        (ai.audio_channels, ai.audio_sample_rate, ai.duration)
+                                    } else {
+                                        (0, 0, 0.0)
+                                    };
                                 let final_dur = if probe_dur > 0.0 { probe_dur } else { sym_dur };
                                 if width > 0 && height > 0 {
                                     return Ok(MediaInfo {
@@ -703,7 +785,10 @@ pub fn probe_media_internal(file_path: &str, ffprobe_bin: Option<&std::path::Pat
             }
         }
         // If ffprobe also failed for a video file, return specific error
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or(file_path);
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file_path);
         return Err(format!(
             "Could not probe video dimensions for '{}' ({} container). Try re-encoding to H.264 MP4.",
             filename, ext
@@ -850,12 +935,17 @@ pub fn find_python_binary() -> std::path::PathBuf {
 
 pub fn find_script_path(script_name: &str) -> std::path::PathBuf {
     // 1. Check relative to current working directory
-    let local = std::env::current_dir().unwrap_or_default().join("src-tauri").join("src").join(script_name);
+    let local = std::env::current_dir()
+        .unwrap_or_default()
+        .join("src-tauri")
+        .join("src")
+        .join(script_name);
     if local.exists() {
         return local;
     }
     // 2. Check known dev path
-    let dev = std::path::PathBuf::from(r"c:\Users\cia\Music\cia-app-jugg\src-tauri\src").join(script_name);
+    let dev = std::path::PathBuf::from(r"c:\Users\cia\Music\cia-app-jugg\src-tauri\src")
+        .join(script_name);
     if dev.exists() {
         return dev;
     }
@@ -875,12 +965,12 @@ pub fn find_script_path(script_name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(script_name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn read_media_file_bytes(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("Failed to read media file '{path}': {e}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn transcribe_audio(
     app: tauri::AppHandle,
     audio_path: String,
@@ -905,7 +995,9 @@ pub async fn transcribe_audio(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Python process ({:?}): {e}", python_bin))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python process ({:?}): {e}", python_bin))?;
     let mut final_result = None;
     let mut last_error_msg = String::new();
 
@@ -913,7 +1005,7 @@ pub async fn transcribe_audio(
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
             let mut err_lines = Vec::new();
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 err_lines.push(line);
             }
             err_lines.join("\n")
@@ -922,19 +1014,21 @@ pub async fn transcribe_audio(
 
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if line.starts_with("PROGRESS:") {
                 let parts: Vec<&str> = line.split(':').collect();
                 if parts.len() >= 3 {
                     let pct: u32 = parts[1].parse().unwrap_or(0);
                     let msg = parts[2].to_string();
-                    let _ = app.emit("transcribe-progress", TranscribeProgressPayload {
-                        percent: pct,
-                        message: msg,
-                    });
+                    let _ = app.emit(
+                        "transcribe-progress",
+                        TranscribeProgressPayload {
+                            percent: pct,
+                            message: msg,
+                        },
+                    );
                 }
-            } else if line.starts_with("RESULT:") {
-                let json_str = &line["RESULT:".len()..];
+            } else if let Some(json_str) = line.strip_prefix("RESULT:") {
                 #[derive(serde::Deserialize)]
                 struct RawErrorCheck {
                     error: Option<String>,
@@ -951,11 +1045,20 @@ pub async fn transcribe_audio(
         }
     }
 
-    let status = child.wait().map_err(|e| format!("Transcription process wait failed: {e}"))?;
-    let stderr_output = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|e| format!("Transcription process wait failed: {e}"))?;
+    let stderr_output = stderr_handle
+        .and_then(|h| h.join().ok())
+        .unwrap_or_default();
 
     if !status.success() {
-        return Err(format!("Transcription failed (code {:?}): {}\n{}", status.code(), last_error_msg, stderr_output));
+        return Err(format!(
+            "Transcription failed (code {:?}): {}\n{}",
+            status.code(),
+            last_error_msg,
+            stderr_output
+        ));
     }
 
     if let Some(res) = final_result {
@@ -963,8 +1066,9 @@ pub async fn transcribe_audio(
     } else if !last_error_msg.is_empty() {
         Err(last_error_msg)
     } else {
-        Err(format!("Failed to parse transcription output.\nStderr: {}", stderr_output))
+        Err(format!(
+            "Failed to parse transcription output.\nStderr: {}",
+            stderr_output
+        ))
     }
 }
-
-

@@ -48,3 +48,6 @@ __pycache__/
 /src-tauri/binaries/ffmpeg.exe
 /src-tauri/binaries/ffprobe.exe
 /vendor/
+
+# Deterministically generated regression media
+/tests/generated/

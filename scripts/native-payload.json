@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "ffmpeg": {
+    "version": "8.1.1",
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip",
+    "archiveSha256": "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541"
+  },
+  "files": [
+    {
+      "name": "beat_this.exe",
+      "sha256": "c7f8166cd2e436503000cdd8be5f2a58a92a8b593795d9ca0146ae8b99f338ae",
+      "size": 64512,
+      "origin": "Repository payload at 958fefd; upstream version not recorded"
+    },
+    {
+      "name": "beat_this.onnx",
+      "sha256": "c5c1466e08abdb03fdeb50668a06f244b787d564c212490482231a9cfbe9ccbd",
+      "size": 83077778,
+      "origin": "Repository payload at 958fefd; upstream version not recorded"
+    },
+    {
+      "name": "beat_this_api.dll",
+      "sha256": "6346341d5dac5cbf46b464c77666b19c6372a6fdb73bd23775ff6fccf70f4b4f",
+      "size": 1446912,
+      "origin": "Repository payload at 958fefd; upstream version not recorded"
+    },
+    {
+      "name": "ffmpeg.exe",
+      "sha256": "228d7a8556258de907fdb55f36850078ebc7680b84ec30d84ea02e99bec1d1eb",
+      "size": 101457920,
+      "origin": "GyanD/codexffmpeg release 8.1.1"
+    },
+    {
+      "name": "ffprobe.exe",
+      "sha256": "0fde260f5abd35c9cafd96f594cc76365a780c1b73a90e35b6a3409ea1db1bf0",
+      "size": 101251072,
+      "origin": "GyanD/codexffmpeg release 8.1.1"
+    },
+    {
+      "name": "onnxruntime.dll",
+      "sha256": "b9021eb23a8594fc48e9ad8a02582c0cb19375722bfbbfc10171411a688ac062",
+      "size": 10807216,
+      "origin": "Repository payload at 958fefd; upstream version not recorded"
+    }
+  ]
+}

@@ -49,8 +49,19 @@ pub struct SkewShake {
 /// Squish pop: scale_y compression→spring at segment start.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct SquishPop {
-    // No parameters — fixed keyframe template
+    // Old plans retain the original template when these fields are absent.
+    #[serde(default = "default_squish_y")]
+    pub scale_y_min: f64,
+    #[serde(default = "default_squish_x")]
+    pub scale_x_max: f64,
+    #[serde(default)]
     pub _pad: u8,
+}
+fn default_squish_y() -> f64 {
+    0.88
+}
+fn default_squish_x() -> f64 {
+    1.10
 }
 
 /// Optics compensation bounce: barrel distortion k(t) = K0*(1-t/T)².
@@ -223,10 +234,25 @@ pub fn default_ambiance(style: &str, downbeats: &[f64]) -> AmbianceConfig {
         _ => (0.15, 12.0, 0.5), // HARD
     };
     AmbianceConfig {
-        flicker: FlickerConfig { amplitude: amp, f: freq, phase: 0.0 },
-        exposure_flash: ExposureFlashConfig { peak: flash_peak, times: downbeats.to_vec() },
-        echo_trail: EchoTrailConfig { enabled: false, alpha: 0.3, k: 3 },
-        tint: TintConfig { offset_rgb: [0; 3], invert_bw: false, downbeat_times: downbeats.to_vec() },
+        flicker: FlickerConfig {
+            amplitude: amp,
+            f: freq,
+            phase: 0.0,
+        },
+        exposure_flash: ExposureFlashConfig {
+            peak: flash_peak,
+            times: downbeats.to_vec(),
+        },
+        echo_trail: EchoTrailConfig {
+            enabled: false,
+            alpha: 0.3,
+            k: 3,
+        },
+        tint: TintConfig {
+            offset_rgb: [0; 3],
+            invert_bw: false,
+            downbeat_times: downbeats.to_vec(),
+        },
         vignette: VignetteConfig { strength: 0.3 },
         scanlines: ScanlinesConfig { opacity: 0.0 },
         cc_deep_dark: false,
@@ -279,13 +305,13 @@ pub fn compute_shake_envelope(t_rel: f64, duration: f64, fps: f64) -> f64 {
 pub fn compute_bouncy_shake(frame_idx: f64) -> f64 {
     const KF: [(f64, f64); 6] = [
         (0.0, -1.0),
-        (1.0,  0.14),
-        (3.0,  0.05),
-        (6.0,  0.022),
+        (1.0, 0.14),
+        (3.0, 0.05),
+        (6.0, 0.022),
         (8.0, -0.006),
         (10.0, 0.0),
     ];
-    if frame_idx < 0.0 || frame_idx > 10.0 {
+    if !(0.0..=10.0).contains(&frame_idx) {
         return 0.0;
     }
     for i in 0..KF.len() - 1 {
@@ -298,7 +324,9 @@ pub fn compute_bouncy_shake(frame_idx: f64) -> f64 {
 }
 
 pub fn compute_skew_shake(t_rel: f64, duration: f64, s0_deg: f64) -> f64 {
-    if duration <= 1e-9 { return 0.0; }
+    if duration <= 1e-9 {
+        return 0.0;
+    }
     let s0_rad = s0_deg * std::f64::consts::PI / 180.0;
     let u = t_rel / duration;
     let angle = s0_rad * (-3.0 * u).exp() * (2.0 * std::f64::consts::PI * 4.0 * u).cos();
@@ -306,30 +334,55 @@ pub fn compute_skew_shake(t_rel: f64, duration: f64, s0_deg: f64) -> f64 {
 }
 
 pub fn compute_squish_pop(frame_idx: f64) -> (f64, f64) {
-    const KF_Y: [(f64, f64); 4] = [(0.0, 1.0), (1.0, 0.88), (3.0, 1.06), (5.0, 1.0)];
-    const KF_X: [(f64, f64); 4] = [(0.0, 1.0), (1.0, 1.10), (3.0, 0.96), (5.0, 1.0)];
+    compute_squish_pop_with_limits(frame_idx, 0.88, 1.10)
+}
+pub fn compute_squish_pop_with_limits(
+    frame_idx: f64,
+    scale_y_min: f64,
+    scale_x_max: f64,
+) -> (f64, f64) {
+    let kf_y = [
+        (0.0, 1.0),
+        (1.0, scale_y_min),
+        (3.0, 1.0 + (1.0 - scale_y_min) / 2.0),
+        (5.0, 1.0),
+    ];
+    let kf_x = [
+        (0.0, 1.0),
+        (1.0, scale_x_max),
+        (3.0, 1.0 - (scale_x_max - 1.0) * 0.4),
+        (5.0, 1.0),
+    ];
     let interpolate = |kf: &[(f64, f64); 4], fi: f64| -> f64 {
-        if fi <= 0.0 { return kf[0].1; }
-        if fi >= kf[kf.len()-1].0 { return kf[kf.len()-1].1; }
-        for i in 0..kf.len()-1 {
-            if fi >= kf[i].0 && fi < kf[i+1].0 {
-                let t = (fi - kf[i].0) / (kf[i+1].0 - kf[i].0);
-                return kf[i].1 + t * (kf[i+1].1 - kf[i].1);
+        if fi <= 0.0 {
+            return kf[0].1;
+        }
+        if fi >= kf[kf.len() - 1].0 {
+            return kf[kf.len() - 1].1;
+        }
+        for i in 0..kf.len() - 1 {
+            if fi >= kf[i].0 && fi < kf[i + 1].0 {
+                let t = (fi - kf[i].0) / (kf[i + 1].0 - kf[i].0);
+                return kf[i].1 + t * (kf[i + 1].1 - kf[i].1);
             }
         }
         1.0
     };
-    (interpolate(&KF_X, frame_idx), interpolate(&KF_Y, frame_idx))
+    (interpolate(&kf_x, frame_idx), interpolate(&kf_y, frame_idx))
 }
 
 pub fn compute_optics_k(t_rel: f64, duration: f64, k0: f64) -> f64 {
-    if duration <= 1e-9 { return 0.0; }
+    if duration <= 1e-9 {
+        return 0.0;
+    }
     let u = (1.0 - t_rel / duration).clamp(0.0, 1.0);
     k0 * u * u
 }
 
 pub fn compute_stretch_scale(t_rel: f64, duration: f64, scale_start: f64) -> f64 {
-    if duration <= 1e-9 { return 1.0; }
+    if duration <= 1e-9 {
+        return 1.0;
+    }
     let u = (t_rel / duration).clamp(0.0, 1.0);
     let saddle = u * u * (3.0 - 2.0 * u);
     scale_start + (1.0 - scale_start) * saddle
@@ -345,14 +398,24 @@ pub fn compute_chain_envelope_mult(
     let frame_dur = if fps > 0.0 { 1.0 / fps } else { 1.0 / 30.0 };
     let ramp_dur = 2.0 * frame_dur;
     let head_mult = if chain_from_prev {
-        if t_rel < ramp_dur { 0.6 + 0.4 * (t_rel / ramp_dur).clamp(0.0, 1.0) } else { 1.0 }
-    } else { 1.0 };
+        if t_rel < ramp_dur {
+            0.6 + 0.4 * (t_rel / ramp_dur).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
     let tail_mult = if chain_next {
         if t_rel > duration - ramp_dur {
             let u = ((duration - t_rel) / ramp_dur).clamp(0.0, 1.0);
             0.6 + 0.4 * u
-        } else { 1.0 }
-    } else { 1.0 };
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
     head_mult * tail_mult
 }
 
@@ -385,7 +448,9 @@ pub fn compute_transform_params(
     let base_env = compute_shake_envelope(t_rel, seg_dur, fps);
     let chain_mult = if let Some(ref bc) = effects.buildup_chain {
         compute_chain_envelope_mult(t_rel, seg_dur, fps, bc.chain_from_prev, bc.chain_next)
-    } else { 1.0 };
+    } else {
+        1.0
+    };
     let env = base_env * chain_mult;
 
     let seed = effects.shake.seed;
@@ -405,33 +470,47 @@ pub fn compute_transform_params(
     if let Some(ref bouncy) = effects.bouncy_shake {
         let frame_idx = t_rel / frame_dur;
         let bouncy_val = compute_bouncy_shake(frame_idx) * bouncy.amplitude;
-        if bouncy.axis == 0 { dx = bouncy_val; } else { dy = bouncy_val; }
+        if bouncy.axis == 0 {
+            dx = bouncy_val;
+        } else {
+            dy = bouncy_val;
+        }
     }
 
     let x_zoom = (t_rel_zoom / seg_dur.max(1e-6)).clamp(0.0, 1.0);
-    let base_scale = effects.zoom.scale_start + (effects.zoom.scale_end - effects.zoom.scale_start) * x_zoom;
+    let base_scale =
+        effects.zoom.scale_start + (effects.zoom.scale_end - effects.zoom.scale_start) * x_zoom;
     let total_scale = (base_scale * (1.0 + dz)).max(0.1);
 
     let (mut scale_x, mut scale_y) = (1.0f64, 1.0f64);
     if let Some(ref ws) = effects.warp_stretch {
         let stretch = compute_stretch_scale(t_rel, seg_dur, ws.scale_start);
-        if ws.axis == 0 { scale_x = stretch; } else { scale_y = stretch; }
+        if ws.axis == 0 {
+            scale_x = stretch;
+        } else {
+            scale_y = stretch;
+        }
     }
 
-    if effects.squish_pop.is_some() {
+    if let Some(squish) = &effects.squish_pop {
         let frame_idx = t_rel / frame_dur;
-        let (sx, sy) = compute_squish_pop(frame_idx);
-        scale_x = scale_x * sx;
-        scale_y = scale_y * sy;
+        let (sx, sy) =
+            compute_squish_pop_with_limits(frame_idx, squish.scale_y_min, squish.scale_x_max);
+        scale_x *= sx;
+        scale_y *= sy;
     }
 
     let skew_x = if let Some(ref sk) = effects.skew_shake {
         compute_skew_shake(t_rel, seg_dur, sk.s0_deg) * env
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let barrel_k = if let Some(ref ob) = effects.optics_bounce {
         compute_optics_k(t_rel, seg_dur, ob.k0)
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     TransformParams {
         dx,
@@ -445,6 +524,8 @@ pub fn compute_transform_params(
     }
 }
 
+// Positional image/IPC inputs preserve the existing public contract.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_transform_stack_cropped(
     frame_in: &[u8],
     frame_crop_out: &mut [u8],
@@ -484,8 +565,16 @@ pub fn apply_transform_stack_cropped(
     }
 
     let inv_s = 1.0 / params.scale;
-    let inv_sy = if params.scale_y.abs() > 1e-5 { 1.0 / params.scale_y } else { 1.0 };
-    let inv_sx = if params.scale_x.abs() > 1e-5 { 1.0 / params.scale_x } else { 1.0 };
+    let inv_sy = if params.scale_y.abs() > 1e-5 {
+        1.0 / params.scale_y
+    } else {
+        1.0
+    };
+    let inv_sx = if params.scale_x.abs() > 1e-5 {
+        1.0 / params.scale_x
+    } else {
+        1.0
+    };
     let cos_t = params.tilt_rad.cos();
     let sin_t = params.tilt_rad.sin();
 
@@ -506,8 +595,10 @@ pub fn apply_transform_stack_cropped(
         let skew_offset = params.skew_x * yd_rel;
         let yd_rel_scaled = yd_rel * inv_sy;
 
-        let base_xs = cx - params.dx + skew_offset + inv_s * (xd_start_rel * cos_t + yd_rel_scaled * sin_t);
-        let base_ys = cy - params.dy + inv_s * (-xd_start_rel * sin_t * inv_sx + yd_rel_scaled * cos_t);
+        let base_xs =
+            cx - params.dx + skew_offset + inv_s * (xd_start_rel * cos_t + yd_rel_scaled * sin_t);
+        let base_ys =
+            cy - params.dy + inv_s * (-xd_start_rel * sin_t * inv_sx + yd_rel_scaled * cos_t);
 
         let mut xs_fp = (base_xs * 65536.0 + 32768.0) as i32;
         let mut ys_fp = (base_ys * 65536.0 + 32768.0) as i32;
@@ -539,7 +630,8 @@ pub fn apply_transform_stack_cropped(
                 row_out[out_idx + 1] = frame_in[in_idx + 1];
                 row_out[out_idx + 2] = frame_in[in_idx + 2];
             } else {
-                let pixel = sample_pixel_mirrored(frame_in, src_width, src_height, xs as i64, ys as i64);
+                let pixel =
+                    sample_pixel_mirrored(frame_in, src_width, src_height, xs as i64, ys as i64);
                 row_out[out_idx] = pixel[0];
                 row_out[out_idx + 1] = pixel[1];
                 row_out[out_idx + 2] = pixel[2];
@@ -576,8 +668,16 @@ pub fn apply_transform_stack(
     let cx = (width as f64) / 2.0;
     let cy = (height as f64) / 2.0;
     let inv_s = 1.0 / params.scale;
-    let inv_sy = if params.scale_y.abs() > 1e-5 { 1.0 / params.scale_y } else { 1.0 };
-    let inv_sx = if params.scale_x.abs() > 1e-5 { 1.0 / params.scale_x } else { 1.0 };
+    let inv_sy = if params.scale_y.abs() > 1e-5 {
+        1.0 / params.scale_y
+    } else {
+        1.0
+    };
+    let inv_sx = if params.scale_x.abs() > 1e-5 {
+        1.0 / params.scale_x
+    } else {
+        1.0
+    };
     let cos_t = params.tilt_rad.cos();
     let sin_t = params.tilt_rad.sin();
 
@@ -732,7 +832,7 @@ pub fn apply_one_framer_invert(frame_in: &[u8], frame_out: &mut [u8]) {
         let r = chunk_in[0] as u32;
         let g = chunk_in[1] as u32;
         let b = chunk_in[2] as u32;
-        let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+        let gray = (r * 77 + g * 150 + b * 29) >> 8;
         let inv = (255 - gray.min(255)) as u8;
         chunk_out[0] = inv;
         chunk_out[1] = inv;
@@ -820,8 +920,15 @@ pub fn apply_one_framer_bokeh_octagon(
 ) {
     // 8-point specular octagon sampling
     let offsets = [
-        (0i64, -14i64), (10, -10), (14, 0), (10, 10),
-        (0, 14), (-10, 10), (-14, 0), (-10, -10), (0, 0)
+        (0i64, -14i64),
+        (10, -10),
+        (14, 0),
+        (10, 10),
+        (0, 14),
+        (-10, 10),
+        (-14, 0),
+        (-10, -10),
+        (0, 0),
     ];
     for y in 0..height {
         let row_offset = y * width * 3;
@@ -830,7 +937,8 @@ pub fn apply_one_framer_bokeh_octagon(
             let mut sum_g = 0u32;
             let mut sum_b = 0u32;
             for &(ox, oy) in &offsets {
-                let px = sample_pixel_mirrored(frame_in, width, height, x as i64 + ox, y as i64 + oy);
+                let px =
+                    sample_pixel_mirrored(frame_in, width, height, x as i64 + ox, y as i64 + oy);
                 // Weight specular highlights
                 let lum = (px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29) >> 8;
                 let w = if lum > 140 { 3 } else { 1 };
@@ -869,9 +977,9 @@ pub fn apply_one_framer_tint_scene(
             count += 1;
         }
     }
-    let avg_r = if count > 0 { (sum_r / count) as u32 } else { 128 };
-    let avg_g = if count > 0 { (sum_g / count) as u32 } else { 128 };
-    let avg_b = if count > 0 { (sum_b / count) as u32 } else { 128 };
+    let avg_r = sum_r.checked_div(count).unwrap_or(128) as u32;
+    let avg_g = sum_g.checked_div(count).unwrap_or(128) as u32;
+    let avg_b = sum_b.checked_div(count).unwrap_or(128) as u32;
 
     let mut lut_r = [0u8; 256];
     let mut lut_g = [0u8; 256];
@@ -960,8 +1068,8 @@ pub fn apply_one_framer_radial_blur(
             let mut acc_b = 0u32;
 
             for k in 0..10 {
-                let xs = (x_fp - (k as i32) * dx_fp) >> 16;
-                let ys = (y_fp - (k as i32) * dy_fp) >> 16;
+                let xs = (x_fp - k * dx_fp) >> 16;
+                let ys = (y_fp - k * dy_fp) >> 16;
 
                 if xs >= 0 && xs < w_i && ys >= 0 && ys < h_i {
                     let idx = ((ys as usize) * width + (xs as usize)) * 3;
@@ -996,7 +1104,9 @@ pub fn apply_one_framer(
         "FLASH_BLACK" => apply_one_framer_flash_black(frame_in, frame_out),
         "INVERT" => apply_one_framer_invert(frame_in, frame_out),
         "SOFT_TINT_FLASH" => apply_one_framer_soft_tint_flash(frame_in, frame_out),
-        "DIRECTIONAL_MINIMAX" => apply_one_framer_directional_minimax(frame_in, frame_out, width, height),
+        "DIRECTIONAL_MINIMAX" => {
+            apply_one_framer_directional_minimax(frame_in, frame_out, width, height)
+        }
         "WARP_FISHEYE" => apply_one_framer_warp_fisheye(frame_in, frame_out, width, height),
         "BOKEH_OCTAGON" => apply_one_framer_bokeh_octagon(frame_in, frame_out, width, height),
         "TINT_SCENE" => apply_one_framer_tint_scene(frame_in, frame_out, width, height),
@@ -1034,11 +1144,11 @@ pub fn apply_warp_bubble(
     let ry_i = ry as i32;
 
     let mut lut_scale = [0.0f32; 2048];
-    for r_int in 1..2048 {
+    for (r_int, value) in lut_scale.iter_mut().enumerate().skip(1) {
         let r = r_int as f64;
         let r_norm = r / rx;
         let disp = env_a * (freq * r_norm * std::f64::consts::PI).sin() * rx;
-        lut_scale[r_int] = (disp / r) as f32;
+        *value = (disp / r) as f32;
     }
 
     let mut dx_f_table = vec![0.0f32; width];
@@ -1086,9 +1196,14 @@ pub fn apply_warp_bubble(
     }
 }
 
-pub fn compute_wave_warp_params(t: f64, t_cut: f64, fps: f64, height: usize) -> (f64, f64, f64, f64) {
+pub fn compute_wave_warp_params(
+    t: f64,
+    t_cut: f64,
+    fps: f64,
+    height: usize,
+) -> (f64, f64, f64, f64) {
     let t_frames = (t - t_cut) * fps;
-    let h = if t_frames >= -1e-4 && t_frames <= 6.0 + 1e-4 {
+    let h = if (-1e-4..=6.0 + 1e-4).contains(&t_frames) {
         280.0 * (1.0 - t_frames / 6.0).clamp(0.0, 1.0)
     } else {
         0.0
@@ -1098,6 +1213,8 @@ pub fn compute_wave_warp_params(t: f64, t_cut: f64, fps: f64, height: usize) -> 
     (h, k, v, t_frames)
 }
 
+// Positional image/IPC inputs preserve the existing public contract.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_wave_warp(
     frame_in: &[u8],
     frame_out: &mut [u8],
@@ -1114,8 +1231,8 @@ pub fn apply_wave_warp(
     }
 
     let row_stride = width * 3;
-    let mut lut_xs = [0usize; 4096];
-    let w_clamped = width.min(4096);
+    let mut lut_xs = vec![0usize; width];
+    let w_clamped = width;
 
     for y in 0..height {
         let y_f = y as f64;
@@ -1129,12 +1246,11 @@ pub fn apply_wave_warp(
             continue;
         }
 
-        for x in 0..w_clamped {
-            lut_xs[x] = mirror_coordinate((x as i64) - dx, width) * 3;
+        for (x, value) in lut_xs.iter_mut().enumerate().take(w_clamped) {
+            *value = mirror_coordinate((x as i64) - dx, width) * 3;
         }
 
-        for x in 0..w_clamped {
-            let in_idx = lut_xs[x];
+        for (x, &in_idx) in lut_xs.iter().enumerate().take(w_clamped) {
             let out_idx = x * 3;
             row_out[out_idx] = row_in[in_idx];
             row_out[out_idx + 1] = row_in[in_idx + 1];
@@ -1145,9 +1261,9 @@ pub fn apply_wave_warp(
 
 pub fn compute_slide_shake_shift(t: f64, t_cut: f64, fps: f64) -> f64 {
     let t_frames = (t - t_cut) * fps;
-    if t_frames >= -3.0 - 1e-4 && t_frames < 0.0 {
+    if (-3.0 - 1e-4..0.0).contains(&t_frames) {
         100.0 * (1.0 + t_frames / 3.0).clamp(0.0, 1.0)
-    } else if t_frames >= 0.0 && t_frames <= 3.0 + 1e-4 {
+    } else if (0.0..=3.0 + 1e-4).contains(&t_frames) {
         -100.0 * (1.0 - t_frames / 3.0).clamp(0.0, 1.0)
     } else {
         0.0
@@ -1168,10 +1284,10 @@ pub fn apply_slide_shake(
 
     let shift_i = shift_x.round() as i64;
     let row_stride = width * 3;
-    let mut lut_xs = [0usize; 4096];
-    let w_clamped = width.min(4096);
-    for x in 0..w_clamped {
-        lut_xs[x] = mirror_coordinate((x as i64) - shift_i, width) * 3;
+    let mut lut_xs = vec![0usize; width];
+    let w_clamped = width;
+    for (x, value) in lut_xs.iter_mut().enumerate().take(w_clamped) {
+        *value = mirror_coordinate((x as i64) - shift_i, width) * 3;
     }
 
     for y in 0..height {
@@ -1179,8 +1295,7 @@ pub fn apply_slide_shake(
         let row_in = &frame_in[row_offset..row_offset + row_stride];
         let row_out = &mut frame_out[row_offset..row_offset + row_stride];
 
-        for x in 0..w_clamped {
-            let in_idx = lut_xs[x];
+        for (x, &in_idx) in lut_xs.iter().enumerate().take(w_clamped) {
             let out_idx = x * 3;
             row_out[out_idx] = row_in[in_idx];
             row_out[out_idx + 1] = row_in[in_idx + 1];
@@ -1189,13 +1304,27 @@ pub fn apply_slide_shake(
     }
 }
 
+#[derive(Default)]
+pub struct DeepDarkScratch {
+    luma: Vec<u8>,
+    highlights: Vec<u8>,
+    horizontal: Vec<u8>,
+    glow: Vec<u8>,
+}
+#[derive(Default)]
+pub struct AmbianceScratch {
+    copy: Vec<u8>,
+    grading: DeepDarkScratch,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn apply_ambiance_effects(
     frame_in: &[u8],
     frame_out: &mut [u8],
     width: usize,
     height: usize,
     amb: &AmbianceConfig,
-    echo_ring: &mut Vec<Vec<u8>>,
+    echo_ring: &mut [Vec<u8>],
     echo_head: &mut usize,
     vignette_lut: &[u8],
     scanline_opacity: f64,
@@ -1203,11 +1332,44 @@ pub fn apply_ambiance_effects(
     seg: &crate::plan::PlanSegment,
     fps: f64,
 ) {
+    apply_ambiance_effects_with_scratch(
+        frame_in,
+        frame_out,
+        width,
+        height,
+        amb,
+        echo_ring,
+        echo_head,
+        vignette_lut,
+        scanline_opacity,
+        t,
+        seg,
+        fps,
+        &mut AmbianceScratch::default(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn apply_ambiance_effects_with_scratch(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    amb: &AmbianceConfig,
+    echo_ring: &mut [Vec<u8>],
+    echo_head: &mut usize,
+    vignette_lut: &[u8],
+    scanline_opacity: f64,
+    t: f64,
+    seg: &crate::plan::PlanSegment,
+    fps: f64,
+    scratch: &mut AmbianceScratch,
+) {
     let n = width * height * 3;
 
     let seg_phase = (seg.effects.shake.seed as f64) * 0.0012345;
-    let flicker_exp = amb.flicker.amplitude
-        * (2.0 * std::f64::consts::PI * amb.flicker.f * t + seg_phase).sin();
+    let flicker_exp =
+        amb.flicker.amplitude * (2.0 * std::f64::consts::PI * amb.flicker.f * t + seg_phase).sin();
 
     let mut flash_exp = 0.0f64;
     for &db_t in &amb.exposure_flash.times {
@@ -1227,7 +1389,7 @@ pub fn apply_ambiance_effects(
             let mut hit = false;
             for &db_t in &amb.tint.downbeat_times {
                 let t_frames = (t - db_t) * fps;
-                if t_frames >= -0.2 && t_frames < 1.0 {
+                if (-0.2..1.0).contains(&t_frames) {
                     hit = true;
                     break;
                 }
@@ -1247,8 +1409,8 @@ pub fn apply_ambiance_effects(
 
     if echo_enabled {
         let mut prev_slots = [0usize; 4];
-        for k in 0..k_depth.min(4) {
-            prev_slots[k] = (*echo_head + echo_ring.len() - 1 - k) % echo_ring.len();
+        for (k, slot) in prev_slots.iter_mut().enumerate().take(k_depth.min(4)) {
+            *slot = (*echo_head + echo_ring.len() - 1 - k) % echo_ring.len();
         }
 
         for py in 0..height {
@@ -1259,9 +1421,11 @@ pub fn apply_ambiance_effects(
                 let v = vignette_lut[row_offset + px] as u32;
                 let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
 
-                let mut r_acc = 0u32; let mut g_acc = 0u32; let mut b_acc = 0u32;
+                let mut r_acc = 0u32;
+                let mut g_acc = 0u32;
+                let mut b_acc = 0u32;
                 for k in 0..k_depth {
-                    r_acc += echo_ring[prev_slots[k]][idx]     as u32;
+                    r_acc += echo_ring[prev_slots[k]][idx] as u32;
                     g_acc += echo_ring[prev_slots[k]][idx + 1] as u32;
                     b_acc += echo_ring[prev_slots[k]][idx + 2] as u32;
                 }
@@ -1269,7 +1433,7 @@ pub fn apply_ambiance_effects(
                 let g_echo = g_acc / (k_depth as u32);
                 let b_echo = b_acc / (k_depth as u32);
 
-                let r_cur = ((frame_in[idx]     as u32 * scale_fp) >> 8).min(255);
+                let r_cur = ((frame_in[idx] as u32 * scale_fp) >> 8).min(255);
                 let g_cur = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
                 let b_cur = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
 
@@ -1278,7 +1442,7 @@ pub fn apply_ambiance_effects(
                 let mut b = ((256 - alpha_fp) * b_cur + alpha_fp * b_echo) >> 8;
 
                 if should_invert {
-                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let gray = (r * 77 + g * 150 + b * 29) >> 8;
                     let inv = 255 - gray.min(255);
                     r = inv;
                     g = inv;
@@ -1289,7 +1453,7 @@ pub fn apply_ambiance_effects(
                 g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
                 b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
 
-                frame_out[idx]     = ((r * combined) >> 8) as u8;
+                frame_out[idx] = ((r * combined) >> 8) as u8;
                 frame_out[idx + 1] = ((g * combined) >> 8) as u8;
                 frame_out[idx + 2] = ((b * combined) >> 8) as u8;
             }
@@ -1310,7 +1474,7 @@ pub fn apply_ambiance_effects(
                 let mut b = frame_in[idx + 2] as u32;
 
                 if should_invert {
-                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let gray = (r * 77 + g * 150 + b * 29) >> 8;
                     let inv = 255 - gray.min(255);
                     r = inv;
                     g = inv;
@@ -1321,7 +1485,7 @@ pub fn apply_ambiance_effects(
                 g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
                 b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
 
-                frame_out[idx]     = ((r * combined) >> 8) as u8;
+                frame_out[idx] = ((r * combined) >> 8) as u8;
                 frame_out[idx + 1] = ((g * combined) >> 8) as u8;
                 frame_out[idx + 2] = ((b * combined) >> 8) as u8;
             }
@@ -1335,12 +1499,12 @@ pub fn apply_ambiance_effects(
                 let v = vignette_lut[row_offset + px] as u32;
                 let combined = if is_scanline { (v * dim_fp) >> 8 } else { v };
 
-                let mut r = ((frame_in[idx]     as u32 * scale_fp) >> 8).min(255);
+                let mut r = ((frame_in[idx] as u32 * scale_fp) >> 8).min(255);
                 let mut g = ((frame_in[idx + 1] as u32 * scale_fp) >> 8).min(255);
                 let mut b = ((frame_in[idx + 2] as u32 * scale_fp) >> 8).min(255);
 
                 if should_invert {
-                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+                    let gray = (r * 77 + g * 150 + b * 29) >> 8;
                     let inv = 255 - gray.min(255);
                     r = inv;
                     g = inv;
@@ -1351,7 +1515,7 @@ pub fn apply_ambiance_effects(
                 g = ((g as i32 + tg as i32).clamp(0, 255)) as u32;
                 b = ((b as i32 + tb as i32).clamp(0, 255)) as u32;
 
-                frame_out[idx]     = ((r * combined) >> 8) as u8;
+                frame_out[idx] = ((r * combined) >> 8) as u8;
                 frame_out[idx + 1] = ((g * combined) >> 8) as u8;
                 frame_out[idx + 2] = ((b * combined) >> 8) as u8;
             }
@@ -1359,8 +1523,16 @@ pub fn apply_ambiance_effects(
     }
 
     if amb.cc_deep_dark {
-        let frame_temp = frame_out.to_vec();
-        apply_cc_deep_dark(&frame_temp, frame_out, width, height, (t * 1000.0) as u64);
+        scratch.copy.resize(frame_out.len(), 0);
+        scratch.copy.copy_from_slice(frame_out);
+        apply_cc_deep_dark_with_scratch(
+            &scratch.copy,
+            frame_out,
+            width,
+            height,
+            (t * 1000.0) as u64,
+            &mut scratch.grading,
+        );
     }
 }
 
@@ -1371,19 +1543,45 @@ pub fn apply_cc_deep_dark(
     height: usize,
     frame_seed: u64,
 ) {
+    apply_cc_deep_dark_with_scratch(
+        frame_in,
+        frame_out,
+        width,
+        height,
+        frame_seed,
+        &mut DeepDarkScratch::default(),
+    );
+}
+
+pub fn apply_cc_deep_dark_with_scratch(
+    frame_in: &[u8],
+    frame_out: &mut [u8],
+    width: usize,
+    height: usize,
+    frame_seed: u64,
+    scratch: &mut DeepDarkScratch,
+) {
     if width == 0 || height == 0 {
         return;
     }
 
     let n_pixels = width * height;
-    let mut luma_buf = vec![0u8; n_pixels];
-    let mut highlight_buf = vec![0u8; n_pixels];
+    scratch.luma.resize(n_pixels, 0);
+    scratch.highlights.resize(n_pixels, 0);
+    scratch.horizontal.resize(n_pixels, 0);
+    scratch.glow.resize(n_pixels, 0);
+    let DeepDarkScratch {
+        luma: luma_buf,
+        highlights: highlight_buf,
+        horizontal: h_blur,
+        glow: glow_buf,
+    } = scratch;
 
     for (i, chunk) in frame_in.chunks_exact(3).enumerate().take(n_pixels) {
         let r = chunk[0] as u32;
         let g = chunk[1] as u32;
         let b = chunk[2] as u32;
-        let y = ((r * 77 + g * 150 + b * 29) >> 8) as u32;
+        let y = (r * 77 + g * 150 + b * 29) >> 8;
 
         let y_dark = ((y * y * 72) / (255 * 100) + (y * 28) / 100).min(255) as u8;
         luma_buf[i] = y_dark;
@@ -1396,7 +1594,6 @@ pub fn apply_cc_deep_dark(
     }
 
     let radius = 10usize.min(width / 4).min(height / 4).max(1);
-    let mut h_blur = vec![0u8; n_pixels];
 
     for y in 0..height {
         let row_offset = y * width;
@@ -1412,11 +1609,14 @@ pub fn apply_cc_deep_dark(
                 sum -= highlight_buf[row_offset + x - radius - 1] as u32;
             }
             let count = (x + radius + 1).min(width) - x.saturating_sub(radius);
-            h_blur[row_offset + x] = if count > 0 { (sum / count as u32) as u8 } else { 0 };
+            h_blur[row_offset + x] = if count > 0 {
+                (sum / count as u32) as u8
+            } else {
+                0
+            };
         }
     }
 
-    let mut glow_buf = vec![0u8; n_pixels];
     for x in 0..width {
         let mut sum = 0u32;
         for y in 0..radius.min(height) {
@@ -1430,7 +1630,11 @@ pub fn apply_cc_deep_dark(
                 sum -= h_blur[(y - radius - 1) * width + x] as u32;
             }
             let count = (y + radius + 1).min(height) - y.saturating_sub(radius);
-            glow_buf[y * width + x] = if count > 0 { (sum / count as u32) as u8 } else { 0 };
+            glow_buf[y * width + x] = if count > 0 {
+                (sum / count as u32) as u8
+            } else {
+                0
+            };
         }
     }
 
@@ -1439,7 +1643,9 @@ pub fn apply_cc_deep_dark(
     for (i, chunk_out) in frame_out.chunks_exact_mut(3).enumerate().take(n_pixels) {
         let base = luma_buf[i] as i32;
         let glow = (glow_buf[i] as i32 * 6) / 10;
-        let pixel_hash = base_hash.wrapping_add(i as u64).wrapping_mul(0xbf58476d1ce4e5b9);
+        let pixel_hash = base_hash
+            .wrapping_add(i as u64)
+            .wrapping_mul(0xbf58476d1ce4e5b9);
         let grain = ((pixel_hash % 49) as i32) - 24;
 
         let val = (base + glow + grain).clamp(0, 255) as u8;

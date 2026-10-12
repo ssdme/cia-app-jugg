@@ -2,6 +2,7 @@
   import GlowSlider from './GlowSlider.svelte';
   import { onMount } from 'svelte';
 
+  /** @type {{blocks?: import('./lib/contracts').TextBlock[], currentBlockIndex?: number, textColor?: string, glowIntensity?: number, glowEnabled?: boolean, styleMethod?: string, rapidWordEnabled?: boolean, currentTime?: number, duration?: number, isPlaying?: boolean, onTogglePlay?: () => void, onSeek?: (time: number) => void, onRegenerateBlock?: (index: number) => void}} */
   let {
     blocks = $bindable([]),
     currentBlockIndex = $bindable(0),
@@ -15,7 +16,7 @@
     isPlaying = $bindable(false),
     onTogglePlay = () => {},
     onSeek = (t) => {},
-    onRegenerateBlock = () => {},
+    onRegenerateBlock = (index) => {},
   } = $props();
 
   let activeElementIndex = $state(0);
@@ -31,6 +32,7 @@
   let showSnapV = $state(false);
 
   // Responsive canvas size mapping (1080x1080 coordinate space)
+  /** @type {HTMLDivElement | null} */
   let canvasContainerEl = $state(null);
   let previewWidth = $state(480);
   const CANVAS_SIZE = 1080;
@@ -98,6 +100,7 @@
     }
   }
 
+  /** @param {MouseEvent} e @param {number} elIndex */
   function handleCanvasMouseDown(e, elIndex) {
     if (isPlaying) return; // Disable dragging while video is playing
     if (isResizingCanvas) return;
@@ -111,7 +114,7 @@
       };
     }
 
-    const onMouseMove = (me) => {
+    const onMouseMove = (/** @type {MouseEvent} */ me) => {
       if (!isDraggingCanvas || !currentBlock?.elements?.[activeElementIndex]) return;
       const dx = (me.clientX - dragStartPos.x) / scaleRatio;
       const dy = (me.clientY - dragStartPos.y) / scaleRatio;
@@ -154,6 +157,7 @@
     window.addEventListener('mouseup', onMouseUp);
   }
 
+  /** @param {MouseEvent} e @param {string} corner */
   function handleResizeMouseDown(e, corner) {
     if (isPlaying) return;
     e.stopPropagation();
@@ -164,7 +168,7 @@
       resizeInitialSize = currentElement.size;
     }
 
-    const onMouseMove = (me) => {
+    const onMouseMove = (/** @type {MouseEvent} */ me) => {
       if (!isResizingCanvas || !currentBlock?.elements?.[activeElementIndex]) return;
       const dx = (me.clientX - dragStartPos.x) / scaleRatio;
       const dy = (me.clientY - dragStartPos.y) / scaleRatio;
@@ -194,6 +198,7 @@
     window.addEventListener('mouseup', onMouseUp);
   }
 
+  /** @param {string} key */
   function getElementFontFamily(key) {
     if (key === 'hero') return "'Bahnschrift', 'Roboto Condensed', sans-serif";
     if (key === 'bold') return "'Arial', 'Helvetica Neue', sans-serif";
@@ -201,6 +206,7 @@
     return "'Arial', sans-serif";
   }
 
+  /** @param {string} key */
   function getElementFontWeight(key) {
     if (key === 'hero' || key === 'bold') return '700';
     if (key === 'light') return '300';
@@ -208,6 +214,7 @@
   }
 
   // 4-frame rapid-word kinetic stretch calculation
+  /** @param {import('./lib/contracts').TextElement} el */
   function getRapidWordTransform(el) {
     if (!isPlaying || !rapidWordEnabled) return '';
     const elStart = el.start != null ? el.start : (currentBlock?.start || 0);
@@ -221,6 +228,7 @@
     return '';
   }
 
+  /** @param {import('./lib/contracts').TextElement} el */
   function isElementVisible(el) {
     if (!isPlaying) return true;
     const elStart = el.start != null ? el.start : (currentBlock?.start || 0);
@@ -256,6 +264,7 @@
     return { line1: rev1, line2: rev2 };
   });
 
+  /** @param {number} s */
   function formatTime(s) {
     if (isNaN(s) || s == null) return '0:00.0';
     const m = Math.floor(s / 60);

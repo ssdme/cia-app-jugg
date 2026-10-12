@@ -1,4 +1,5 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'node:child_process';
+import { verifyUpdate } from './verify-update.mjs';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -26,14 +27,9 @@ console.log(`Using installer at ${installerPath}`);
 const sigPath = `${installerPath}.sig`;
 
 console.log(`Signing installer for v${version}...`);
-execSync(`npx tauri signer sign --private-key-path "${keyPath}" "${installerPath}"`, {
-  encoding: 'utf8',
-  input: '\n',
-  env: {
-    ...process.env,
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '',
-    CI: 'true'
-  }
+execFileSync(process.execPath, [path.resolve('node_modules/@tauri-apps/cli/tauri.js'), 'signer', 'sign', '--private-key-path', keyPath, '--app-version', version, installerPath], {
+  encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  env: { ...process.env, CI: 'true' }
 });
 
 if (!fs.existsSync(sigPath)) {
@@ -42,6 +38,8 @@ if (!fs.existsSync(sigPath)) {
 }
 
 const signature = fs.readFileSync(sigPath, 'utf8').trim();
+await verifyUpdate(installerPath, signature, tauriConf.plugins.updater.pubkey);
+console.log('Verified installer signature against the configured updater public key.');
 
 // Create sanitized alias copy without spaces for direct links
 const dotJuggPath = path.join(bundleDir, `cia.jugg_${version}_x64-setup.exe`);
@@ -51,7 +49,7 @@ if (installerPath !== dotJuggPath) {
 
 const manifest = {
   version: version,
-  notes: `cia jugg v${version}\n- Multi-video sequential decoding and timeline assembly\n- Streamlined dropzones layout with splitter-ai stem separation integration\n- Pure Rust matrix transform engine (Ambiance, CC Deep Dark, Anti-Flash, Shake, Optical Flow)\n- Standalone zero-dependency offline installer for clean Windows installations`,
+  notes: `cia jugg v${version}\n- Correct effect/preset controls and source-local extraction\n- Isolated render jobs, complete cancellation and bounded frame caches\n- Verified offline runtime payload`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

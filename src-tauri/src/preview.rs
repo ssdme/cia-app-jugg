@@ -1,13 +1,13 @@
-use crate::effects::{
-    apply_transform_stack, apply_warp_bubble, TransformParams,
-};
+use crate::effects::{apply_transform_stack, apply_warp_bubble, TransformParams};
 
 pub fn generate_generic_preview_frame(width: usize, height: usize) -> Vec<u8> {
     let mut frame = vec![0u8; width * height * 3];
     let max_sum = ((width + height).saturating_sub(2)).max(1) as f64;
     for y in 0..height {
         for x in 0..width {
-            let val = (((x + y) as f64 / max_sum) * 255.0).round().clamp(0.0, 255.0) as u8;
+            let val = (((x + y) as f64 / max_sum) * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             let idx = (y * width + x) * 3;
             frame[idx] = val;
             frame[idx + 1] = val;
@@ -56,7 +56,13 @@ pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Ve
             }
         }
         "one_framers" => {
-            crate::effects::apply_one_framer("DIRECTIONAL_MINIMAX", &base_frame, &mut out_frame, width, height);
+            crate::effects::apply_one_framer(
+                "DIRECTIONAL_MINIMAX",
+                &base_frame,
+                &mut out_frame,
+                width,
+                height,
+            );
         }
         "transitions" => {
             apply_warp_bubble(&base_frame, &mut out_frame, width, height, 0.8, 1.25);
@@ -64,7 +70,8 @@ pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Ve
         "tint" => {
             for (i, chunk) in base_frame.chunks(3).enumerate() {
                 let out_idx = i * 3;
-                let gray = ((chunk[0] as u32 * 77 + chunk[1] as u32 * 150 + chunk[2] as u32 * 29) >> 8) as u8;
+                let gray = ((chunk[0] as u32 * 77 + chunk[1] as u32 * 150 + chunk[2] as u32 * 29)
+                    >> 8) as u8;
                 let inv = 255 - gray;
                 out_frame[out_idx] = inv;
                 out_frame[out_idx + 1] = inv;
@@ -81,7 +88,8 @@ pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Ve
                     let factor = 1.0 - 0.75 * (r / r_max).powi(2);
                     let idx = (y * width + x) * 3;
                     for c in 0..3 {
-                        out_frame[idx + c] = (base_frame[idx + c] as f64 * factor.clamp(0.0, 1.0)) as u8;
+                        out_frame[idx + c] =
+                            (base_frame[idx + c] as f64 * factor.clamp(0.0, 1.0)) as u8;
                     }
                 }
             }
@@ -271,9 +279,7 @@ pub fn rgb_to_bmp_data_url(rgb: &[u8], width: u32, height: u32) -> String {
             bmp.push(rgb[idx + 1]);
             bmp.push(rgb[idx]);
         }
-        for _ in 0..pad {
-            bmp.push(0);
-        }
+        bmp.extend(std::iter::repeat_n(0, pad));
     }
 
     let base64_str = to_base64(&bmp);
@@ -285,8 +291,16 @@ pub fn to_base64(bytes: &[u8]) -> String {
     let mut res = String::with_capacity(bytes.len() * 4 / 3 + 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
         let n = (b0 << 16) | (b1 << 8) | b2;
         res.push(CHARS[(n >> 18) & 63] as char);
         res.push(CHARS[(n >> 12) & 63] as char);
@@ -314,8 +328,9 @@ pub struct EffectItemInfo {
     pub preview_data_url: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
+    let _permit = crate::analysis::AnalysisPermit::acquire()?;
     const EFFECTS_METADATA: &[(&str, &str, &str, &str)] = &[
         ("shakes", "Harmonic Shakes (X/Y/Z/Tilt)", "SHAKES", "Smooth exponential damped oscillations on 4 axes"),
         ("bouncy_shake", "Bouncy Shake", "SHAKES", "BlurMoCurves-style piecewise keyframe bounce"),

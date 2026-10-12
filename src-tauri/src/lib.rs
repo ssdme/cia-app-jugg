@@ -1,11 +1,18 @@
 use tauri::Manager;
 
+pub mod analysis;
 pub mod beat;
 pub mod effects;
+pub mod frame_cache;
+pub mod jobs;
 pub mod plan;
 pub mod preview;
 pub mod probe;
+pub mod process;
 pub mod render;
+pub mod scene_analysis;
+pub mod scene_schedule;
+pub mod sources;
 
 pub use beat::*;
 pub use effects::*;
@@ -94,11 +101,16 @@ pub fn run() {
             plan::generate_plan,
             plan::save_plan,
             render::cancel_render,
+            analysis::cancel_scene_analysis,
+            scene_analysis::prepare_scene_selection,
             render::open_target_folder,
+            render::open_output_file,
             render::run_render_pipeline,
             render::render_text_video,
             preview::get_effect_previews,
             plan::cmd_get_style_defaults,
+            plan::cmd_get_style_preset,
+            probe::media_fingerprints,
             probe::read_media_file_bytes
         ])
         .run(tauri::generate_context!())

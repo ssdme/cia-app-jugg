@@ -45,7 +45,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 ### Neural Beat Detection
 - Embedded `beat_this` ONNX model executed via ONNX Runtime C API.
-- Sub-frame onset detection and downbeat classification with microsecond timestamp resolution.
+- Beat and downbeat timestamps from the bundled ONNX model.
 - Zero external dependencies: no Python runtime, PyTorch, or GPU driver packages required.
 
 ### Time Remapping Curves
@@ -53,16 +53,22 @@ All processing runs locally on the host machine. The application bundles its own
 - **SMOOTH**: Continuous cubic and bezier easing without reverse velocity.
 - **HYBRID**: Alternating snap-and-saddle curve profile with dynamic acceleration.
 
+### Scene Selection
+- **ScenePack**: The default-enabled `no repeatitive scene` option adapts shot length to visual activity and beats. It favors unused passages and discourages early replays around a flexible eight-second target. Sparse footage can still loop without forced freeze padding.
+- **Motion guidance**: ScenePack and Long Clip select useful motion windows and reduce remap emphasis on still frames. No Change uses the original path.
+- **Source filtering**: ScenePack removes exactly pure black/white native frames, including internal gaps, while retaining near-blank detail. Analysis is cached for unchanged media.
+- **Output actions**: `OPEN FILE` opens the completed video; `RENDER AGAIN` starts a new render directly.
+
 ### Transform & Shader Engine
 - **Camera Shakes**: Harmonic damping, bounce, dissolve skew, and squish-pop coordinate transforms.
 - **Ambiance Passes**: Highlight bloom, temporal echo-trail frame blending, and CC Deep Dark tone curve.
-- **Anti-Flash Mode**: Suppresses rapid luminance delta while preserving coordinate displacement for photosensitivity compliance.
+- **Anti-Flash Mode**: Disables luminance flashes and inversion while preserving geometric effects.
 
 ### Export Pipeline
-- Hardware-accelerated and software encoding via embedded FFmpeg pipeline.
+- CPU encoding via embedded FFmpeg (libx264, libx265, libvpx-vp9).
 - Target codecs: **H.264 (AVC)**, **H.265 (HEVC)**, and **VP9**.
 - Configurable target bitrates from 5 Mbps to 50 Mbps.
-- Geometric output modes: Native, Crop-to-fill, and Stretch.
+- Borderless full-frame scaling to 16:9, 9:16, square or a custom even-sized canvas.
 
 ---
 
@@ -79,7 +85,7 @@ The installer is self-contained. It bundles all required binaries (`ffmpeg.exe`,
 ## Building from Source
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 22.12+ (Node 24 recommended)
 - Rust stable (MSVC toolchain)
 - Visual Studio C++ Build Tools
 
@@ -93,14 +99,39 @@ cd cia-app-jugg
 # Install frontend dependencies
 npm ci
 
+# Verify/download the pinned FFmpeg/FFprobe payload
+npm run verify:payload
+
 # Run in development mode
 npm run tauri dev
 
-# Compile standalone production installer
-npm run tauri build
+# Compile an unsigned local test installer
+npm run tauri build -- --config src-tauri/tauri.ci.conf.json
 ```
 
 ---
+
+## Verification
+
+```powershell
+npm run check
+npm test
+npm run test:ui
+npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+```
+
+The integration harness generates synthetic media and requires the verified FFmpeg payload. Legacy personal-media benchmarks are explicitly ignored. Raw frames are decoded in bounded blocks (4 GiB disk cache, up to 256 MiB frame LRU); output dimensions are never reduced to satisfy a cache budget. Text Studio remains disabled.
+
+`npm run benchmark` records three release measurements per scenario. `npm run benchmark:baseline` then runs the audited `958fefd` render loop and pixel kernels in an isolated harness with the same generated plans, media and FFmpeg. Results are written to `tests/generated/benchmark`; process RAM samples exclude FFmpeg child processes.
+
+Schema 3 stores source-local `{ sourceId, start, duration }` ranges. Source IDs refer to the complete, immutable input-path list. Schemas 1 and 2 remain readable: their concatenated global intervals are split at source boundaries; missing or inconsistent source mappings are rejected. Scene arrays explicitly use `scenesFormat: 'pairs'` or `'boundaries'`; omitted format means boundaries for legacy callers. New callers should submit source ranges instead.
+
+Schema 4 adds motion-guided remap envelopes, source fingerprints and shot/reuse diagnostics. Schemas 1–3 keep their existing sampling behavior. Run `cargo run --locked --manifest-path src-tauri/Cargo.toml --example benchmark_scene_analysis` after generating benchmark media to measure cold analysis, cache reuse and planning with 3/24 scenes. See [ScenePack validation](docs/SCENEPACK_UPDATE_REPORT_2026-10-05.md).
+
+Release installers use the configured updater signing key. `build:update` verifies the installer signature against that public key before creating a manifest. CI creates unsigned test installers and never generates a replacement release key.
 
 ## License
 
