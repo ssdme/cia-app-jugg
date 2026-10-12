@@ -32,7 +32,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 ## UX
 
-![cia jugg ux](docs/preview.png?v=1.0.3)
+![cia jugg ux](docs/preview.png?v=1.0.4)
 
 ---
 
@@ -54,6 +54,7 @@ All processing runs locally on the host machine. The application bundles its own
 - **HYBRID**: Alternating snap-and-saddle curve profile with dynamic acceleration.
 
 ### Scene Selection
+- **1.0.4 fix**: Action windows are clamped to selected scene bounds, with numerical tolerance for timestamp rounding, preventing spurious `Invalid action window` render failures.
 - **ScenePack**: The default-enabled `no repeatitive scene` option adapts shot length to visual activity and beats. It favors unused passages and discourages early replays around a flexible eight-second target. Sparse footage can still loop without forced freeze padding.
 - **Motion guidance**: ScenePack and Long Clip select useful motion windows and reduce remap emphasis on still frames. No Change uses the original path.
 - **Source filtering**: ScenePack removes exactly pure black/white native frames, including internal gaps, while retaining near-blank detail. Analysis is cached for unchanged media.

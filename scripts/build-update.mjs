@@ -46,10 +46,13 @@ const dotJuggPath = path.join(bundleDir, `cia.jugg_${version}_x64-setup.exe`);
 if (installerPath !== dotJuggPath) {
   fs.copyFileSync(installerPath, dotJuggPath);
 }
+if (sigPath !== `${dotJuggPath}.sig`) {
+  fs.copyFileSync(sigPath, `${dotJuggPath}.sig`);
+}
 
 const manifest = {
   version: version,
-  notes: `cia jugg v${version}\n- Correct effect/preset controls and source-local extraction\n- Isolated render jobs, complete cancellation and bounded frame caches\n- Verified offline runtime payload`,
+  notes: `cia jugg v${version}\n- Fix Invalid action window errors caused by timestamp rounding\n- Motion-aware ScenePack and Long Clip, with adaptive scene reuse\n- Exact black/white frame filtering, Open File and immediate Render Again\n- Correct presets, scoped cancellation and bounded render caches`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
