@@ -486,6 +486,8 @@ pub struct ProjectPlan {
     pub source_ranges: Option<Vec<crate::sources::SourceRange>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planning: Option<crate::scene_schedule::PlanningMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub creative_events: Vec<crate::creative_schedule::CreativeEvent>,
 }
 
 pub fn generate_one_framers(
@@ -720,7 +722,7 @@ pub fn compute_effects_count(plan: &ProjectPlan) -> usize {
             ambiance_count += 1;
         }
     }
-    one_framers_count + transitions_count + ambiance_count
+    one_framers_count + transitions_count + ambiance_count + plan.creative_events.len()
 }
 
 pub fn parse_scene_ranges(scenes: &[f64], video_duration: f64) -> Vec<(f64, f64)> {
@@ -1450,6 +1452,7 @@ pub fn create_plan_internal(
         source_intervals: raw_intervals,
         source_ranges: None,
         planning: None,
+        creative_events: Vec::new(),
     })
 }
 
@@ -1477,6 +1480,8 @@ pub fn generate_plan(
     source_ranges: Option<Vec<crate::sources::SourceRange>>,
     prepared_scenes: Option<Vec<crate::scene_analysis::PreparedScene>>,
     no_repetitive_scene: Option<bool>,
+    smart_scene_flow: Option<bool>,
+    creative_options: Option<crate::creative_schedule::CreativeOptions>,
 ) -> Result<String, String> {
     if let Some(scenes) = prepared_scenes {
         let mode = long_video_mode.as_deref().unwrap_or("no_change");
@@ -1484,7 +1489,12 @@ pub fn generate_plan(
             return Err("Motion planning requires ScenePack or Long Clip".into());
         }
         crate::scene_schedule::validate_prepared(&scenes)?;
-        let adaptive = mode == "long_clip" || no_repetitive_scene.unwrap_or(true);
+        let policy = crate::scene_schedule::ScenePolicy::for_mode(
+            mode,
+            no_repetitive_scene,
+            smart_scene_flow,
+        );
+        let adaptive = policy != crate::scene_schedule::ScenePolicy::Classic;
         let mut bounds = vec![0.0];
         for scene in &scenes {
             bounds.push(bounds.last().unwrap() + scene.duration());
@@ -1522,7 +1532,7 @@ pub fn generate_plan(
             &beats,
             &downbeats,
             scenepack_rhythm.as_deref().unwrap_or("mid"),
-            adaptive,
+            policy,
             mode,
         )?;
         let cuts: Vec<_> = plan
@@ -1561,6 +1571,12 @@ pub fn generate_plan(
         if let Some(config) = export_config {
             plan.export = config;
         }
+        crate::creative_schedule::apply_to_plan(
+            &mut plan,
+            creative_options.unwrap_or_default(),
+            &beats,
+            &downbeats,
+        )?;
         validate_plan(&plan)?;
         return serde_json::to_string_pretty(&plan)
             .map_err(|error| format!("Failed to serialize plan: {error}"));
@@ -1673,6 +1689,12 @@ pub fn generate_plan(
     if let Some(ec) = export_config {
         plan.export = ec;
     }
+    crate::creative_schedule::apply_to_plan(
+        &mut plan,
+        creative_options.unwrap_or_default(),
+        &beats,
+        &downbeats,
+    )?;
     validate_plan(&plan)?;
     serde_json::to_string_pretty(&plan).map_err(|e| format!("Failed to serialize plan: {e}"))
 }
@@ -1748,6 +1770,7 @@ pub fn validate_custom_params(params: &CustomParams) -> Result<(), String> {
 }
 
 pub fn validate_plan(plan: &ProjectPlan) -> Result<(), String> {
+    crate::creative_schedule::validate(&plan.creative_events, plan.target_duration)?;
     let bounded = |name: &str, number: f64, min: f64, max: f64| -> Result<(), String> {
         if number.is_finite() && (min..=max).contains(&number) {
             Ok(())

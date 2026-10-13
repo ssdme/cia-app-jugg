@@ -18,6 +18,33 @@ pub fn generate_generic_preview_frame(width: usize, height: usize) -> Vec<u8> {
 }
 
 pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Vec<u8> {
+    let creative = match effect_id {
+        "time_slice" => Some(crate::creative::CreativeKind::TimeSlice),
+        "ink_pulse" => Some(crate::creative::CreativeKind::InkPulse),
+        "prism_drift" => Some(crate::creative::CreativeKind::PrismDrift),
+        "focus_pull" => Some(crate::creative::CreativeKind::FocusPull),
+        "relief_light" => Some(crate::creative::CreativeKind::ReliefLight),
+        "paper_gate" => Some(crate::creative::CreativeKind::PaperGate),
+        _ => None,
+    };
+    if let Some(kind) = creative {
+        let frame = creative_preview_base(width, height, 0);
+        let alternate = (kind == crate::creative::CreativeKind::TimeSlice)
+            .then(|| creative_preview_base(width, height, width / 12));
+        let mut output = vec![0; frame.len()];
+        crate::creative::apply(
+            kind,
+            &frame,
+            alternate.as_deref(),
+            &mut output,
+            width,
+            height,
+            0.5,
+            12,
+            1.0,
+        );
+        return output;
+    }
     let base_frame = generate_generic_preview_frame(width, height);
     let mut out_frame = vec![0u8; width * height * 3];
     let cx = width as f64 / 2.0;
@@ -245,6 +272,38 @@ pub fn render_effect_preview(effect_id: &str, width: usize, height: usize) -> Ve
     out_frame
 }
 
+fn creative_preview_base(width: usize, height: usize, shift: usize) -> Vec<u8> {
+    let mut frame = vec![0; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let nx =
+                (x as f64 - width as f64 * 0.5 - shift as f64) / (width as f64 * 0.24).max(1.0);
+            let ny = (y as f64 - height as f64 * 0.43) / (height as f64 * 0.3).max(1.0);
+            let ellipse = nx * nx + ny * ny;
+            let color = if ellipse < 0.94 {
+                if ny < -0.35 {
+                    [235, 143, 47]
+                } else {
+                    [246, 195, 154]
+                }
+            } else if ellipse < 1.08 {
+                [24, 26, 42]
+            } else if y > height * 2 / 3 && nx.abs() < 1.25 {
+                [59, 94, 166]
+            } else {
+                [
+                    (25 + x * 65 / width) as u8,
+                    (61 + y * 90 / height) as u8,
+                    (151 + x * 70 / width) as u8,
+                ]
+            };
+            let index = (y * width + x) * 3;
+            frame[index..index + 3].copy_from_slice(&color);
+        }
+    }
+    frame
+}
+
 pub fn rgb_to_bmp_data_url(rgb: &[u8], width: u32, height: u32) -> String {
     let row_bytes = (width * 3 + 3) & !3;
     let image_size = row_bytes * height;
@@ -350,6 +409,12 @@ pub fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
         ("vignette", "Vignette Darkening", "AMBIANCE", "Radial corner darkening focusing visual center"),
         ("scanlines", "CRT Scanlines", "AMBIANCE", "Retro television horizontal scanline rasterization"),
         ("cc_deep_dark", "Color Correction: Deep Dark", "AMBIANCE", "Grayscale luma crush, 10px bloom glow, 19% film grain"),
+        ("time_slice", "TIME SLICE", "CREATIVE", "Delayed time panels split, then reunite around musical accents"),
+        ("ink_pulse", "INK PULSE", "CREATIVE", "Selective ink contours and comic halftone with a clean return"),
+        ("prism_drift", "PRISM DRIFT", "CREATIVE", "Color edges drift apart, then resolve into the original image"),
+        ("focus_pull", "FOCUS PULL", "CREATIVE BETA", "A moving sharp plane passes through soft focus"),
+        ("relief_light", "RELIEF LIGHT", "CREATIVE BETA", "Raking light animates the relief of image contours"),
+        ("paper_gate", "PAPER GATE", "CREATIVE BETA", "A torn-paper aperture opens around musical accents"),
     ];
 
     let mut list = Vec::with_capacity(EFFECTS_METADATA.len());
@@ -365,4 +430,31 @@ pub fn get_effect_previews() -> Result<Vec<EffectItemInfo>, String> {
         });
     }
     Ok(list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creative_thumbnails_show_distinct_treatments() {
+        let base = creative_preview_base(128, 128, 0);
+        let previews: Vec<_> = [
+            "time_slice",
+            "ink_pulse",
+            "prism_drift",
+            "focus_pull",
+            "relief_light",
+            "paper_gate",
+        ]
+        .iter()
+        .map(|id| render_effect_preview(id, 128, 128))
+        .collect();
+        assert!(previews
+            .iter()
+            .all(|preview| preview.len() == base.len() && *preview != base));
+        assert!(
+            previews[0] != previews[1] && previews[1] != previews[2] && previews[0] != previews[2]
+        );
+    }
 }

@@ -230,6 +230,8 @@ fn analyzed_plan_roundtrip_motion_render_and_stale_source_guard() {
         None,
         Some(scenes.clone()),
         Some(true),
+        None,
+        None,
     )
     .unwrap();
     let mut plan: ProjectPlan = serde_json::from_str(&json).unwrap();
@@ -306,6 +308,8 @@ fn analyzed_plan_roundtrip_motion_render_and_stale_source_guard() {
         None,
         Some(scenes),
         Some(false),
+        None,
+        None,
     )
     .unwrap();
     let legacy: ProjectPlan = serde_json::from_str(&legacy).unwrap();

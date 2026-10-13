@@ -82,7 +82,7 @@ fn main() -> Result<(), String> {
                         &beats,
                         &downbeats,
                         "fast",
-                        true,
+                        cia_render_lib::scene_schedule::ScenePolicy::NoRepeat,
                         if remove_blank {
                             "scenepack"
                         } else {

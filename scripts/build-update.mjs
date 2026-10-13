@@ -52,7 +52,7 @@ if (sigPath !== `${dotJuggPath}.sig`) {
 
 const manifest = {
   version: version,
-  notes: `cia jugg v${version}\n- Fix Invalid action window errors caused by timestamp rounding\n- Motion-aware ScenePack and Long Clip, with adaptive scene reuse\n- Exact black/white frame filtering, Open File and immediate Render Again\n- Correct presets, scoped cancellation and bounded render caches`,
+  notes: `cia jugg v${version}\n- Default 3:4 output at 1080 x 1440\n- Smart Scene Flow balances fresh footage with controlled returns\n- Six independent creative effects in Details, enabled by default\n- Time Slice, Ink Pulse, Prism Drift, Focus Pull, Relief Light and Paper Gate`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

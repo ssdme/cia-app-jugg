@@ -5,7 +5,7 @@
   import { check } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { onMount } from 'svelte';
-  import { effectKey, withPersistentOptions, analysisKey } from './lib/render-settings';
+  import { effectKey, creativeKey, withPersistentOptions, analysisKey } from './lib/render-settings';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
   import TextStudio from './TextStudio.svelte';
@@ -55,7 +55,7 @@
   // Beta features toggle (false for public release distribution)
   const SHOW_BETA_TEXT_STUDIO = false;
   let toast = $state({ show: false, message: '', type: 'info' });
-  let appVersion = $state('1.0.3');
+  let appVersion = $state('1.0.5');
   let discordCopyFeedback = $state(false);
   let isMaximized = $state(false);
   const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';
@@ -114,7 +114,7 @@
   // Settings Configuration State (T4.5)
   let selectedStyle = $state('HARD'); // 'HARD' | 'SMOOTH' | 'HYBRID'
   let fpsValue = $state(16); // min 12, max 60, step 1, default 16
-  let selectedAspectRatio = $state('1:1'); // '16:9' | '9:16' | '1:1' | 'CUSTOM' (default 1:1)
+  let selectedAspectRatio = $state('3:4');
   let customWidth = $state(1080);
   let customHeight = $state(1080);
   let customArError = $state('');
@@ -152,9 +152,21 @@
   let hoveredSceneClip = $state(null);
   let hoverScenePos = $state({ x: 0, y: 0 });
   let scenePackRhythm = $state('fast'); // 'fast' | 'mid' | 'slow'
-  let noRepetitiveScene = $state(true);
+  let noRepetitiveScene = $state(false);
+  let smartSceneFlow = $state(true);
   let activeSceneAnalysisJobId = $state('');
   let cancellingSceneAnalysis = $state(false);
+
+  /** @param {'no_repeat' | 'smart'} mode @param {boolean} enabled */
+  function setSceneFlow(mode, enabled) {
+    if (mode === 'smart') {
+      smartSceneFlow = enabled;
+      if (enabled) noRepetitiveScene = false;
+    } else {
+      noRepetitiveScene = enabled;
+      if (enabled) smartSceneFlow = false;
+    }
+  }
 
   /** @param {number} sec */
   function formatTimecode(sec) {
@@ -199,6 +211,12 @@
   /** @type {import('./lib/contracts').EffectOverrides | null} */
   let effectOverrides = $state(null);
 
+  /** @type {import('./lib/contracts').CreativeOptions} */
+  let creativeOptions = $state({
+    timeSlice: true, inkPulse: true, prismDrift: true,
+    focusPull: true, reliefLight: true, paperGate: true,
+  });
+
   // T18 Custom Params â€” per-effect numeric overrides
   /** @type {import('./lib/contracts').CustomParams | null} */
   let customParams = $state(null); // null = use style preset defaults
@@ -232,26 +250,33 @@
     requestPreset(false);
   }
 
+  /** @param {string} id */
+  function isEffectEnabled(id) {
+    const key = creativeKey(id);
+    return key ? creativeOptions[key] : Boolean(effectOverrides?.[effectKey(id)]);
+  }
+
+  /** @param {string} id @param {boolean} enabled */
+  function setEffectEnabled(id, enabled) {
+    const key = creativeKey(id);
+    if (key) creativeOptions[key] = enabled;
+    else if (effectOverrides) effectOverrides[effectKey(id)] = enabled;
+  }
+
   function handleSelectAllEffects() {
-    if (!effectOverrides) return;
-    const next = { ...effectOverrides };
-    for (const effect of availableEffects) {
-      next[effectKey(effect.id)] = true;
-    }
-    effectOverrides = next;
+    for (const effect of availableEffects) setEffectEnabled(effect.id, true);
   }
 
   function handleDeselectAllEffects() {
-    if (!effectOverrides) return;
-    const next = { ...effectOverrides };
-    for (const effect of availableEffects) {
-      next[effectKey(effect.id)] = false;
-    }
-    effectOverrides = next;
+    for (const effect of availableEffects) setEffectEnabled(effect.id, false);
   }
 
   function handleResetEffectsToPreset() {
     requestPreset(false, false);
+    creativeOptions = {
+      timeSlice: true, inkPulse: true, prismDrift: true,
+      focusPull: true, reliefLight: true, paperGate: true,
+    };
   }
 
   const STYLE_OPTIONS = [
@@ -272,7 +297,7 @@
     }
   ];
 
-  const ASPECT_RATIO_PRESETS = ['16:9', '9:16', '1:1', 'CUSTOM'];
+  const ASPECT_RATIO_PRESETS = ['16:9', '9:16', '3:4', '1:1', 'CUSTOM'];
 
   const CODEC_OPTIONS = [
     { id: 'H.264', label: 'H.264' },
@@ -619,6 +644,8 @@
       : [{ sourceId: 0, start: 0, duration: sourceDuration }];
     const timing = { beats: [...(beats || [])], downbeats: [...(downbeats || [])], bpm: bpm || 120.0 };
     const repeatPolicy = noRepetitiveScene;
+    const smartFlow = smartSceneFlow;
+    const creativeSelection = { ...creativeOptions };
     const rhythm = scenePackRhythm;
     activeJobId = crypto.randomUUID();
     renderState = 'running';
@@ -637,13 +664,16 @@
       if (!effectOverrides) await loadPreset();
       if (renderState === 'cancelling') throw new Error('Render cancelled by user');
       let aspectW = 1080;
-      let aspectH = 1080;
+      let aspectH = 1440;
       if (selectedAspectRatio === '16:9') {
         aspectW = 1920;
         aspectH = 1080;
       } else if (selectedAspectRatio === '9:16') {
         aspectW = 1080;
         aspectH = 1920;
+      } else if (selectedAspectRatio === '3:4') {
+        aspectW = 1080;
+        aspectH = 1440;
       } else if (selectedAspectRatio === '1:1') {
         aspectW = 1080;
         aspectH = 1080;
@@ -685,6 +715,8 @@
         scenesFormat: 'pairs',
         preparedScenes,
         noRepetitiveScene: repeatPolicy,
+        smartSceneFlow: smartFlow,
+        creativeOptions: creativeSelection,
         sourceRanges: selectedRanges,
       });
 
@@ -1408,8 +1440,12 @@
                 <!-- 7. ScenePack Controls (visible when longVideoMode === 'scenepack') -->
                 {#if longVideoMode === 'scenepack'}
                   <label class="scene-option" title="Adapt shot lengths to motion and avoid early repeats.">
-                    <input id="scene-no-repeat-settings" type="checkbox" bind:checked={noRepetitiveScene} />
+                    <input id="scene-no-repeat-settings" type="checkbox" checked={noRepetitiveScene} onchange={(event) => setSceneFlow('no_repeat', event.currentTarget.checked)} />
                     <span>no repeatitive scene</span>
+                  </label>
+                  <label class="scene-option" title="Beat-led cuts, varied motion passages and controlled returns.">
+                    <input id="scene-smart-flow-settings" type="checkbox" checked={smartSceneFlow} onchange={(event) => setSceneFlow('smart', event.currentTarget.checked)} />
+                    <span>smart scene flow<small>Beat-led cuts, varied motion passages, controlled returns</small></span>
                   </label>
                   <div class="toggle-row">
                     <div class="toggle-row-left" title="Clips currently selected for ScenePack rendering. Click to modify selection.">
@@ -1496,7 +1532,7 @@
                     <div class="done-title-row">
                       <span class="render-done-title">RENDER COMPLETE</span>
                     </div>
-                    <span class="done-specs mono">{planSummary?.aspect || '1080x1080'} • {renderStats?.targetFps || fpsValue} FPS</span>
+                    <span class="done-specs mono">{planSummary?.aspect || '1080x1440'} • {renderStats?.targetFps || fpsValue} FPS</span>
                   </div>
 
                   {#if renderStats}
@@ -1792,8 +1828,12 @@
           <div class="scenepack-toolbar-left">
             <span class="clips-count-badge mono">{selectedClipIndices.size} / {sceneClipsList.length} CLIPS ACTIVE</span>
             <label class="scene-option" title="Adapt shot lengths to motion and avoid early repeats.">
-              <input id="scene-no-repeat-gallery" type="checkbox" bind:checked={noRepetitiveScene} />
+              <input id="scene-no-repeat-gallery" type="checkbox" checked={noRepetitiveScene} onchange={(event) => setSceneFlow('no_repeat', event.currentTarget.checked)} />
               <span>no repeatitive scene</span>
+            </label>
+            <label class="scene-option" title="Beat-led cuts, varied motion passages and controlled returns.">
+              <input id="scene-smart-flow-gallery" type="checkbox" checked={smartSceneFlow} onchange={(event) => setSceneFlow('smart', event.currentTarget.checked)} />
+              <span>smart scene flow<small>Beat-led cuts, varied motion passages, controlled returns</small></span>
             </label>
           </div>
           <div class="scenepack-toolbar-actions">
@@ -1919,7 +1959,7 @@
 
         <div class="details-toolbar">
           <div class="details-toolbar-left">
-            <span class="effects-count-badge">{availableEffects.filter(e => effectOverrides?.[effectKey(e.id)]).length} / {availableEffects.length} ACTIVE</span>
+            <span class="effects-count-badge">{availableEffects.filter(e => isEffectEnabled(e.id)).length} / {availableEffects.length} ACTIVE</span>
           </div>
           <div class="details-toolbar-actions">
             <button class="btn-toolbar" onclick={handleSelectAllEffects} type="button">SELECT ALL</button>
@@ -1936,11 +1976,12 @@
             {#each availableEffects as effect (effect.id)}
               <div
                 class="effect-card"
-                class:active={effectOverrides?.[effectKey(effect.id)]}
-                onclick={() => effectOverrides && (effectOverrides[effectKey(effect.id)] = !effectOverrides[effectKey(effect.id)])}
+                data-effect-id={effect.id}
+                class:active={isEffectEnabled(effect.id)}
+                onclick={() => setEffectEnabled(effect.id, !isEffectEnabled(effect.id))}
                 role="button"
                 tabindex="0"
-                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { effectOverrides && (effectOverrides[effectKey(effect.id)] = !effectOverrides[effectKey(effect.id)]); e.preventDefault(); } }}
+                onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { setEffectEnabled(effect.id, !isEffectEnabled(effect.id)); e.preventDefault(); } }}
               >
                 <div
                   class="effect-card-thumb-wrap"
@@ -1968,10 +2009,12 @@
                     </div>
                     <label class="effect-toggle-label">
                       <input
+                        id={creativeKey(effect.id) ? `creative-${effect.id.replaceAll('_', '-')}` : `effect-${effect.id}`}
                         type="checkbox"
-                        checked={effectOverrides?.[effectKey(effect.id)]}
+                        aria-label={effect.name}
+                        checked={isEffectEnabled(effect.id)}
                         onclick={(e) => e.stopPropagation()}
-                        onchange={(e) => effectOverrides && (effectOverrides[effectKey(effect.id)] = e.currentTarget.checked)}
+                        onchange={(e) => setEffectEnabled(effect.id, e.currentTarget.checked)}
                       />
                       <span class="effect-toggle-custom"></span>
                     </label>
@@ -3805,9 +3848,13 @@
   }
   .effect-toggle-label input {
     position: absolute;
+    inset: 0;
     opacity: 0;
-    width: 0;
-    height: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    z-index: 1;
+    cursor: pointer;
   }
   .effect-toggle-custom {
     width: 32px;
@@ -3836,6 +3883,10 @@
   .effect-toggle-label input:checked + .effect-toggle-custom::after {
     transform: translateX(14px);
     background: #09090b;
+  }
+  .effect-toggle-label input:focus-visible + .effect-toggle-custom {
+    outline: 2px solid #a1a1aa;
+    outline-offset: 2px;
   }
 
   /* â”€â”€â”€ T17 LARGE HOVER PREVIEW POPOVER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -4105,6 +4156,12 @@
     margin: 0;
     accent-color: #fff;
     cursor: pointer;
+  }
+  .scene-option small {
+    display: block;
+    margin-top: 3px;
+    color: #8c8c96;
+    font-size: 10px;
   }
 
   .clips-count-badge {

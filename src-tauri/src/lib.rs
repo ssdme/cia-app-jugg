@@ -2,6 +2,9 @@ use tauri::Manager;
 
 pub mod analysis;
 pub mod beat;
+pub mod creative;
+pub mod creative_beta;
+pub mod creative_schedule;
 pub mod effects;
 pub mod frame_cache;
 pub mod jobs;

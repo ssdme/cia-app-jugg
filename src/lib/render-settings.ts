@@ -1,4 +1,4 @@
-import type { EffectOverrides } from './contracts';
+import type { CreativeOptions, EffectOverrides } from './contracts';
 
 /** Gallery IDs are presentation identifiers; only these DTO keys cross IPC. */
 const galleryKeys = {
@@ -13,6 +13,15 @@ const galleryKeys = {
 export function effectKey(id: string): keyof EffectOverrides {
   if (!Object.hasOwn(galleryKeys, id)) throw new Error(`Unknown gallery effect: ${id}`);
   return galleryKeys[id as keyof typeof galleryKeys];
+}
+
+const creativeKeys = {
+  time_slice: 'timeSlice', ink_pulse: 'inkPulse', prism_drift: 'prismDrift',
+  focus_pull: 'focusPull', relief_light: 'reliefLight', paper_gate: 'paperGate',
+} satisfies Record<string, keyof CreativeOptions>;
+
+export function creativeKey(id: string): keyof CreativeOptions | null {
+  return Object.hasOwn(creativeKeys, id) ? creativeKeys[id as keyof typeof creativeKeys] : null;
 }
 
 export function withPersistentOptions<T extends { ccDeepDark: boolean; antiFlash: boolean }>(

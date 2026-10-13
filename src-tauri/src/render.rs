@@ -668,6 +668,25 @@ pub fn render_pipeline_core(
     let mut cropped_buf = vec![0u8; cropped_frame_bytes];
     let mut dissolve_buf = vec![0u8; if has_dissolve { cropped_frame_bytes } else { 0 }];
     let mut ghost_full = vec![0u8; if has_dissolve { frame_bytes } else { 0 }];
+    let has_time_slice = plan
+        .creative_events
+        .iter()
+        .any(|event| event.kind == crate::creative::CreativeKind::TimeSlice);
+    let has_print_effects = plan
+        .creative_events
+        .iter()
+        .any(|event| event.kind != crate::creative::CreativeKind::TimeSlice);
+    let mut slice_source = vec![0u8; if has_time_slice { frame_bytes } else { 0 }];
+    let mut slice_output = vec![0u8; if has_time_slice { frame_bytes } else { 0 }];
+    let mut creative_output = vec![
+        0u8;
+        if has_print_effects {
+            cropped_frame_bytes
+        } else {
+            0
+        }
+    ];
+    let mut creative_index = 0;
     let sampling_start = std::time::Instant::now();
     let initial_decode_time = frame_reader.decode_time;
     let mut blend_frames_storage =
@@ -710,6 +729,22 @@ pub fn render_pipeline_core(
         job.check()?;
 
         let t = (i as f64) / output_fps;
+        while creative_index < plan.creative_events.len()
+            && plan.creative_events[creative_index].t1 <= t
+        {
+            creative_index += 1;
+        }
+        let mut creative = [None; crate::creative::CreativeKind::COUNT];
+        for event in plan.creative_events[creative_index..]
+            .iter()
+            .take_while(|event| event.t0 <= t)
+        {
+            if t < event.t1 && t > event.t0 && event.strength > 0.0 {
+                creative[event.kind.slot()] = Some(event);
+            }
+        }
+        let creative_gain =
+            1.0 / (1.0 + 0.25 * creative.iter().flatten().count().saturating_sub(1) as f64);
 
         let seg = plan
             .segments
@@ -749,6 +784,36 @@ pub fn render_pipeline_core(
                 slice_ptrs.push(buffer);
             }
             blend_full_frames(&slice_ptrs, &mut sampled_full_frame);
+        }
+
+        if let Some(event) = creative[0] {
+            let (shot_first, _, _) = frame_reader.frame_at_time(seg.s0.min(seg.s1) + 1e-7);
+            let (shot_last, _, _) =
+                frame_reader.frame_at_time((seg.s0.max(seg.s1) - 1e-7).max(0.0));
+            let first = range_first.max(shot_first) as i64;
+            let last = range_last.min(shot_last) as i64;
+            let delay = (src_fps * (0.08 + (event.seed % 5) as f64 * 0.015))
+                .round()
+                .max(1.0) as i64;
+            let direction = if seg.s1 < seg.s0 { 1 } else { -1 };
+            let alternate = if first <= last {
+                (base_src_frame + direction * delay).clamp(first, last)
+            } else {
+                base_src_frame
+            } as u64;
+            frame_reader.get_frame(alternate, &mut slice_source)?;
+            crate::creative::apply(
+                event.kind,
+                &sampled_full_frame,
+                Some(&slice_source),
+                &mut slice_output,
+                src_w as usize,
+                src_h as usize,
+                event.phase(t),
+                event.seed,
+                event.strength * creative_gain,
+            );
+            std::mem::swap(&mut sampled_full_frame, &mut slice_output);
         }
 
         // 1.5. One-Framers Library effect if active
@@ -919,6 +984,31 @@ pub fn render_pipeline_core(
                     }
                 }
             }
+        }
+
+        // Optical treatment precedes print accents; the paper aperture stays crisp on top.
+        for event in [
+            creative[3],
+            creative[4],
+            creative[1],
+            creative[2],
+            creative[5],
+        ]
+        .iter()
+        .flatten()
+        {
+            crate::creative::apply(
+                event.kind,
+                &cropped_buf,
+                None,
+                &mut creative_output,
+                crop.width as usize,
+                crop.height as usize,
+                event.phase(t),
+                event.seed,
+                event.strength * creative_gain,
+            );
+            std::mem::swap(&mut cropped_buf, &mut creative_output);
         }
 
         // 4. Pipe to encoder

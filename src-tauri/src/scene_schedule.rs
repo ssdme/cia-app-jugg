@@ -10,6 +10,27 @@ const RECURRENCE_TARGET: f64 = 8.0;
 const MIN_RATE: f64 = 0.67;
 const MAX_RATE: f64 = 1.5;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenePolicy {
+    Classic,
+    NoRepeat,
+    Smart,
+}
+
+impl ScenePolicy {
+    pub fn for_mode(mode: &str, no_repeat: Option<bool>, smart: Option<bool>) -> Self {
+        if mode == "long_clip" {
+            Self::NoRepeat
+        } else if mode == "scenepack" && smart.unwrap_or(false) {
+            Self::Smart
+        } else if no_repeat.unwrap_or(true) {
+            Self::NoRepeat
+        } else {
+            Self::Classic
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShotDiagnostic {
@@ -33,6 +54,8 @@ pub struct PlanningMetadata {
     pub version: u32,
     pub mode: String,
     pub no_repetitive_scene: bool,
+    #[serde(default)]
+    pub smart_scene_flow: bool,
     pub motion_guided: bool,
     pub source_fingerprints: Vec<SourceStamp>,
     pub shots: Vec<ShotDiagnostic>,
@@ -59,6 +82,7 @@ struct SceneView<'a> {
     scene: &'a PreparedScene,
     base: f64,
     duration: f64,
+    motion_starts: Vec<f64>,
 }
 impl SceneView<'_> {
     fn source_time(&self, time: f64) -> f64 {
@@ -231,6 +255,7 @@ struct Context<'a> {
     preferred: f64,
     base_rate: f64,
     long_clip: bool,
+    smart: bool,
 }
 fn candidates(
     context: &Context<'_>,
@@ -269,6 +294,7 @@ fn candidates(
     for index in scene_order {
         let view = &context.views[index];
         let mut starts = vec![0.0];
+        starts.extend_from_slice(&view.motion_starts);
         if let Some(start) = first_unused(view, &usage.covered) {
             starts.push(start);
         }
@@ -335,20 +361,51 @@ fn candidates(
                 }
             }
             lengths.push(remaining);
+            let limit = if context.smart {
+                (context.preferred * 2.5).min(6.0).min(remaining)
+            } else {
+                remaining
+            };
+            let tolerance = if context.smart { 1e-7 } else { 0.001 };
+            let min_hold = if context.smart {
+                (context.preferred * 0.65)
+                    .min(view.duration / MIN_RATE)
+                    .min(remaining)
+            } else {
+                0.0
+            };
             let mut ends: Vec<_> = lengths
                 .into_iter()
                 .filter(|length| *length > 0.04)
                 .map(|length| {
-                    let wanted = time + length.min(available / MIN_RATE).min(remaining);
-                    nearest_boundary(wanted, context.beats, context.target)
+                    let wanted = time + length.min(available / MIN_RATE).min(remaining).min(limit);
+                    let snapped = nearest_boundary(wanted, context.beats, context.target);
+                    if context.smart
+                        && (snapped <= time + 0.025
+                            || snapped - time > limit + tolerance
+                            || snapped - time > available / MIN_RATE + tolerance)
+                    {
+                        wanted
+                    } else {
+                        snapped
+                    }
                 })
-                .filter(|end| *end > time + 0.025 && *end - time <= available / MIN_RATE + 0.001)
+                .filter(|end| {
+                    *end > time + 0.025
+                        && *end - time >= min_hold - tolerance
+                        && *end - time <= available / MIN_RATE + tolerance
+                })
                 .collect();
-            if remaining <= available / MIN_RATE {
+            if remaining <= available / MIN_RATE && remaining <= limit {
                 ends.push(context.target);
             }
-            if ends.is_empty() {
-                ends.push((time + available / context.base_rate).min(context.target));
+            if ends.is_empty() && available / MIN_RATE >= min_hold - tolerance {
+                ends.push(
+                    time + (available / context.base_rate)
+                        .max(min_hold)
+                        .min(limit)
+                        .min(available / MIN_RATE),
+                );
             }
             ends.sort_by(f64::total_cmp);
             ends.dedup_by(|a, b| (*a - *b).abs() < 0.01);
@@ -374,7 +431,7 @@ fn candidates(
                     let rate = span / duration;
                     if span <= 1e-6
                         || span > available + 1e-6
-                        || !(MIN_RATE - 0.001..=MAX_RATE).contains(&rate)
+                        || !(MIN_RATE - tolerance..=MAX_RATE).contains(&rate)
                     {
                         continue;
                     }
@@ -389,17 +446,36 @@ fn candidates(
                         shot.source_id == view.scene.source_id
                             && shot.scene_id == view.scene.scene_id
                     });
-                    let recurrence = 8.0 / (1.0 + ((time - RECURRENCE_TARGET) / 1.5).exp());
+                    let replay_window = if context.smart {
+                        (context.preferred * 3.0).clamp(2.0, 5.0)
+                    } else {
+                        RECURRENCE_TARGET
+                    };
+                    let recurrence = (if context.smart { 4.0 } else { 8.0 })
+                        / (1.0 + ((time - replay_window) / 1.5).exp());
                     let replay_recency = usage
                         .recent
                         .iter()
                         .filter(|shot| overlap(&pieces, &shot.ranges) > 0.001)
-                        .map(|shot| 4.0 * (-(time - shot.t1).max(0.0) / RECURRENCE_TARGET).exp())
+                        .map(|shot| 4.0 * (-(time - shot.t1).max(0.0) / replay_window).exp())
                         .fold(0.0, f64::max);
                     let scene_recency = recent
                         .map(|shot| {
-                            (if context.long_clip { 0.3 } else { 1.3 })
-                                * (-(time - shot.t1).max(0.0) / 4.0).exp()
+                            let weight = if context.long_clip {
+                                0.3
+                            } else if context.smart {
+                                2.0
+                            } else {
+                                1.3
+                            };
+                            weight
+                                * (-(time - shot.t1).max(0.0)
+                                    / if context.smart {
+                                        context.preferred * 2.0
+                                    } else {
+                                        4.0
+                                    })
+                                .exp()
                         })
                         .unwrap_or(0.0);
                     let pacing = ((duration / context.preferred).ln()).abs();
@@ -430,12 +506,35 @@ fn candidates(
                     } else {
                         0.0
                     };
+                    // Count consecutive holds, including fresh continuations of the same scene.
+                    let hold_cost = if context.smart {
+                        let held: f64 = usage
+                            .recent
+                            .iter()
+                            .rev()
+                            .take_while(|shot| {
+                                shot.source_id == view.scene.source_id
+                                    && shot.scene_id == view.scene.scene_id
+                            })
+                            .map(|shot| shot.t1 - shot.t0)
+                            .sum();
+                        ((held + duration) / context.preferred - 1.5).max(0.0) * 1.4
+                    } else {
+                        0.0
+                    };
                     let score = 2.5 * activity
                         + 0.9 * active_fraction
-                        + 1.0 * (1.0 - reused) * (span / context.preferred).min(2.0)
+                        + (1.0 - reused)
+                            * if context.smart {
+                                1.0
+                            } else {
+                                (span / context.preferred).min(2.0)
+                            }
                         + if recent.is_none() { 0.65 } else { 0.0 }
                         + if continuation {
-                            if context.long_clip {
+                            if context.smart {
+                                0.0
+                            } else if context.long_clip {
                                 0.3
                             } else {
                                 1.1
@@ -444,13 +543,27 @@ fn candidates(
                             0.0
                         }
                         + musical
-                        - reused * (4.0 + recurrence + replay_recency)
-                        - if continuation { 0.0 } else { scene_recency }
-                        - 0.6 * pacing
+                        - reused
+                            * (if context.smart { 3.0 } else { 4.0 } + recurrence + replay_recency)
+                        - if continuation && !context.smart {
+                            0.0
+                        } else {
+                            scene_recency
+                        }
+                        - (if context.smart { 1.6 } else { 0.6 }) * pacing
                         - 1.5 * quiet
                         - 1.8 * (rate / context.base_rate).ln().abs()
-                        - if action_cut { 0.9 } else { 0.0 }
-                        - spread_cost;
+                        - if action_cut {
+                            if context.smart {
+                                0.45
+                            } else {
+                                0.9
+                            }
+                        } else {
+                            0.0
+                        }
+                        - spread_cost
+                        - hold_cost;
                     result.push(Shot {
                         scene: index,
                         start,
@@ -756,20 +869,47 @@ pub fn apply_schedule(
     beats: &[f64],
     downbeats: &[f64],
     rhythm: &str,
-    adaptive: bool,
+    policy: ScenePolicy,
     mode: &str,
 ) -> Result<(), String> {
     validate_prepared(scenes)?;
+    let policy = if mode == "long_clip" {
+        ScenePolicy::NoRepeat
+    } else {
+        policy
+    };
+    let smart = policy == ScenePolicy::Smart;
     let mut base = 0.0;
     let views: Vec<_> = scenes
         .iter()
         .map(|scene| {
             let duration = scene.duration();
-            let view = SceneView {
+            let mut view = SceneView {
                 scene,
                 base,
                 duration,
+                motion_starts: Vec::new(),
             };
+            if smart {
+                // Cache representative motion offsets once, rather than rescan on every shot.
+                for bin in 0..6 {
+                    let from = duration * bin as f64 / 6.0;
+                    let to = duration * (bin + 1) as f64 / 6.0;
+                    let first = scene
+                        .motion
+                        .partition_point(|sample| sample.time < view.source_time(from));
+                    let last = scene
+                        .motion
+                        .partition_point(|sample| sample.time < view.source_time(to));
+                    let peak = scene.motion[first..last].iter().max_by(|a, b| {
+                        (a.activity * a.confidence).total_cmp(&(b.activity * b.confidence))
+                    });
+                    let start = peak
+                        .and_then(|sample| view.local_time(sample.time))
+                        .unwrap_or(from);
+                    view.motion_starts.push((start - 0.35).max(from));
+                }
+            }
             base += duration;
             view
         })
@@ -794,10 +934,19 @@ pub fn apply_schedule(
         _ => beat_period * 4.0,
     };
     let scarcity_floor = (RECURRENCE_TARGET / scenes.len() as f64).min(5.5);
-    let preferred = cadence
-        .max(scarcity_floor)
-        .min(6.0)
-        .min(plan.target_duration);
+    let coverage_cadence = cadence.max(scarcity_floor).min(6.0);
+    let preferred = if smart {
+        // Musical phrases sit between beat-by-beat cuts and whole-scene coverage.
+        let musical_cadence = if plan.style == "SMOOTH" {
+            cadence * 2.0
+        } else {
+            cadence
+        };
+        (musical_cadence * coverage_cadence).sqrt().max(0.35)
+    } else {
+        coverage_cadence
+    }
+    .min(plan.target_duration);
     let context = Context {
         views,
         beats: &boundaries,
@@ -806,8 +955,9 @@ pub fn apply_schedule(
         preferred,
         base_rate: if plan.style == "SMOOTH" { 0.9 } else { 1.0 },
         long_clip: mode == "long_clip",
+        smart,
     };
-    let shots = if adaptive {
+    let shots = if policy != ScenePolicy::Classic {
         adaptive_shots(&context)?
     } else {
         legacy_shots(plan, &context.views)
@@ -829,9 +979,10 @@ pub fn apply_schedule(
                 stamps
             });
     plan.planning = Some(PlanningMetadata {
-        version: 1,
+        version: 2,
         mode: mode.into(),
-        no_repetitive_scene: mode == "scenepack" && adaptive,
+        no_repetitive_scene: mode == "scenepack" && policy == ScenePolicy::NoRepeat,
+        smart_scene_flow: mode == "scenepack" && smart,
         motion_guided: true,
         source_fingerprints,
         shots: shots
@@ -917,6 +1068,14 @@ mod tests {
         make_plan_mode(scenes, duration, "scenepack")
     }
     fn make_plan_mode(scenes: &[PreparedScene], duration: f64, mode: &str) -> ProjectPlan {
+        make_plan_policy(scenes, duration, mode, ScenePolicy::NoRepeat)
+    }
+    fn make_plan_policy(
+        scenes: &[PreparedScene],
+        duration: f64,
+        mode: &str,
+        policy: ScenePolicy,
+    ) -> ProjectPlan {
         let beats: Vec<_> = (1..(duration * 2.0) as usize)
             .map(|index| index as f64 / 2.0)
             .collect();
@@ -939,9 +1098,99 @@ mod tests {
             None,
         )
         .unwrap();
-        apply_schedule(&mut plan, scenes, &beats, &downbeats, "fast", true, mode).unwrap();
+        apply_schedule(&mut plan, scenes, &beats, &downbeats, "fast", policy, mode).unwrap();
         validate_plan(&plan).unwrap();
         plan
+    }
+    fn cuts(plan: &ProjectPlan) -> usize {
+        plan.planning
+            .as_ref()
+            .unwrap()
+            .shots
+            .windows(2)
+            .filter(|shots| {
+                let last = shots[0].ranges.last().unwrap();
+                let next = &shots[1].ranges[0];
+                last.source_id != next.source_id
+                    || (last.start + last.duration - next.start).abs() > 0.003
+            })
+            .count()
+    }
+    #[test]
+    fn smart_flow_returns_to_fresh_passages_instead_of_holding_long_scenes() {
+        let scenes = vec![scene(0, 16.7, true), scene(1, 13.9, true)];
+        let smart = make_plan_policy(&scenes, 19.3, "scenepack", ScenePolicy::Smart);
+        let coverage = make_plan(&scenes, 19.3);
+        assert!(cuts(&smart) > cuts(&coverage));
+        let shots = &smart.planning.as_ref().unwrap().shots;
+        assert!(shots.iter().all(|shot| shot.reused_fraction < 0.01));
+        for scene in &scenes {
+            let passages: Vec<_> = shots
+                .iter()
+                .filter(|shot| shot.scene_id == scene.scene_id)
+                .collect();
+            assert!(passages.len() > 1);
+            assert!(passages.iter().any(|shot| shot.ranges[0].start > 3.0));
+        }
+        let mut held = 0.0;
+        let mut previous = None;
+        for shot in shots {
+            if previous == Some(shot.scene_id) {
+                held += shot.t1 - shot.t0;
+            } else {
+                held = shot.t1 - shot.t0;
+            }
+            assert!(held <= 5.0, "Fresh continuations must not hide long holds");
+            previous = Some(shot.scene_id);
+        }
+    }
+    #[test]
+    fn smart_flow_allows_unavoidable_early_replay_without_freeze_padding() {
+        for moving in [false, true] {
+            let plan = make_plan_policy(
+                &[scene(0, 0.73, moving)],
+                5.3,
+                "scenepack",
+                ScenePolicy::Smart,
+            );
+            let shots = &plan.planning.as_ref().unwrap().shots;
+            assert!(shots
+                .iter()
+                .any(|shot| shot.t0 < 3.0 && shot.reused_fraction > 0.5));
+            assert!(shots.iter().all(|shot| {
+                let span: f64 = shot.ranges.iter().map(|range| range.duration).sum();
+                span > 0.0 && (MIN_RATE - 0.001..=MAX_RATE).contains(&(span / (shot.t1 - shot.t0)))
+            }));
+            if !moving {
+                assert!(plan.segments.iter().all(|segment| segment
+                    .remap
+                    .as_ref()
+                    .unwrap()
+                    .strength
+                    == 0.0));
+            }
+        }
+    }
+    #[test]
+    fn smart_flow_handles_missing_beats_and_short_final_tails() {
+        let scenes = vec![scene(0, 2.3, true), scene(1, 1.7, false)];
+        let mut plan = make_plan(&scenes, 6.03);
+        apply_schedule(
+            &mut plan,
+            &scenes,
+            &[],
+            &[],
+            "fast",
+            ScenePolicy::Smart,
+            "scenepack",
+        )
+        .unwrap();
+        validate_plan(&plan).unwrap();
+        assert!((plan.segments.last().unwrap().t1 - 6.03).abs() < 1e-7);
+        assert!(plan
+            .segments
+            .iter()
+            .all(|segment| (segment.s1 - segment.s0).abs() > 1e-7));
     }
     #[test]
     fn scarce_unequal_scenes_use_fresh_motion_before_replay() {

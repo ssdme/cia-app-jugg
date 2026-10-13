@@ -6,6 +6,10 @@ export interface EffectOverrides {
   opticsBounce: boolean; buildupChain: boolean; warpStretch: boolean;
   zoomBeatOffset: boolean; ccDeepDark: boolean; antiFlash: boolean;
 }
+export interface CreativeOptions {
+  timeSlice: boolean; inkPulse: boolean; prismDrift: boolean;
+  focusPull: boolean; reliefLight: boolean; paperGate: boolean;
+}
 export interface MediaInfo {
   duration: number; width: number; height: number; fps: number;
   audioChannels: number; audioSampleRate: number;

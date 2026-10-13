@@ -32,7 +32,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 ## UX
 
-![cia jugg ux](docs/preview.png?v=1.0.4)
+![cia jugg ux](docs/preview.png?v=1.0.5)
 
 ---
 
@@ -55,7 +55,10 @@ All processing runs locally on the host machine. The application bundles its own
 
 ### Scene Selection
 - **1.0.4 fix**: Action windows are clamped to selected scene bounds, with numerical tolerance for timestamp rounding, preventing spurious `Invalid action window` render failures.
-- **ScenePack**: The default-enabled `no repeatitive scene` option adapts shot length to visual activity and beats. It favors unused passages and discourages early replays around a flexible eight-second target. Sparse footage can still loop without forced freeze padding.
+- **ScenePack**: `no repeatitive scene` adapts shot length to visual activity and beats. It favors unused passages and discourages early replays around a flexible eight-second target. Sparse footage can still loop without forced freeze padding.
+- **Smart Scene Flow**: The default ScenePack policy uses shorter musical phrases, varied motion passages and controlled returns. It favors fresh source ranges and discourages consecutive holds without imposing an eight-second replay rule. Available in clip selection and settings; enabling it disables `no repeatitive scene`. Leave both unchecked for classic cuts.
+- **Creative Mix**: Three independent options in `Details` add sparse musical accents: `TIME SLICE` splits moving footage into delayed panels, `INK PULSE` adds selective ink contours and halftone, and `PRISM DRIFT` separates color edges before resolving. All three are checked by default, work with any source mode and remain independent of Full FX. Combinations retain clean intervals and bounded intensity.
+- **Creative Beta**: `FOCUS PULL` moves a sharp plane through soft focus, `RELIEF LIGHT` animates contour relief with raking light, and `PAPER GATE` opens a torn-paper aperture. These three options are independent and checked by default in `Details`. All six creative effects can be toggled separately; resetting the style enables them again.
 - **Motion guidance**: ScenePack and Long Clip select useful motion windows and reduce remap emphasis on still frames. No Change uses the original path.
 - **Source filtering**: ScenePack removes exactly pure black/white native frames, including internal gaps, while retaining near-blank detail. Analysis is cached for unchanged media.
 - **Output actions**: `OPEN FILE` opens the completed video; `RENDER AGAIN` starts a new render directly.
@@ -69,7 +72,7 @@ All processing runs locally on the host machine. The application bundles its own
 - CPU encoding via embedded FFmpeg (libx264, libx265, libvpx-vp9).
 - Target codecs: **H.264 (AVC)**, **H.265 (HEVC)**, and **VP9**.
 - Configurable target bitrates from 5 Mbps to 50 Mbps.
-- Borderless full-frame scaling to 16:9, 9:16, square or a custom even-sized canvas.
+- Borderless full-frame scaling to 16:9, 9:16, 3:4, square or a custom even-sized canvas. The default is **3:4 at 1080 x 1440**.
 
 ---
 
@@ -77,7 +80,7 @@ All processing runs locally on the host machine. The application bundles its own
 
 Download the standalone installer from the [Releases](https://github.com/ssdme/cia-app-jugg/releases/latest) page:
 
-- **[cia.jugg_1.0.3_x64-setup.exe](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.3/cia.jugg_1.0.3_x64-setup.exe)** (130 MB)
+- **[cia.jugg_1.0.5_x64-setup.exe](https://github.com/ssdme/cia-app-jugg/releases/download/v1.0.5/cia.jugg_1.0.5_x64-setup.exe)**
 
 The installer is self-contained. It bundles all required binaries (`ffmpeg.exe`, `ffprobe.exe`, `beat_this.exe`, `onnxruntime.dll`, and ONNX model weights). No administrative privileges or system environment changes are required.
 

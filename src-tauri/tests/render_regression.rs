@@ -589,6 +589,8 @@ fn settings_validation_and_presets() {
             }]),
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         let plan: ProjectPlan = serde_json::from_str(&generated).unwrap();
